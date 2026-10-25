@@ -148,7 +148,7 @@ from sirnaforge.data.species_registry import (
 )
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
 from sirnaforge.data.transcriptome_manager import INDEX_BUILD_ERROR_KEY, TranscriptomeManager
-from sirnaforge.data.variant_helpers import apply_variant_workflow
+from sirnaforge.data.variant_helpers import apply_variant_to_transcript_sequence, apply_variant_workflow
 from sirnaforge.models.evidence import (
     EvidenceStatus,
     ScreeningEvidenceEntry,
@@ -1451,6 +1451,40 @@ class SiRNAWorkflow:
         console.print(f"🔍 ORF validation: {len(valid_transcripts)}/{len(transcripts)} transcripts have valid ORFs")
         return {"results": orf_results, "valid_transcripts": valid_transcripts}
 
+    def _target_intent_allele_sequences(
+        self, candidate: SiRNACandidate, resolved: ResolvedTargetIntent
+    ) -> tuple[dict[str, str], set[str]]:
+        """Map an alternate candidate's exact GRCh38 variants into the frozen cDNA universe."""
+        if not candidate.allele_specific or "alt" not in candidate.targeted_alleles:
+            return {}, set()
+        variants = [VariantRecord.model_validate(item) for item in candidate.overlapped_variants]
+        overrides: dict[str, str] = {}
+        unresolved: set[str] = set()
+        for transcript in resolved.transcripts:
+            if transcript.sequence is None:
+                continue
+            annotation = self._transcript_annotations.get(transcript.transcript_id)
+            if annotation is None:
+                annotation = next(
+                    (
+                        value
+                        for identifier, value in self._transcript_annotations.items()
+                        if strip_version(identifier) == transcript.transcript_id
+                    ),
+                    None,
+                )
+            if annotation is None:
+                unresolved.add(transcript.transcript_id)
+                continue
+            sequence = transcript.sequence
+            changed = False
+            for variant in variants:
+                sequence, position = apply_variant_to_transcript_sequence(sequence, variant, annotation)
+                changed = changed or position is not None
+            if changed:
+                overrides[transcript.transcript_id] = sequence
+        return overrides, unresolved
+
     def _evaluate_target_intent_candidates(self, candidates: Sequence[SiRNACandidate]) -> None:
         """Record each guide's exact target-universe verdict and apply failing/unknown eligibility."""
         resolved = self._resolved_target_intent
@@ -1459,7 +1493,13 @@ class SiRNAWorkflow:
         observations: dict[str, dict[str, Any]] = {}
         denominator = resolved.intent.coverage_denominator
         for candidate in candidates:
-            evaluation = evaluate_target_intent_guide(candidate.guide_sequence, resolved)
+            allele_sequences, unresolved_allele_transcripts = self._target_intent_allele_sequences(candidate, resolved)
+            evaluation = evaluate_target_intent_guide(
+                candidate.guide_sequence,
+                resolved,
+                sequence_overrides=allele_sequences,
+                unresolved_allele_transcript_ids=unresolved_allele_transcripts,
+            )
             coverage_numerator = evaluation.covered_transcript_ids & denominator
             missing_denominator_sequences = evaluation.missing_sequence_transcript_ids & denominator
             candidate.isoform_coverage = (
@@ -1483,6 +1523,7 @@ class SiRNAWorkflow:
                 "uncovered_required_transcript_ids": sorted(evaluation.uncovered_required_transcript_ids),
                 "excluded_hit_transcript_ids": sorted(evaluation.excluded_hit_transcript_ids),
                 "missing_sequence_transcript_ids": sorted(evaluation.missing_sequence_transcript_ids),
+                "unresolved_allele_transcript_ids": sorted(evaluation.unresolved_allele_transcript_ids),
                 "unresolved_target_species": sorted(evaluation.unresolved_target_species),
             }
         self._target_intent_observations = observations

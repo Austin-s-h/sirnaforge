@@ -60,6 +60,37 @@ def _transcript_allele(allele: str, strand: int) -> str:
     return allele.upper() if strand == 1 else str(Seq(allele.upper()).reverse_complement())
 
 
+def apply_variant_to_transcript_sequence(
+    sequence: str,
+    variant: VariantRecord,
+    annotation: TranscriptAnnotation,
+) -> tuple[str, int | None]:
+    """Apply a strictly mapped GRCh38 variant to cDNA, returning its cDNA position.
+
+    A non-overlapping transcript is returned unchanged with ``None``. Mapped variants must match
+    the transcript-oriented reference base; this function never treats a genomic coordinate as a
+    sequence offset.
+    """
+    position = map_variant_to_transcript(variant, annotation)
+    if position is None:
+        return sequence.upper().replace("U", "T"), None
+    normalized = sequence.upper().replace("U", "T")
+    if position >= len(normalized):
+        raise ValueError(
+            f"Mapped variant {variant.to_vcf_style()} exceeds transcript sequence "
+            f"{annotation.transcript_id} length ({len(normalized)})"
+        )
+    ref = _transcript_allele(variant.ref, annotation.strand)
+    actual = normalized[position : position + 1]
+    if actual != ref:
+        raise ValueError(
+            f"Reference mismatch for {variant.to_vcf_style()} on {annotation.transcript_id} at cDNA index "
+            f"{position}: annotation maps {ref}, sequence contains {actual}"
+        )
+    edited = normalized[:position] + _transcript_allele(variant.alt, annotation.strand) + normalized[position + 1 :]
+    return edited, position
+
+
 def apply_variant_workflow(  # noqa: PLR0912
     design_result: DesignResult,
     variants: Sequence[VariantRecord],
@@ -155,11 +186,12 @@ def apply_variant_workflow(  # noqa: PLR0912
                 annotation = annotations.get(transcript_id) or next(
                     a for key, a in annotations.items() if strip_version(key) == strip_version(transcript_id)
                 )
-                edited = list(sequence)
-                edited[position] = _transcript_allele(variant.alt, annotation.strand)
+                edited, applied_position = apply_variant_to_transcript_sequence(sequence, variant, annotation)
+                if applied_position != position:
+                    raise RuntimeError("variant position changed during strict transcript edit")
                 # Score this allele on its own full transcript context. Combining nearby
                 # variants here would invent a haplotype the input did not specify.
-                alt_result = design_sequence("".join(edited), transcript_id)
+                alt_result = design_sequence(edited, transcript_id)
                 for candidate in alt_result.candidates:
                     if not overlaps(candidate, position):
                         continue

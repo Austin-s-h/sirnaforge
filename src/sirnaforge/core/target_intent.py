@@ -1,7 +1,7 @@
 """Resolve target intent against annotation and evaluate exact transcript coverage."""
 
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -66,6 +66,7 @@ class TargetIntentEvaluation(BaseModel):
     uncovered_required_transcript_ids: frozenset[str]
     excluded_hit_transcript_ids: frozenset[str]
     missing_sequence_transcript_ids: frozenset[str]
+    unresolved_allele_transcript_ids: frozenset[str] = frozenset()
     unresolved_target_species: frozenset[str] = frozenset()
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -201,11 +202,30 @@ def resolve_target_intent(
     )
 
 
-def evaluate_target_intent_guide(guide_sequence: str, resolved: ResolvedTargetIntent) -> TargetIntentEvaluation:
-    """Evaluate exact full-length guide reverse-complement coverage in the frozen universe."""
+def evaluate_target_intent_guide(
+    guide_sequence: str,
+    resolved: ResolvedTargetIntent,
+    *,
+    sequence_overrides: Mapping[str, str] | None = None,
+    unresolved_allele_transcript_ids: Collection[str] = (),
+) -> TargetIntentEvaluation:
+    """Evaluate exact full-length guide reverse-complement coverage in the frozen universe.
+
+    ``sequence_overrides`` carries validated allele-specific cDNA sequences from the variant
+    workflow. A transcript with known reference sequence but unresolved variant mapping keeps
+    its reference sequence for descriptive coverage and makes the verdict unknown.
+    """
     guide = _normalize_sequence(guide_sequence, identifier="guide")
     reverse_complement = guide.translate(str.maketrans("ACGT", "TGCA"))[::-1]
     sequences = {transcript.transcript_id: transcript.sequence for transcript in resolved.transcripts}
+    for identifier, sequence in (sequence_overrides or {}).items():
+        normalized_id = _versionless(identifier)
+        if normalized_id not in sequences:
+            raise ValueError(f"allele-specific sequence override is outside the annotation universe: {identifier}")
+        sequences[normalized_id] = _normalize_sequence(sequence, identifier=normalized_id)
+    unresolved_alleles = frozenset(_versionless(identifier) for identifier in unresolved_allele_transcript_ids)
+    if unresolved_alleles - sequences.keys():
+        raise ValueError("unresolved allele transcript IDs must be inside the annotation universe")
     covered = frozenset(
         identifier
         for identifier, sequence in sequences.items()
@@ -222,9 +242,11 @@ def evaluate_target_intent_guide(guide_sequence: str, resolved: ResolvedTargetIn
     uncovered_required = required - covered
     excluded_hits = forbidden & covered
     missing = frozenset(identifier for identifier in required | forbidden if sequences.get(identifier) is None)
-    if excluded_hits or uncovered_required - missing:
+    unresolved_sequence_state = missing | unresolved_alleles
+    definite_excluded_hits = excluded_hits - unresolved_alleles
+    if definite_excluded_hits or uncovered_required - unresolved_sequence_state:
         verdict = TargetIntentVerdict.FAIL
-    elif missing or resolved.unresolved_target_species:
+    elif unresolved_sequence_state or resolved.unresolved_target_species:
         verdict = TargetIntentVerdict.UNKNOWN
     else:
         verdict = TargetIntentVerdict.PASS
@@ -234,5 +256,6 @@ def evaluate_target_intent_guide(guide_sequence: str, resolved: ResolvedTargetIn
         uncovered_required_transcript_ids=uncovered_required,
         excluded_hit_transcript_ids=excluded_hits,
         missing_sequence_transcript_ids=missing,
+        unresolved_allele_transcript_ids=unresolved_alleles,
         unresolved_target_species=resolved.unresolved_target_species,
     )

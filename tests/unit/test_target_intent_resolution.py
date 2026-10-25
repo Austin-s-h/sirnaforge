@@ -164,3 +164,32 @@ def test_rna_and_dna_sequences_normalize_to_same_exact_coverage() -> None:
         enumeration_ids=["ENST1"],
     )
     assert evaluate_target_intent_guide(GUIDE.replace("T", "U"), resolved).verdict is TargetIntentVerdict.PASS
+
+
+def test_variant_candidate_coverage_uses_strictly_mapped_allele_sequence() -> None:
+    """An alternate guide can satisfy target intent when its GRCh38 edit is supplied explicitly."""
+    ref_sequence = f"AAAA{TARGET}AAAA"
+    variant_offset = 6
+    ref = ref_sequence[variant_offset]
+    alt = next(base for base in "ACGT" if base != ref)
+    alt_sequence = ref_sequence[:variant_offset] + alt + ref_sequence[variant_offset + 1 :]
+    alt_target = alt_sequence[4 : 4 + len(GUIDE)]
+    alt_guide = alt_target.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+    resolved = _resolve(
+        TargetSelectivity.ISOFORM_SELECTIVE,
+        [_transcript("ENST1", ref_sequence)],
+        annotation_ids=["ENST1"],
+        enumeration_ids=["ENST1"],
+        required=frozenset({"ENST1"}),
+    )
+
+    reference_evaluation = evaluate_target_intent_guide(alt_guide, resolved)
+    allele_evaluation = evaluate_target_intent_guide(
+        alt_guide,
+        resolved,
+        sequence_overrides={"ENST1": alt_sequence},
+    )
+
+    assert reference_evaluation.verdict is TargetIntentVerdict.FAIL
+    assert allele_evaluation.verdict is TargetIntentVerdict.PASS
+    assert allele_evaluation.covered_transcript_ids == frozenset({"ENST1"})

@@ -34,6 +34,12 @@ separately; nearby variants do not imply a combined haplotype. Candidate records
 transcript ID and record variant details in `overlapped_variants`, `targeted_alleles`, and
 `variant_mode`. Candidate-to-variant links are also written to `logs/candidate_variants.json`.
 
+When a run also declares target intent, an alternate-allele candidate is checked against the
+GRCh38-mapped alternate cDNA sequence for each annotated target transcript. Missing annotations
+leave allele-specific intent unknown; the reference sequence is not used to reject an alternate
+guide as though it were the designed allele. The same edited sequence is used to check required
+and excluded isoforms when the variant maps to their exons.
+
 In `target` or `both` mode, an empty resolved variant set is an error: otherwise a targeting run
 could silently emit ordinary reference guides. In `avoid` mode, zero retained variants leaves the
 reference candidate pool unchanged. If a variant is resolved but cannot map to any annotated exon,
