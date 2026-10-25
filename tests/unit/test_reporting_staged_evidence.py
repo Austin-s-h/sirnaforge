@@ -93,7 +93,7 @@ def test_unresolved_view_and_guide_detail_use_registry_without_changing_gates(tm
     scripts = re.findall(r"<script>(.*?)</script>", output.read_text(), flags=re.DOTALL)
     bootstrap = r"""
 global.window={};const elements={};
-function el(){return {checked:false,value:'',selectedIndex:0,textContent:'',innerHTML:'',handlers:{},addEventListener(k,fn){this.handlers[k]=fn;},appendChild(){}};}
+function el(){return {checked:false,value:'',selectedIndex:0,textContent:'',innerHTML:'',handlers:{},addEventListener(k,fn){this.handlers[k]=fn;},appendChild(){},setAttribute(k,v){this[k]=v;}};}
 global.document={querySelector:s=>elements[s]||(elements[s]=el()),querySelectorAll:()=>[],createElement:()=>el()};
 """
     code = (
