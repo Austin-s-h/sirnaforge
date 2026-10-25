@@ -12,6 +12,7 @@ from typing import Any
 from Bio import SeqIO
 
 from sirnaforge.core.screening_evidence import EvidenceProducer, write_evidence
+from sirnaforge.data.transcriptome_filter import TranscriptFilter
 from sirnaforge.models.evidence import EvidenceStatus, ObservedCount, ObservedCounts, ScreeningEvidenceEntry
 from sirnaforge.models.policy import ScreeningChannel
 from sirnaforge.models.transcript_seed import (
@@ -23,6 +24,7 @@ from sirnaforge.models.transcript_seed import (
     TranscriptSeedTranscript,
     TranscriptSequenceScope,
 )
+from sirnaforge.utils.ensembl_ids import strip_version
 from sirnaforge.utils.hashing import file_sha256
 
 
@@ -206,10 +208,12 @@ def run_transcript_seed_analysis(
         if annotation is not None and not isinstance(annotation, dict):
             raise ValueError(f"3′UTR manifest entry for {record.id} must be an object")
         values = annotation if isinstance(annotation, dict) else {}
+        fasta_metadata = TranscriptFilter.parse_ensembl_header(record.description)
+        gene_id = values.get("gene_id") or fasta_metadata.get("gene")
         transcripts.append(
             TranscriptSeedTranscript(
                 transcript_id=record.id,
-                gene_id=values.get("gene_id"),
+                gene_id=strip_version(gene_id) if gene_id else None,
                 cdna_sequence=str(record.seq),
                 utr3_sequence=values.get("utr3_sequence"),
                 utr3_start=values.get("utr3_start"),

@@ -48,6 +48,29 @@ def test_producer_scans_full_reference_and_publishes_counts_and_reference_checks
     assert summary["site_identity"] == TRANSCRIPT_SEED_SITE_IDENTITY
 
 
+def test_producer_resolves_seed_site_genes_from_ensembl_cdna_headers(tmp_path) -> None:
+    """The standard workflow FASTA carries gene identity even without a separate UTR manifest."""
+    guides = tmp_path / "guides.fa"
+    guides.write_text(">guide-1\nAACCTGTAAG\n")
+    reference = tmp_path / "human.fa"
+    reference.write_text(
+        ">ENST00000000001.7 cdna chromosome:GRCh38:1:1:14:1 gene:ENSG00000000001.4 gene_biotype:protein_coding\n"
+        "CCCTACAGGTACCC\n"
+    )
+
+    result = run_transcript_seed_analysis(guides, reference, species="human", output_dir=tmp_path / "out")
+
+    site = result["sites"][0]
+    assert site["gene_id"] == "ENSG00000000001"
+    assert result["gene_count"] == 1
+    assert result["gene_count_is_lower_bound"] is False
+    assert result["per_guide"]["guide-1"]["gene_count"] == 1
+    assert result["per_guide"]["guide-1"]["gene_count_is_lower_bound"] is False
+    envelope = collect_evidence(tmp_path / "out")[0]
+    assert envelope.entry.counts.distinct_genes.value == 1
+    assert envelope.entry.counts.distinct_genes.is_lower_bound is False
+
+
 def test_producer_marks_missing_three_prime_utr_annotation_unavailable(tmp_path) -> None:
     """A plain cDNA FASTA cannot publish an empty 3′UTR result as complete."""
     guides = tmp_path / "guides.fa"
