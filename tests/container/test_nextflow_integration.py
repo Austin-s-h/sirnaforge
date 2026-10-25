@@ -236,7 +236,7 @@ def test_transcript_seed_channel_executes_and_reconciles_scoped_evidence(
     guides = tmp_path / "guides.fasta"
     guides.write_text(">g1\nAACCTGTAAG\n")
     transcriptome = tmp_path / "transcriptome.fasta"
-    transcriptome.write_text(">tx1\nTACAGGTA\n")
+    transcriptome.write_text(">tx1 gene:ENSG00000000001.4\nTACAGGTA\n")
     guide_digest = hashlib.sha256(guides.read_bytes()).hexdigest()[:16]
     plan = ScreeningPlan(
         entries=(
@@ -300,6 +300,8 @@ def test_transcript_seed_channel_executes_and_reconciles_scoped_evidence(
             "7mer-m8": 0,
             "8mer": 1,
         }
+        assert summary["per_guide"]["g1"]["gene_count"] == 1
+        assert summary["per_guide"]["g1"]["gene_count_is_lower_bound"] is False
     else:
         assert summary["transcripts_unavailable"] == ["tx1"]
         assert summary["per_guide"]["g1"]["status"] == "unknown"
