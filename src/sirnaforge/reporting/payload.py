@@ -53,7 +53,7 @@ from sirnaforge.reporting.evidence import (
     normalize_evidence_state,
     report_evidence,
 )
-from sirnaforge.reporting.links import source_link
+from sirnaforge.reporting.links import canonical_identity_link, source_link
 from sirnaforge.reporting.structure import layouts_for
 from sirnaforge.reporting.tracks import TranscriptRegions, transcript_regions, uncovered_stretches
 
@@ -824,8 +824,11 @@ class _TranscriptFacts:
             for key in ("gene_id", "gene_symbol", "transcript_biotype", "canonical_source", "canonical_release")
         }
         identity["transcript_link"] = (
-            source_link(
-                transcript, "ensembl", release=info.get("canonical_release"), resolver=self.resolvers.get("ensembl")
+            canonical_identity_link(
+                transcript,
+                info.get("canonical_source"),
+                info.get("canonical_release"),
+                resolver=self.resolvers.get("ensembl"),
             )
             if info.get("canonical_release")
             else {
@@ -838,10 +841,10 @@ class _TranscriptFacts:
         )
         gene = info.get("gene_id")
         identity["gene_link"] = (
-            source_link(
+            canonical_identity_link(
                 str(gene or ""),
-                "ensembl",
-                release=info.get("canonical_release"),
+                info.get("canonical_source"),
+                info.get("canonical_release"),
                 resolver=self.resolvers.get("ensembl"),
             )
             if info.get("canonical_release")

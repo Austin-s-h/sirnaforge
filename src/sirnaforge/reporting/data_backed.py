@@ -36,7 +36,7 @@ from sirnaforge.reporting.evidence import (
     mirna_evidence,
     report_evidence,
 )
-from sirnaforge.reporting.links import source_link
+from sirnaforge.reporting.links import canonical_identity_link, source_link
 from sirnaforge.reporting.payload import (
     _VERDICT_CODE,
     REPORT_READ_CHUNK_ROWS,
@@ -374,10 +374,10 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
                     "canonical_source": identity_row.get("canonical_source"),
                     "canonical_release": identity_row.get("canonical_release"),
                     "transcript_link": json.dumps(
-                        source_link(
+                        canonical_identity_link(
                             tx,
-                            "ensembl",
-                            release=identity_row.get("canonical_release"),
+                            identity_row.get("canonical_source"),
+                            identity_row.get("canonical_release"),
                             resolver=identity_resolvers.get("ensembl"),
                         )
                         if identity_row.get("canonical_release")
@@ -391,10 +391,10 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
                         separators=(",", ":"),
                     ),
                     "gene_link": json.dumps(
-                        source_link(
+                        canonical_identity_link(
                             str(identity_row.get("gene_id") or row.get("gene_id") or ""),
-                            "ensembl",
-                            release=identity_row.get("canonical_release"),
+                            identity_row.get("canonical_source"),
+                            identity_row.get("canonical_release"),
                             resolver=identity_resolvers.get("ensembl"),
                         )
                         if identity_row.get("canonical_release")

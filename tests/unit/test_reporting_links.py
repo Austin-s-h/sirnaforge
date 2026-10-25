@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from sirnaforge.reporting.links import safe_source_url, source_link
+from sirnaforge.reporting.links import canonical_identity_link, safe_source_url, source_link
 
 
 @pytest.mark.unit
@@ -29,6 +29,17 @@ def test_manifest_release_template_takes_precedence_over_current_template() -> N
     current = source_link("ENST1", "ensembl", resolver=resolver)
     assert pinned["url"] == "https://e110.ensembl.org/id/ENST1"
     assert current["url"] == "https://www.ensembl.org/id/ENST1"
+
+
+@pytest.mark.unit
+def test_gencode_annotation_release_is_not_used_as_ensembl_release() -> None:
+    """GENCODE's annotation version identifies the authority, not Ensembl's URL release."""
+    transcript = canonical_identity_link("ENST1.2", "GENCODE explicit canonical/MANE tags (annotation 49)", "49")
+    gene = canonical_identity_link("ENSG1.3", "GENCODE annotation 49", "49")
+    assert transcript["release"] is None
+    assert gene["release"] is None
+    assert transcript["url"] == "https://www.ensembl.org/id/ENST1.2"
+    assert gene["url"] == "https://www.ensembl.org/id/ENSG1.3"
 
 
 @pytest.mark.unit

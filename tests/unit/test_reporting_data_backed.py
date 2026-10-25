@@ -245,6 +245,39 @@ def test_data_backed_gene_filter_stays_hidden_for_single_gene_with_many_isoforms
 
 @pytest.mark.unit
 @pytest.mark.parametrize("mode", ["paged_single_file", "data_backed"])
+def test_staged_gencode_provenance_does_not_pin_ensembl_links_to_gencode_release(tmp_path: Path, mode: str) -> None:
+    """Staged isoform links retain GENCODE authority versions separately from Ensembl URLs."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1.2", 1)], [])
+    manifest_path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["target_identity"] = {
+        "schema_version": 1,
+        "transcripts": [
+            {
+                "transcript_id": "ENST1.2",
+                "gene_id": "ENSG1.3",
+                "gene_symbol": "TP53",
+                "is_canonical": True,
+                "canonical_status": "established",
+                "canonical_source": "GENCODE explicit canonical/MANE tags (annotation 49)",
+                "canonical_release": "49",
+            }
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    output = tmp_path / f"gencode-{mode}.html"
+
+    result = write_report_from_run(run, output, mode=mode)
+
+    isoforms = pq.read_table(result.artifact_dir / "isoforms.parquet").to_pylist()
+    assert len(isoforms) == 1
+    assert isoforms[0]["canonical_release"] == "49"
+    assert json.loads(isoforms[0]["transcript_link"])["url"] == "https://www.ensembl.org/id/ENST1.2"
+    assert json.loads(isoforms[0]["gene_link"])["url"] == "https://www.ensembl.org/id/ENSG1.3"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["paged_single_file", "data_backed"])
 def test_staged_conservation_filters_distinguish_matches_and_unavailable_evidence(tmp_path: Path, mode: str) -> None:
     """Staged UI filters recorded ortholog evidence and explains unavailable zero-match cases."""
     guides = [_base4(index) for index in range(4)]

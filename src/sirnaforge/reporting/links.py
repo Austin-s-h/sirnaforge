@@ -75,3 +75,17 @@ def source_link(
         return result
     result.update(url=url, template=template, reason=None)
     return result
+
+
+def canonical_identity_link(
+    identifier: str,
+    canonical_source: str | None,
+    canonical_release: str | None,
+    *,
+    resolver: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Link an Ensembl ID without treating another authority's release as Ensembl's."""
+    ensembl_release = (
+        canonical_release if canonical_source and canonical_source.startswith("Ensembl REST lookup") else None
+    )
+    return source_link(identifier, "ensembl", release=ensembl_release, resolver=resolver)

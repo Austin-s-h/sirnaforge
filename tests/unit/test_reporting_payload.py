@@ -1375,6 +1375,36 @@ def test_explicit_canonical_authority_labels_identity_and_hit_states(tmp_path: P
 
 
 @pytest.mark.unit
+def test_gencode_canonical_provenance_uses_current_ensembl_identity_links(tmp_path: Path) -> None:
+    """The authority's annotation release stays in provenance and does not pin Ensembl URLs."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1.2", 10)], [])
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["target_identity"] = {
+        "schema_version": 1,
+        "transcripts": [
+            {
+                "transcript_id": "ENST1.2",
+                "gene_id": "ENSG1.3",
+                "gene_symbol": "TP53",
+                "is_canonical": True,
+                "canonical_status": "established",
+                "canonical_source": "GENCODE explicit canonical/MANE tags (annotation 49)",
+                "canonical_release": "49",
+            }
+        ],
+    }
+    path.write_text(json.dumps(manifest))
+
+    payload = build_payload(run)
+
+    identity = payload.run["canonical_provenance"]["ENST1.2"]
+    assert identity["canonical_release"] == "49"
+    assert identity["transcript_link"]["url"] == "https://www.ensembl.org/id/ENST1.2"
+    assert identity["gene_link"]["url"] == "https://www.ensembl.org/id/ENSG1.3"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("source", [None, "local FASTA"])
 def test_explicit_unestablished_identity_overrides_legacy_canonical_filename(
     tmp_path: Path, source: str | None
