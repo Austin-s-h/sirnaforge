@@ -4,6 +4,7 @@ Tests that verify Nextflow workflows work correctly in Docker environments
 with proper resource constraints and Docker-in-Docker functionality.
 """
 
+import hashlib
 import json
 import re
 import subprocess
@@ -14,7 +15,8 @@ from pathlib import Path
 import pytest
 
 import sirnaforge.pipeline.nextflow.config
-from sirnaforge.models.evidence import EVIDENCE_SCHEMA_VERSION, EvidenceStatus
+from sirnaforge.models.evidence import EVIDENCE_SCHEMA_VERSION, EvidenceStatus, ScreeningPlan, ScreeningPlanEntry
+from sirnaforge.models.policy import ScreeningChannel
 from sirnaforge.pipeline.nextflow.runner import NextflowRunner
 
 
@@ -202,7 +204,6 @@ def test_stub_run_emits_evidence_and_cannot_look_like_a_screen():
         envelope = json.loads((outdir / "aggregated" / "evidence.json").read_text())
         assert envelope["schema_version"] == EVIDENCE_SCHEMA_VERSION
         assert set(envelope) >= {"plan", "evidence", "sources", "unplanned"}, sorted(envelope)
-
         # The per-unit evidence the stub block declares as an output must actually materialise.
         stub_files = sorted((outdir / "mirna").glob("mirna_seed_*_evidence.json"))
         assert stub_files, f"stub emitted no per-unit evidence: {sorted((outdir / 'mirna').glob('*'))}"
@@ -215,6 +216,106 @@ def test_stub_run_emits_evidence_and_cannot_look_like_a_screen():
             f"a stub run must not publish a completed unit: {entry['status']}"
         )
         assert entry["detail"], "a stub unit must say why it is not a result"
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+@pytest.mark.requires_nextflow
+@pytest.mark.parametrize(
+    ("scope", "status", "site_count"),
+    [("full_cdna", "complete", 2), ("three_prime_utr", "failed", None)],
+)
+def test_transcript_seed_channel_executes_and_reconciles_scoped_evidence(
+    tmp_path: Path, scope: str, status: str, site_count: int | None
+) -> None:
+    """Real Nextflow runs publish counted guide-seed evidence and withhold unknown UTR scans."""
+    runner = NextflowRunner()
+    workflow = runner.get_main_workflow()
+    assert workflow.is_file(), f"embedded workflow missing from the image: {workflow}"
+
+    guides = tmp_path / "guides.fasta"
+    guides.write_text(">g1\nAACCTGTAAG\n")
+    transcriptome = tmp_path / "transcriptome.fasta"
+    transcriptome.write_text(">tx1\nTACAGGTA\n")
+    guide_digest = hashlib.sha256(guides.read_bytes()).hexdigest()[:16]
+    plan = ScreeningPlan(
+        entries=(
+            ScreeningPlanEntry(
+                channel=ScreeningChannel.TRANSCRIPT_SEED,
+                species="human",
+                reference_id=None,
+                guide_set_digest=guide_digest,
+                search_settings={"scope": scope},
+            ),
+        )
+    )
+    plan_path = tmp_path / "screening_plan.json"
+    plan_path.write_text(plan.model_dump_json())
+    outdir = tmp_path / "out"
+    command = [
+        "nextflow",
+        "run",
+        str(workflow),
+        "-profile",
+        "local",
+        "--input",
+        str(guides),
+        "--outdir",
+        str(outdir),
+        "--transcriptome_species",
+        ",",
+        "--mirna_species",
+        ",",
+        "--transcript_seed_species",
+        "human",
+        "--transcript_seed_fastas",
+        f"human:{transcriptome}",
+        "--transcript_seed_scope",
+        scope,
+        "--evidence_plan",
+        str(plan_path),
+        "-work-dir",
+        str(tmp_path / "nextflow-work"),
+        "--ansi-log",
+        "false",
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        timeout=300,
+        check=False,
+    )
+    assert result.returncode == 0, f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
+
+    summary = json.loads((outdir / "transcript_seed/transcript_seed_human_summary.json").read_text())
+    assert summary["status"] == status
+    assert summary["site_count"] == site_count
+    assert summary["scope"] == scope
+    if status == "complete":
+        assert summary["per_guide"]["g1"]["site_counts_by_class"] == {
+            "6mer": 0,
+            "7mer-A1": 1,
+            "7mer-m8": 0,
+            "8mer": 1,
+        }
+    else:
+        assert summary["transcripts_unavailable"] == ["tx1"]
+        assert summary["per_guide"]["g1"]["status"] == "unknown"
+        assert summary["per_guide"]["g1"]["site_count"] is None
+
+    aggregate = json.loads((outdir / "aggregated/evidence.json").read_text())
+    assert aggregate["plan"]["entries"][0]["channel"] == "transcript_seed"
+    assert aggregate["unplanned"] == []
+    assert len(aggregate["evidence"]["entries"]) == 1
+    entry = aggregate["evidence"]["entries"][0]
+    assert (entry["channel"], entry["species"], entry["guide_set_digest"]) == (
+        "transcript_seed",
+        "human",
+        guide_digest,
+    )
+    assert entry["status"] == status
 
 
 @pytest.mark.integration
