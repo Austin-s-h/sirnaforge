@@ -114,3 +114,42 @@ Reference evidence smoke artifacts are under `/tmp/sirnaforge-pinned-smoke`.
 Performance raw evidence and pinned workload preparation are tracked under
 `scripts/performance/`; downloaded binaries and environments in `/tmp` are
 recreatable and must not be treated as persistent deployment dependencies.
+
+## Resume checkpoint — 2026-10-25
+
+This section supersedes pending-work statements above where they conflict.
+
+Committed and pushed on `dev`:
+
+- `2fcfd5a`: live CI formatting/docs repairs and annotated installed-CLI variant fixtures.
+- `dc09370`: optional explicit MEM3 backend integration and public workflow/report modes;
+  compact Quilt registration, nullable mode metadata, backend-specific index identity.
+- `8e766fb`: full release-116 four-species paired-target mapping tables and pinned provenance.
+- `ebd68f6`: performance harness type annotations required by `make lint` (`src scripts`).
+
+Issue #110 is closed with completion evidence. All 92,760 mapped transcript sites
+were independently checked against the four checksummed full cDNA FASTAs and their
+oriented query sequences. Public native import retained all 2,850 Ichihara rows.
+Nonhuman mappings remain sequence projections of human assays; efficacy labels are
+not transferred. Reference records are now tracked alongside the mapping tables.
+
+Validation: 2,103 offline host tests passed in 127.20 seconds; two additional
+compact/auto report CLI regressions passed. Ruff and format pass; mypy passes all
+131 source/script files; five standalone performance harness tests pass. The final
+warnings-as-errors offline docs build passes. Live CI on `ebd68f6` passed main
+push/PR checks and documentation. Docker CI remains under observation.
+
+A current Docker image built successfully, including offline Nextflow startup.
+The full local network-disabled installed-wheel suite passed 45 tests with one
+index-override failure that attempted a runtime download. The index-override case and both fresh-pin cases subsequently passed sequentially
+in 48.13 seconds; do not treat the earlier full local run as passing. Earlier source-overlay/stale
+image failures are not release evidence. A new fresh-pin container acceptance test
+checks valid and bad-checksum miRBase inputs through the public CLI, Nextflow
+producer and rendered report; both cases passed individually and together with the index-override rerun.
+
+Priority remains: finish CI; #123/#112 reference availability and honest evidence;
+#111–#114 report behavior across all modes; #101/#47 intent/seed/variant contracts;
+#82 public ZFN route and #122 actual MEM3 runtime; #46 reviewed GAA and #121 Pixi;
+#98/#102 independent biological validation. Keep partially completed issues open.
+In particular, #123 has bounded socket attempts but no proven strict total download
+deadline for a trickling server. No archive/mirror was automatically adopted.
