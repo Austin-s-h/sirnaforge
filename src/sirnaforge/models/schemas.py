@@ -556,7 +556,11 @@ class SiRNACandidateSchema(DataFrameModel):
         """
         allowed = {v.value for v in FilterEvaluation}
         declared_columns = {f"{filter_id}_verdict" for filter_id in DECLARED_FILTER_IDS}
-        verdict_columns = [column for column in df.columns if column in declared_columns or column.endswith("_verdict")]
+        verdict_columns = [
+            column
+            for column in df.columns
+            if column in declared_columns or (column.startswith("species_liability_") and column.endswith("_verdict"))
+        ]
         return all(bool(df[column].map(lambda v: v in allowed).all()) for column in verdict_columns)
 
     @dataframe_check_typed

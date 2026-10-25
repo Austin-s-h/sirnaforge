@@ -928,7 +928,9 @@ def _transcript_facts(
 def _scope_label(descriptor: Any) -> str:
     """Human-readable scope, emitted once per filter rather than once per guide."""
     label = ",".join(sorted(descriptor.scope.species)) or "all species"
-    if descriptor.scope.max_mismatches is not None:
+    if descriptor.scope.exact_mismatches is not None:
+        label += f", nm={descriptor.scope.exact_mismatches}"
+    elif descriptor.scope.max_mismatches is not None:
         label += f", nm<={descriptor.scope.max_mismatches}"
     return label
 

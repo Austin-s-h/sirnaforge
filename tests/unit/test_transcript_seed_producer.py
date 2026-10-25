@@ -3,13 +3,15 @@
 import json
 from types import SimpleNamespace
 
-from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
+import pytest
+
+from sirnaforge.config.run_policy import EntryPoint, RunPolicyError, resolve_run_policy
 from sirnaforge.core.screening_evidence import collect_evidence
 from sirnaforge.core.target_intent import TargetIntentRequest
 from sirnaforge.core.transcript_seed import run_transcript_seed_analysis
 from sirnaforge.models.evidence import EvidenceStatus
 from sirnaforge.models.policy import Requiredness, ScreeningChannel, TargetSelectivity
-from sirnaforge.models.sirna import SiRNACandidate
+from sirnaforge.models.sirna import DesignParameters, SiRNACandidate
 from sirnaforge.models.transcript_seed import (
     TRANSCRIPT_SEED_SITE_IDENTITY,
     TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION,
@@ -301,3 +303,12 @@ def test_workflow_config_forwards_seed_channel_independently_and_freezes_target_
     assert config.nextflow_config["transcript_seed_scope"] == "full_cdna"
     assert config.nextflow_config["transcript_seed_site_identity"] == TRANSCRIPT_SEED_SITE_IDENTITY
     assert config.max_transcript_seed_sites == 10
+
+
+def test_species_seed_liability_limits_require_the_species_scan(tmp_path) -> None:
+    """A configured seed ceiling cannot silently stay unevaluated because its species was never scanned."""
+    params = DesignParameters(
+        offtarget_filters={"species_liability_limits": {"human": {"transcript_seed_genes": 5, "action": "fail"}}}
+    )
+    with pytest.raises(RunPolicyError, match="require matching --transcript-seed-species.*human"):
+        WorkflowConfig(output_dir=tmp_path / "workflow", gene_query="TP53", design_params=params)

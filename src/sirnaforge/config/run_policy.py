@@ -376,6 +376,7 @@ class _FilterSpec:
     #: any non-human query the gate silently measured zero on real hits.
     scope_query_species: bool = False
     scope_max_mismatches: int | None = None
+    scope_exact_mismatches: int | None = None
     scope_hit_classes: tuple[str, ...] = ()
     transform: str | None = None
     evidence_exported: bool = True
@@ -528,7 +529,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition=f"Perfect-match genuine off-target transcriptome hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
         scope_query_species=True,
-        scope_max_mismatches=0,
+        scope_exact_mismatches=0,
         scope_hit_classes=_LIABILITY_CLASSES,
     ),
     _FilterSpec(
@@ -540,7 +541,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition=f"1-mismatch genuine off-target hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
         scope_query_species=True,
-        scope_max_mismatches=1,
+        scope_exact_mismatches=1,
         scope_hit_classes=_LIABILITY_CLASSES,
     ),
     _FilterSpec(
@@ -552,7 +553,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition=f"2-mismatch genuine off-target hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
         scope_query_species=True,
-        scope_max_mismatches=2,
+        scope_exact_mismatches=2,
         scope_hit_classes=_LIABILITY_CLASSES,
     ),
     _FilterSpec(
@@ -1157,6 +1158,7 @@ def _resolve_filters(  # noqa: PLR0912
                         if spec.scope_query_species
                         else frozenset(spec.scope_species),
                         max_mismatches=spec.scope_max_mismatches,
+                        exact_mismatches=spec.scope_exact_mismatches,
                         hit_classes=frozenset(spec.scope_hit_classes),
                     ),
                     action=action,
@@ -1170,18 +1172,18 @@ def _resolve_filters(  # noqa: PLR0912
         )
 
     species_limit_axes = {
-        "transcriptome_hits_0mm": (0, _LIABILITY_CLASSES),
-        "transcriptome_hits_1mm": (1, _LIABILITY_CLASSES),
-        "transcriptome_hits_2mm": (2, _LIABILITY_CLASSES),
-        "transcript_seed_sites": (None, ()),
-        "transcript_seed_transcripts": (None, ()),
-        "transcript_seed_genes": (None, ()),
+        "transcriptome_hits_0mm": (None, 0, _LIABILITY_CLASSES),
+        "transcriptome_hits_1mm": (None, 1, _LIABILITY_CLASSES),
+        "transcriptome_hits_2mm": (None, 2, _LIABILITY_CLASSES),
+        "transcript_seed_sites": (None, None, ()),
+        "transcript_seed_transcripts": (None, None, ()),
+        "transcript_seed_genes": (None, None, ()),
     }
     for species, limits in sorted(parameters.offtarget_filters.species_liability_limits.items()):
         slug = re.sub(r"[^a-z0-9]+", "_", species.casefold()).strip("_")
         if not slug:
             raise RunPolicyError("species liability limit keys must contain a letter or digit")
-        for metric, (max_mismatches, hit_classes) in species_limit_axes.items():
+        for metric, (max_mismatches, exact_mismatches, hit_classes) in species_limit_axes.items():
             threshold = getattr(limits, metric)
             if threshold is None:
                 continue
@@ -1197,6 +1199,7 @@ def _resolve_filters(  # noqa: PLR0912
                         scope=FilterScope(
                             species=frozenset({species}),
                             max_mismatches=max_mismatches,
+                            exact_mismatches=exact_mismatches,
                             hit_classes=frozenset(hit_classes),
                         ),
                         action=action,

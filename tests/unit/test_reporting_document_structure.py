@@ -92,7 +92,7 @@ assert not {f["filter_id"] for f in _FILTER_SPECS} & set(DECLARED_FILTER_IDS), (
     "the fixture's synthetic filter ids must stay disjoint from the real registry"
 )
 
-_SCOPE = {"species": [], "max_mismatches": None, "hit_classes": []}
+_SCOPE = {"species": [], "max_mismatches": None, "exact_mismatches": None, "hit_classes": []}
 
 
 def _manifest_filters() -> list[dict[str, object]]:

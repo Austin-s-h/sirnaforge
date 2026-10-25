@@ -286,6 +286,7 @@ class FilterScope(BaseModel):
     Attributes:
         species: Canonical species names counted. Empty means every screened species.
         max_mismatches: Highest guide-level mismatch count in scope. ``None`` means no ceiling.
+        exact_mismatches: Exact guide-level mismatch stratum, when the counter is not cumulative.
         hit_classes: ``HitClass`` values counted (``core/hit_classification.py``), held as strings
             so this contract stays a leaf module and #101 can add members without editing it.
             Empty means every class, including on-target isoform and repeat alignments.
@@ -293,6 +294,7 @@ class FilterScope(BaseModel):
 
     species: frozenset[str] = Field(default=frozenset(), description="Species counted; empty means all screened")
     max_mismatches: int | None = Field(default=None, ge=0, description="Mismatch ceiling in scope; None means no cap")
+    exact_mismatches: int | None = Field(default=None, ge=0, description="Exact mismatch stratum; None means any")
     hit_classes: frozenset[str] = Field(
         default=frozenset(), description="HitClass values counted; empty means every class"
     )
@@ -302,6 +304,8 @@ class FilterScope(BaseModel):
     @model_validator(mode="after")
     def no_blank_members(self) -> "FilterScope":
         """Reject a blank species or hit class, which would silently narrow a scope to nothing real."""
+        if self.exact_mismatches is not None and self.max_mismatches is not None:
+            raise ValueError("exact_mismatches and max_mismatches are mutually exclusive")
         for axis, values in (("species", self.species), ("hit_classes", self.hit_classes)):
             if any(not value.strip() for value in values):
                 raise ValueError(f"{axis} contains a blank entry; omit the axis instead of naming an empty value")

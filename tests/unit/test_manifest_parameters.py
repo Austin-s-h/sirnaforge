@@ -152,6 +152,7 @@ def test_manifest_records_the_resolved_run_policy(tmp_path):
     assert gates["max_off_target_count"]["scope"]["max_mismatches"] == 2
     assert gates["max_off_target_count"]["definition"]
     assert gates["max_transcriptome_hits_0mm"]["scope"]["species"] == ["human"]
+    assert gates["max_transcriptome_hits_0mm"]["scope"]["exact_mismatches"] == 0
     assert gates["max_mirna_1mm_seed"]["action"] == "off"
     assert gates["max_mirna_1mm_seed"]["evaluated"] is False
     assert gates["fail_on_high_risk_mirna"]["transform"]

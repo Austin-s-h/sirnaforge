@@ -636,6 +636,20 @@ class WorkflowConfig:
         self.transcript_seed_required_species = required_seed_species
         if self.max_transcript_seed_sites is not None and not normalized_seed_species:
             raise RunPolicyError("max_transcript_seed_sites requires at least one transcript-seed species")
+        seed_limited_species = {
+            species
+            for species, limits in self.design_params.offtarget_filters.species_liability_limits.items()
+            if any(
+                getattr(limits, metric) is not None
+                for metric in ("transcript_seed_sites", "transcript_seed_transcripts", "transcript_seed_genes")
+            )
+        }
+        missing_seed_species = seed_limited_species - set(normalized_seed_species)
+        if missing_seed_species:
+            names = ", ".join(sorted(missing_seed_species))
+            raise RunPolicyError(
+                f"species transcript-seed liability limits require matching --transcript-seed-species entries: {names}"
+            )
         if normalized_seed_species:
             requirements = list(self.resolved_policy.evidence_requirements.channel_requirements)
             existing_by_species = {entry.species: entry for entry in existing_seed_requirements}

@@ -880,9 +880,15 @@ def test_species_liability_limits_are_resolved_as_explicit_species_scoped_filter
     )
 
     perfect = policy.filter("species_liability_human_transcriptome_hits_0mm")
+    one_mismatch = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={"species_liability_limits": {"human": {"transcriptome_hits_1mm": 2}}},
+    ).filter("species_liability_human_transcriptome_hits_1mm")
     genes = policy.filter("species_liability_human_transcript_seed_genes")
     assert perfect.descriptor.scope.species == frozenset({"human"})
-    assert perfect.descriptor.scope.max_mismatches == 0
+    assert perfect.descriptor.scope.exact_mismatches == 0
+    assert one_mismatch.descriptor.scope.max_mismatches is None
+    assert one_mismatch.descriptor.scope.exact_mismatches == 1
     assert perfect.descriptor.threshold == 0
     assert perfect.descriptor.action is FilterAction.WARN
     assert genes.descriptor.scope.species == frozenset({"human"})
