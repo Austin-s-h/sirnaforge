@@ -100,6 +100,11 @@ def test_cli_target_intent_changes_candidate_eligibility(tmp_path, selectivity, 
             "human",
             "--max-transcript-seed-sites",
             "1000",
+            # This intent-focused fixture has only two synthetic isoforms, so the on-target sequence
+            # itself exceeds the default repeat fraction. Keep that gate visible as a warning while
+            # allowing the test to isolate the isoform-intent eligibility decision.
+            "--filter-action",
+            "max_repeat_transcript_fraction=warn",
         ],
         capture_output=True,
         text=True,
