@@ -802,11 +802,16 @@ class _TranscriptFacts:
         if self.explicit_identity:
             info = self.metadata.get(transcript, {})
             value = info.get("is_canonical")
-            if not info.get("canonical_source") or info.get("canonical_status") in {
-                "not_established",
-                "unresolved_input",
-                "unknown",
-            }:
+            if (
+                not info.get("canonical_source")
+                or not info.get("canonical_release")
+                or info.get("canonical_status")
+                in {
+                    "not_established",
+                    "unresolved_input",
+                    "unknown",
+                }
+            ):
                 return None
             return value if isinstance(value, bool) else None
         return None if self.source is None else transcript in self.canonical_ids
@@ -818,12 +823,35 @@ class _TranscriptFacts:
             key: info.get(key)
             for key in ("gene_id", "gene_symbol", "transcript_biotype", "canonical_source", "canonical_release")
         }
-        identity["transcript_link"] = source_link(
-            transcript, "ensembl", release=info.get("canonical_release"), resolver=self.resolvers.get("ensembl")
+        identity["transcript_link"] = (
+            source_link(
+                transcript, "ensembl", release=info.get("canonical_release"), resolver=self.resolvers.get("ensembl")
+            )
+            if info.get("canonical_release")
+            else {
+                "identifier": transcript,
+                "source": "ensembl",
+                "release": None,
+                "url": None,
+                "reason": "canonical_release_unavailable",
+            }
         )
         gene = info.get("gene_id")
-        identity["gene_link"] = source_link(
-            str(gene or ""), "ensembl", release=info.get("canonical_release"), resolver=self.resolvers.get("ensembl")
+        identity["gene_link"] = (
+            source_link(
+                str(gene or ""),
+                "ensembl",
+                release=info.get("canonical_release"),
+                resolver=self.resolvers.get("ensembl"),
+            )
+            if info.get("canonical_release")
+            else {
+                "identifier": str(gene or ""),
+                "source": "ensembl",
+                "release": None,
+                "url": None,
+                "reason": "canonical_release_unavailable",
+            }
         )
         return identity
 
@@ -873,6 +901,7 @@ def _transcript_facts(
             for tid, info in metadata.items()
             if info.get("is_canonical") is True
             and info.get("canonical_source")
+            and info.get("canonical_release")
             and info.get("canonical_status") not in {"not_established", "unresolved_input", "unknown"}
         }
         authorities = sorted(

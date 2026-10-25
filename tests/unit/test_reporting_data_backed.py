@@ -38,6 +38,10 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
         _hit_row(guide, "human", f"ENSTH{index}", 1, "off_target", f"GENE{index}") for index, guide in enumerate(guides)
     ]
     run = _write_run(tmp_path, candidates, hits)
+    mirna_table = run / "off_target/results/aggregated/combined_mirna_hits.tsv"
+    mirna_table.write_text(
+        f"qseq\tmirna_id\tdatabase\tcoord\tseed_mismatches\n{guides[-1]}\tHsa-Mir-24-P2_3p\tmirgenedb\t1\t0\n"
+    )
     manifest_path = run / "sirnaforge/manifest.json"
     run_manifest = json.loads(manifest_path.read_text())
     run_manifest["target_identity"] = {
@@ -94,6 +98,10 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
     detailed_hit_is_inline = "ENSTH1199" in html
     assert not detailed_hit_is_inline
     assert len(manifest["detail_shards"]) == 10
+    assert "Canonical transcript" in html
+    assert "Target transcript identity" in html
+    assert "function sourceAnchor" in html
+    assert "Named miRNA matches" in html
 
     node = shutil.which("node")
     if node is None:
@@ -104,6 +112,11 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
         f"vm.runInThisContext(fs.readFileSync({json.dumps(str(shard_path))},'utf8'));"
         f"const d=window.SF_DETAIL_SHARDS[9][{json.dumps(guides[-1])}];"
         "if(!d||d.hits.length!==1||d.hits[0].hit_symbol!=='GENE1199')process.exit(2);"
+        "if(d.isoforms.length!==1||d.isoforms[0].canonical!=='other_isoform')process.exit(3);"
+        "const tx=JSON.parse(d.isoforms[0].transcript_link);"
+        "if(tx.url!=='https://e110.ensembl.org/id/ENST1199')process.exit(4);"
+        "const mirna=d.mirna[0].source_link;"
+        "if(mirna.url!=='https://mirgenedb.org/show/hsa/Mir-24-P2')process.exit(5);"
         "process.stdout.write(String(Object.keys(window.SF_DETAIL_SHARDS[9]).length));"
     )
     result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=True, timeout=10)

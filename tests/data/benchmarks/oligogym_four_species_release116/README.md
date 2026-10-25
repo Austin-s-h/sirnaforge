@@ -5,8 +5,12 @@ sequence mappings; mouse, rat, and macaque matches are sequence projections, wit
 no efficacy label transfer or claim of measured activity in those species.
 Unsupported duplex geometries remain review-only.
 
-The manifests record input and output SHA-256 digests, Ensembl assembly/release,
-exact transcript sites, and mapping status. Reference acquisition records are
+The CSV artifacts are stored as deterministic gzip files to keep the checkout
+small. The human mapping gzip stream is split into numbered parts below the
+repository per-file size limit; concatenate the parts in lexical order before
+decompression. Manifests record the complete gzip-stream SHA-256 as `sha256`
+and the decompressed CSV SHA-256 as `uncompressed_sha256`, together with Ensembl
+assembly/release, exact transcript sites, and mapping status. Reference acquisition records are
 preserved in `references/`; their absolute FASTA paths describe the generation
 machine, not a dependency on an installed file at that location.
 
@@ -33,8 +37,16 @@ uv run python scripts/map_oligo_benchmarks_to_ensembl.py \
   --species-reference-manifest work/release116/mouse_manifest.json \
   --species-reference-manifest work/release116/rat_manifest.json \
   --species-reference-manifest work/release116/macaque_manifest.json
+
+uv run python scripts/package_four_species_mappings.py \
+  --artifact-dir work/mapped116
 ```
 
 The reference FASTAs and upstream assay extracts are not bundled here. Existing
 upstream provenance and redistribution limitations still apply; these generated
 mapping tables do not establish an independent held-out validation cohort.
+
+Decompress `species/human/observations.csv.gz` before passing it to the native
+benchmark importer. Reconstruct the human mapping table by concatenating the parts:
+`cat species/human/mappings.csv.gz.part-* | gzip -dc > work/human-mappings.csv`.
+The same command works on an unsplit mapping file by passing that single `.gz` file.

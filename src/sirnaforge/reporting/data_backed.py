@@ -35,6 +35,7 @@ from sirnaforge.reporting.evidence import (
     mirna_evidence,
     report_evidence,
 )
+from sirnaforge.reporting.links import source_link
 from sirnaforge.reporting.payload import (
     _VERDICT_CODE,
     REPORT_READ_CHUNK_ROWS,
@@ -226,7 +227,10 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
             for gate in panel.filters
         ],
     }
-    identity = manifest.get("target_identity") if isinstance(manifest.get("target_identity"), dict) else {}
+    identity_value = manifest.get("target_identity")
+    identity: dict[str, Any] = identity_value if isinstance(identity_value, dict) else {}
+    identity_resolvers = identity.get("resolvers")
+    identity_resolvers = identity_resolvers if isinstance(identity_resolvers, dict) else {}
     identity_rows_raw = identity.get("transcripts") if isinstance(identity, dict) else []
     identity_rows = identity_rows_raw if isinstance(identity_rows_raw, list) else []
     identity_by_transcript = {
@@ -239,6 +243,7 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
         for transcript, entry in identity_by_transcript.items()
         if entry.get("is_canonical") is True
         and entry.get("canonical_source")
+        and entry.get("canonical_release")
         and entry.get("canonical_status") not in {"not_established", "unresolved_input", "unknown"}
     }
     store.manifest["target_identity"] = identity
@@ -284,6 +289,8 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
                 ("canonical_status", pa.string()),
                 ("canonical_source", pa.string()),
                 ("canonical_release", pa.string()),
+                ("transcript_link", pa.string()),
+                ("gene_link", pa.string()),
                 ("candidate_rows", pa.int64()),
             ]
         ),
@@ -338,6 +345,7 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
                 if tx in canonical_ids
                 else "other_isoform"
                 if identity_row.get("canonical_source")
+                and identity_row.get("canonical_release")
                 and canonical_status not in {"not_established", "unresolved_input", "unknown"}
                 else "unknown"
             )
@@ -352,6 +360,40 @@ def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, poli
                     "canonical_status": canonical_status,
                     "canonical_source": identity_row.get("canonical_source"),
                     "canonical_release": identity_row.get("canonical_release"),
+                    "transcript_link": json.dumps(
+                        source_link(
+                            tx,
+                            "ensembl",
+                            release=identity_row.get("canonical_release"),
+                            resolver=identity_resolvers.get("ensembl"),
+                        )
+                        if identity_row.get("canonical_release")
+                        else {
+                            "identifier": tx,
+                            "source": "ensembl",
+                            "release": None,
+                            "url": None,
+                            "reason": "canonical_release_unavailable",
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "gene_link": json.dumps(
+                        source_link(
+                            str(identity_row.get("gene_id") or row.get("gene_id") or ""),
+                            "ensembl",
+                            release=identity_row.get("canonical_release"),
+                            resolver=identity_resolvers.get("ensembl"),
+                        )
+                        if identity_row.get("canonical_release")
+                        else {
+                            "identifier": str(identity_row.get("gene_id") or row.get("gene_id") or ""),
+                            "source": "ensembl",
+                            "release": None,
+                            "url": None,
+                            "reason": "canonical_release_unavailable",
+                        },
+                        separators=(",", ":"),
+                    ),
                     "candidate_rows": sum(1 for item in rows if str(item.get("transcript_id") or "") == tx),
                 }
             )
@@ -561,6 +603,13 @@ def _write_detail_shards(store: ReportArtifactStore, shard_dir: Path) -> None:
         pq.read_table(store.root / store.manifest["tables"]["guides"]["file"], columns=["guide"]).column(0).to_pylist()
     )
     guide_shard = {str(guide): i // _SHARD_GUIDES for i, guide in enumerate(guides)}
+    target_identity = store.manifest.get("target_identity")
+    resolver_value = (
+        target_identity.get("resolvers")
+        if isinstance(target_identity, dict) and isinstance(target_identity.get("resolvers"), dict)
+        else None
+    )
+    resolvers: dict[str, Any] = resolver_value if isinstance(resolver_value, dict) else {}
     db_path = store.root / ".detail-shards.sqlite"
     db = sqlite3.connect(db_path)
     db.execute("PRAGMA journal_mode=OFF")
@@ -570,6 +619,7 @@ def _write_detail_shards(store: ReportArtifactStore, shard_dir: Path) -> None:
         ("candidates", "guide_sequence", "candidates"),
         ("hits", "qseq", "hits"),
         ("mirna", "qseq", "mirna"),
+        ("isoforms", "guide", "isoforms"),
     )
     for table, guide_column, kind in detail_sources:
         if table not in store.manifest["tables"]:
@@ -580,6 +630,16 @@ def _write_detail_shards(store: ReportArtifactStore, shard_dir: Path) -> None:
                 guide = _normalise_guide(row.get(guide_column))
                 shard_no = guide_shard.get(guide)
                 if shard_no is not None:
+                    if kind == "mirna":
+                        identifier = next(
+                            (str(row[key]) for key in ("mirna_id", "rname", "mirna", "name") if row.get(key)),
+                            "",
+                        )
+                        row["source_link"] = source_link(
+                            identifier,
+                            "mirgenedb",
+                            resolver=resolvers.get("mirgenedb"),
+                        )
                     entries.append((shard_no, guide, kind, json.dumps(row, separators=(",", ":"))))
             db.executemany("INSERT INTO detail VALUES (?,?,?,?)", entries)
     db.execute("CREATE INDEX detail_shard ON detail(shard,guide)")
@@ -590,7 +650,7 @@ def _write_detail_shards(store: ReportArtifactStore, shard_dir: Path) -> None:
         for guide, kind, payload in db.execute(
             "SELECT guide,kind,payload FROM detail WHERE shard=? ORDER BY guide,kind", (shard_no,)
         ):
-            data.setdefault(str(guide), {"candidates": [], "hits": [], "mirna": []})[str(kind)].append(
+            data.setdefault(str(guide), {"candidates": [], "hits": [], "mirna": [], "isoforms": []})[str(kind)].append(
                 json.loads(payload)
             )
         name = f"guide-{shard_no:05d}.js"
@@ -809,6 +869,20 @@ function renderRows(){const q=document.querySelector('#search').value.trim().toU
  document.querySelectorAll('[data-guide]').forEach(b=>b.addEventListener('click',()=>showGuide(b.dataset.guide)));
 }
 function loadShard(i){return new Promise((resolve,reject)=>{if(window.SF_DETAIL_SHARDS?.[i])return resolve();const s=document.createElement('script');s.src=`${SHARD_DIR}/guide-${String(i).padStart(5,'0')}.js`;s.onload=resolve;s.onerror=()=>reject(Error('Could not load local detail shard'));document.head.appendChild(s);});}
+function sourceAnchor(link,label){
+ if(!link||!link.url)return esc(label);
+ try{const url=new URL(link.url),host=url.hostname;
+  if(url.protocol!=='https:'||url.username||url.password||url.port
+   ||!(/^(?:(?:www|e[0-9]+|[a-z]{3}[0-9]{4}\.archive)\.)?ensembl\.org$/.test(host)
+       ||/^(?:www\.)?mirgenedb\.org$/.test(host)))return esc(label);
+ }catch(_e){return esc(label);}
+ return `<a href="${esc(link.url)}" target="_blank" rel="noopener noreferrer" title="Open source record · release ${esc(link.release||'unknown')}">${esc(label)}</a>`;
+}
+function renderMirnaRows(rows){
+ return rows.map(m=>{const name=m.mirna_id||m.rname||m.mirna||m.name||'unnamed';
+  return `<tr><td>${sourceAnchor(m.source_link,name)}</td><td>${esc(m.database||'source unknown')}</td><td>${esc(m.coord??'—')}</td><td>${esc(m.seed_mismatches??'—')}</td></tr>`;
+ }).join('');
+}
 function gateEvidenceCopy(row){
  const diagnostic=JSON.parse(row.report_evidence||'{}'), triples=JSON.parse(row.gates);
  const notices=(diagnostic.gates||[]).filter(e=>e.state==='unavailable'||e.state==='not_established').map(e=>{
@@ -825,7 +899,14 @@ function gateEvidenceCopy(row){
  return notices.length?`<h3>Unresolved gate evidence</h3><ul>${notices.join('')}</ul>`:'';
 }
 function evidenceCopy(row){const warning=M.evidence_warning_registry[row.mirna_warning_id];return warning?`<div data-warning-id="${esc(row.mirna_warning_id)}"><h3>${esc(warning.title)}</h3><p>${esc(warning.body)}</p><p>${esc(warning.remediation)}</p></div>`:'<p>miRNA screening completed for this submitted guide; the retained rows describe matches under its declared reference and settings.</p>';}
-async function showGuide(guide){const row=G.find(g=>g.guide===guide);if(!row)return;const panel=document.querySelector('#details');panel.textContent='Loading guide detail…';try{await loadShard(row.shard);const d=window.SF_DETAIL_SHARDS[row.shard][guide];panel.innerHTML=`<h2>${esc(guide)} · ${esc(row.status)}</h2>${gateEvidenceCopy(row)}${evidenceCopy(row)}<p>${row.candidate_rows} candidate rows · ${d.hits.length} classified hit rows · ${d.mirna.length} miRNA rows</p><h3>Candidate rows</h3><pre>${esc(JSON.stringify(d.candidates,null,2))}</pre><h3>Off-target rows</h3><pre>${esc(JSON.stringify(d.hits,null,2))}</pre><h3>miRNA rows</h3><pre>${esc(JSON.stringify(d.mirna,null,2))}</pre>`;}catch(e){panel.textContent=e.message;}}
+async function showGuide(guide){const row=G.find(g=>g.guide===guide);if(!row)return;const panel=document.querySelector('#details');panel.textContent='Loading guide detail…';try{await loadShard(row.shard);const d=window.SF_DETAIL_SHARDS[row.shard][guide];
+ const isoforms=(d.isoforms||[]).map(i=>{const identity=i.canonical==='canonical'?'Canonical':i.canonical==='other_isoform'?'Other isoform':'Unknown';
+  const context=[i.gene_symbol||i.gene_id?esc(i.gene_symbol||'symbol unknown')+' · '+sourceAnchor(JSON.parse(i.gene_link||'{}'),i.gene_id||'gene ID unknown'):'Target gene unknown',
+   sourceAnchor(JSON.parse(i.transcript_link||'{}'),i.transcript_id),esc(i.transcript_biotype||'biotype unknown')].join('<br>');
+  return `<tr><td>${context}</td><td>${identity}<br>${esc(i.canonical_source||'authority unknown')} · release ${esc(i.canonical_release||'unknown')}<br>status: ${esc(i.canonical_status||'unknown')}</td><td>${i.candidate_rows}</td></tr>`;
+ }).join('');
+ const canonical=row.canonical_hit==='hit'?'hit':row.canonical_hit==='not_hit'?'not hit':'not established';
+ panel.innerHTML=`<h2>${esc(guide)} · ${esc(row.status)}</h2>${gateEvidenceCopy(row)}${evidenceCopy(row)}<h3>Canonical transcript</h3><p>Guide is ${canonical} on the canonical transcript.</p><h3>Target transcript identity</h3>${isoforms?`<table><thead><tr><th>Gene · transcript</th><th>Canonical status and provenance</th><th>Candidate rows</th></tr></thead><tbody>${isoforms}</tbody></table>`:'<p>No transcript identity is established for this guide.</p>'}<p>${row.candidate_rows} candidate rows · ${d.hits.length} classified hit rows · ${d.mirna.length} miRNA rows</p><h3>Named miRNA matches</h3>${d.mirna.length?`<table><thead><tr><th>miRNA</th><th>Database</th><th>Coordinate</th><th>Seed mismatches</th></tr></thead><tbody>${renderMirnaRows(d.mirna)}</tbody></table>`:'<p>No named miRNA matches were recorded.</p>'}<h3>Candidate rows</h3><pre>${esc(JSON.stringify(d.candidates,null,2))}</pre><h3>Off-target rows</h3><pre>${esc(JSON.stringify(d.hits,null,2))}</pre><h3>miRNA rows</h3><pre>${esc(JSON.stringify(d.mirna,null,2))}</pre>`;}catch(e){panel.textContent=e.message;}}
 document.querySelector('#counts').textContent='Gate results: '+Object.entries(STATUS_COUNTS).map(([k,v])=>`${k}: ${v}`).join(' · ')+` · total ${G.length} · ${M.summary.passes_without_unresolved_evidence} passes without unresolved evidence`;
 document.querySelector('#gatecounts').textContent=(M.summary.filters||[]).map(f=>`${f.filter_id}: ${f.rejects} reject, ${f.warns} warn, ${f.unknowns} unknown`).join(' · ');
 for(const f of M.summary.filters){const o=document.createElement('option');o.value=f.filter_id;o.textContent=f.filter_id;document.querySelector('#gate').appendChild(o);}

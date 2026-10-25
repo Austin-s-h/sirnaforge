@@ -218,9 +218,13 @@ mouse GRCm39, rat GRCr8, and macaque Mmul_10. The four tables contain 66,204,
 18,624, 2,782, and 5,150 exact transcript sites respectively. Every mapped interval
 and oriented query was checked against its checksummed full cDNA FASTA. Human
 assays remain human observations: other species are explicitly sequence projections,
-with no transferred efficacy labels. See that directory's README for regeneration.
-For human native imports, use `species/human/observations.csv`,
-`species/human/mappings.csv`, and `references/human.json` together.
+with no transferred efficacy labels. See that directory's README for regeneration. Generated CSVs can be deterministically
+compressed and re-manifested with `scripts/package_four_species_mappings.py`.
+The release-116 tables are stored as deterministic `.csv.gz` files. For human
+native imports, decompress `species/human/observations.csv.gz` and concatenate
+the numbered human mapping gzip parts before decompression. Use the resulting CSVs
+with `references/human.json`. The manifests record SHA-256 for the complete
+compressed stream and decompressed CSV bytes.
 
 The artifact checksums each native input, retains all exact transcript hits in
 `native_mappings.csv`, and records 1-based transcript coordinates, gene/transcript IDs, strand, and

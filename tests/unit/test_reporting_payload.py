@@ -1404,6 +1404,35 @@ def test_explicit_unestablished_identity_overrides_legacy_canonical_filename(
 
 
 @pytest.mark.unit
+def test_explicit_canonical_identity_without_release_remains_unknown(tmp_path: Path) -> None:
+    """A source name without its release cannot establish versioned canonical identity."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["target_identity"] = {
+        "schema_version": 1,
+        "transcripts": [
+            {
+                "transcript_id": "ENST1",
+                "is_canonical": True,
+                "canonical_status": "established",
+                "canonical_source": "Ensembl REST lookup",
+            }
+        ],
+    }
+    path.write_text(json.dumps(manifest))
+
+    payload = build_payload(run)
+
+    assert payload.run["canonical_transcript_ids"] == []
+    assert payload.guides[0].canonical_hit == "not_established"
+    assert payload.guides[0].isoforms[0]["canonical"] is None
+    html = render_html(payload)
+    assert "release unknown" in html
+    assert "www.ensembl.org/id/ENST1" not in html
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("status", "completed", "attempted", "message", "unavailable"),
     [
