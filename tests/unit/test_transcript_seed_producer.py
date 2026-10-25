@@ -28,11 +28,16 @@ def test_producer_scans_full_reference_and_publishes_counts_and_reference_checks
     assert result["transcript_count"] == 1
     assert result["transcripts_scanned"] == 2
     assert result["per_guide"]["guide-1"]["site_count"] == 2
+    assert result["per_guide"]["guide-1"]["gene_count_is_lower_bound"] is True
+    assert result["per_guide"]["guide-1"]["unresolved_gene_site_count"] == 2
     envelopes = collect_evidence(tmp_path / "out")
     assert len(envelopes) == 1
     assert envelopes[0].entry.channel is ScreeningChannel.TRANSCRIPT_SEED
     assert envelopes[0].entry.status is EvidenceStatus.COMPLETE
     assert envelopes[0].entry.counts.sites.value == 2
+    assert envelopes[0].entry.counts.distinct_genes.value == 0
+    assert envelopes[0].entry.counts.distinct_genes.is_lower_bound is True
+    assert envelopes[0].entry.counts.unresolved_gene_sites.value == 2
     summary = json.loads((tmp_path / "out" / "transcript_seed_human_summary.json").read_text())
     assert summary["reference_sha256"] == result["reference_sha256"]
 

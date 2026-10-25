@@ -225,6 +225,7 @@ def run_transcript_seed_analysis(
     per_guide: dict[str, dict[str, object]] = {}
     for guide_id in guides:
         guide_sites = [site for site in scan.sites if site.guide_id == guide_id]
+        unresolved_gene_site_count = sum(site.gene_id is None for site in guide_sites)
         per_guide[guide_id] = {
             "status": "complete" if scan_complete else "unknown",
             "site_count": len(guide_sites) if scan_complete else None,
@@ -236,7 +237,8 @@ def run_transcript_seed_analysis(
             "gene_count": len({site.gene_id for site in guide_sites if site.gene_id is not None})
             if scan_complete
             else None,
-            "unresolved_gene_site_count": sum(site.gene_id is None for site in guide_sites) if scan_complete else None,
+            "gene_count_is_lower_bound": unresolved_gene_site_count > 0 if scan_complete else None,
+            "unresolved_gene_site_count": unresolved_gene_site_count if scan_complete else None,
         }
 
     payload: dict[str, object] = {
@@ -258,6 +260,7 @@ def run_transcript_seed_analysis(
         "transcript_count": scan.transcript_count if scan_complete else None,
         "gene_count": scan.gene_count if scan_complete else None,
         "unresolved_gene_site_count": sum(site.gene_id is None for site in scan.sites) if scan_complete else None,
+        "gene_count_is_lower_bound": scan.unresolved_gene_count > 0 if scan_complete else None,
         "sites": [site.model_dump(mode="json") for site in scan.sites],
         "per_guide": per_guide,
     }
@@ -272,7 +275,10 @@ def run_transcript_seed_analysis(
         counts=ObservedCounts(
             sites=ObservedCount(value=scan.site_count if scan_complete else None),
             distinct_transcripts=ObservedCount(value=scan.transcript_count if scan_complete else None),
-            distinct_genes=ObservedCount(value=scan.gene_count if scan_complete else None),
+            distinct_genes=ObservedCount(
+                value=scan.gene_count if scan_complete else None,
+                is_lower_bound=scan.unresolved_gene_count > 0 if scan_complete else False,
+            ),
             unresolved_gene_sites=ObservedCount(
                 value=sum(site.gene_id is None for site in scan.sites) if scan_complete else None
             ),
