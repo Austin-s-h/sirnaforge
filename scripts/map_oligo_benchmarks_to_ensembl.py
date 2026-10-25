@@ -495,7 +495,9 @@ def main() -> None:
         if args.cdna_fasta is not None:
             parser.error("--species-reference-manifest cannot be combined with --cdna-fasta")
         try:
-            result = prepare_four_species(args.source_dir, args.output_dir, tuple(args.species_reference_manifest), selected)
+            result = prepare_four_species(
+                args.source_dir, args.output_dir, tuple(args.species_reference_manifest), selected
+            )
         except NativeMappingInputError as exc:
             parser.error(str(exc))
     else:

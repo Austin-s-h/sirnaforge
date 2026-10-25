@@ -108,6 +108,7 @@ Advanced runtime controls:
   this flag does not switch execution to the Nextflow-backed search path (tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82)).
 - `SIRNAFORGE_ZFN_SHARDING_JSON='{"enabled": true, "chunk_size_mb": 3, "overlap_bp": 40000}'` for custom shard/window behavior on large references.
 
+(variant-targeting-documented-runs)=
 ## Variant Targeting (documented runs)
 
 Five offline variant-resolution runs were executed with the bundled FASTA (`examples/sample_transcripts.fasta`) and demo VCF (`examples/variant_demo.vcf`). Minimal outputs live under `docs/documented_workflows/`:
@@ -138,7 +139,6 @@ Inside the container, Nextflow uses the `local` profile automatically—no Docke
 :::
 
 (nextflow-pipeline)=
-
 ## Nextflow Pipeline
 
 siRNAforge runs off-target analysis via an embedded Nextflow workflow.

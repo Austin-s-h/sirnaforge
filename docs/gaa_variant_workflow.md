@@ -4,7 +4,7 @@ The earlier illustrative GAA command used an unverified transcript/variant pairi
 
 ## Prepare pinned local inputs
 
-Obtain the GENCODE GTF and transcript FASTA from the same release and GRCh38 assembly, and retain the release identifier plus SHA-256 checksums with the files. See [annotation_providers.md](annotation_providers.md#obtain-a-pinned-release) for official download and format references. Keep a source VCF containing the exact GRCh38 SNV after checking its chromosome, 1-based position, REF, ALT, and transcript mapping against that pinned reference. Do not derive genomic coordinates by guessing from a coding HGVS string.
+Obtain the GENCODE GTF and transcript FASTA from the same release and GRCh38 assembly, and retain the release identifier plus SHA-256 checksums with the files. See {ref}`annotation_providers.md <obtain-a-pinned-release>` for official download and format references. Keep a source VCF containing the exact GRCh38 SNV after checking its chromosome, 1-based position, REF, ALT, and transcript mapping against that pinned reference. Do not derive genomic coordinates by guessing from a coding HGVS string.
 
 Configure the files and run the current allele-aware workflow:
 
@@ -28,7 +28,7 @@ Review `results/gaa_variant_review/logs/resolved_variants.json`, the workflow ma
 
 ## Deterministic synthetic software demo
 
-The repository's deterministic variant-resolution demo uses the bundled transcript FASTA and a synthetic/demo VCF, not a GAA variant or biological result. From the repository root, run the `avoid` or `target` example in [workflows.md](workflows.md#variant-targeting-documented-runs) using `examples/sample_transcripts.fasta` and `examples/variant_demo.vcf`. These files exercise the current CLI and report format without making claims about a real GAA transcript or variant.
+The repository's deterministic variant-resolution demo uses the bundled transcript FASTA and a synthetic/demo VCF, not a GAA variant or biological result. From the repository root, run the `avoid` or `target` example in {ref}`workflows.md <variant-targeting-documented-runs>` using `examples/sample_transcripts.fasta` and `examples/variant_demo.vcf`. These files exercise the current CLI and report format without making claims about a real GAA transcript or variant.
 
 ## GAA acceptance status
 
