@@ -35,6 +35,7 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
     n_guides = 1_200
     guides = [_base4(index) for index in range(n_guides)]
     candidates = [_candidate_row(f"c{index}", guide, f"ENST{index}", index + 1) for index, guide in enumerate(guides)]
+    candidates.append(_candidate_row("c1199-alt", guides[-1], "ENST_ALT", n_guides + 1))
     hits = [
         _hit_row(guide, "human", f"ENSTH{index}", 1, "off_target", f"GENE{index}") for index, guide in enumerate(guides)
     ]
@@ -59,6 +60,18 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
                 "canonical_release": "110",
             }
             for index in range(n_guides)
+        ]
+        + [
+            {
+                "transcript_id": "ENST_ALT",
+                "gene_id": "ENSG1199",
+                "gene_symbol": "GENE1199",
+                "transcript_biotype": "protein_coding",
+                "is_canonical": False,
+                "canonical_status": "established",
+                "canonical_source": "test authority",
+                "canonical_release": "110",
+            }
         ],
         "resolvers": {"ensembl": {"template": "https://www.ensembl.org/id/{identifier}"}},
     }
@@ -80,7 +93,7 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
     # evidence gates observe no corresponding metrics in the fixture. The report must therefore
     # retain every guide as unknown rather than infer a pass from the run label.
     assert manifest["summary"]["status_counts"] == {"fail": 0, "unknown": n_guides, "warn": 0, "pass": 0}
-    assert manifest["summary"]["candidate_rows"] == n_guides
+    assert manifest["summary"]["candidate_rows"] == n_guides + 1
     assert manifest["summary"]["gene_filter_available"] is True
     assert len(manifest["summary"]["target_gene_options"]) == n_guides
     assert manifest["guide_index"]["rows"] == n_guides
@@ -123,8 +136,9 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
         f"vm.runInThisContext(fs.readFileSync({json.dumps(str(shard_path))},'utf8'));"
         f"const d=window.SF_DETAIL_SHARDS[9][{json.dumps(guides[-1])}];"
         "if(!d||d.hits.length!==1||d.hits[0].hit_symbol!=='GENE1199')process.exit(2);"
-        "if(d.isoforms.length!==1||d.isoforms[0].canonical!=='other_isoform')process.exit(3);"
-        "const tx=JSON.parse(d.isoforms[0].transcript_link);"
+        "if(d.isoforms.length!==2)process.exit(3);"
+        "const iso=d.isoforms.find(i=>i.transcript_id==='ENST1199');if(!iso||iso.canonical!=='other_isoform')process.exit(13);"
+        "const tx=JSON.parse(iso.transcript_link);"
         "if(tx.url!=='https://e110.ensembl.org/id/ENST1199')process.exit(4);"
         "const mirna=d.mirna[0].source_link;"
         "if(mirna.url!=='https://mirgenedb.org/show/hsa/Mir-24-P2')process.exit(5);"
@@ -149,10 +163,11 @@ global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElem
         + f"vm.runInThisContext({json.dumps(html_scripts[0])});\n"
         + f"vm.runInThisContext(fs.readFileSync({json.dumps(str(shard_path))},'utf8'));\n"
         + f"const detailData=window.SF_DETAIL_SHARDS[9][{json.dumps(guides[-1])}];"
-        + "const map=candidateMap(detailData.candidates,'ENST1199',detailData.isoforms[0]);"
+        + "const txInfo=detailData.isoforms.find(i=>i.transcript_id==='ENST1199');"
+        + "const map=candidateMap(detailData.candidates,'ENST1199',txInfo);"
         + "if(!map.includes('role=\"img\"')||!map.includes('transcript position')||!map.includes('GENE1199 · ENST1199 · Other isoform'))process.exit(11);"
         + "const context=candidateContext(detailData.candidates,detailData.isoforms);"
-        + "if(!context.includes('GENE1199 · ENST1199 · Other isoform')||!context.includes('candidate-transcript'))process.exit(12);"
+        + "if(!context.includes('GENE1199 · ENST1199 · Other isoform')||!context.includes('GENE1199 · ENST_ALT · Other isoform')||!context.includes('candidate-transcript'))process.exit(12);"
         + "elements['#geneenable'].checked=true;elements['#targetgene'].value='id:ENSG1199';elements['#geneenable'].handlers.change();"
         + "if(elements['#visible-count'].textContent!=='1 guides match current filters')process.exit(6);"
         + "if(!window.location.hash.includes('gene=id%3AENSG1199'))process.exit(7);"
