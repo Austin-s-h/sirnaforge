@@ -122,6 +122,28 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
     result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=True, timeout=10)
     assert result.stdout == "48"
 
+    html_scripts = re.findall(r"<script>(.*?)</script>", html, flags=re.DOTALL)
+    assert len(html_scripts) == 1
+    ui_script = tmp_path / "check-data-backed-ui.js"
+    ui_script.write_text(
+        r"""
+const fs=require('fs'),vm=require('vm');global.window={};
+const elements={};function el(){return {value:'',selectedIndex:0,checked:false,textContent:'',innerHTML:'',disabled:false,handlers:{},addEventListener(k,fn){this.handlers[k]=fn;},appendChild(){}}}
+for(const id of ['#counts','#gatecounts','#unresolved-only','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#details'])elements[id]=el();
+elements['#gate'].appendChild=()=>{};
+global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElement:()=>el(),head:{appendChild:()=>{}}};
+"""
+        + f"vm.runInThisContext({json.dumps(html_scripts[0])});\n"
+        + f"vm.runInThisContext(fs.readFileSync({json.dumps(str(shard_path))},'utf8'));\n"
+        + f"showGuide({json.dumps(guides[-1])}).then(()=>{{"
+        + "const detail=elements['#details'].innerHTML;"
+        + "for(const value of ['Canonical transcript','Other isoform','https://e110.ensembl.org/id/ENST1199','https://mirgenedb.org/show/hsa/Mir-24-P2'])"
+        + "if(!detail.includes(value))process.exit(2);"
+        + "process.stdout.write('ok');});\n"
+    )
+    ui_result = subprocess.run([node, str(ui_script)], text=True, capture_output=True, check=True, timeout=10)
+    assert ui_result.stdout == "ok"
+
 
 @pytest.mark.unit
 def test_data_backed_writer_does_not_call_monolithic_payload_builder(
