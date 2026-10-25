@@ -2275,6 +2275,8 @@ class SiRNAWorkflow:
         for transcript in transcripts:
             unresolved = bool(self.config.input_fasta)
             authority = transcript.canonical_source if not unresolved else None
+            release = transcript.canonical_release if authority else None
+            established = bool(authority and release)
             self._target_transcript_metadata.append(
                 {
                     "transcript_id": transcript.transcript_id,
@@ -2282,10 +2284,10 @@ class SiRNAWorkflow:
                     "gene_symbol": transcript.gene_name if not unresolved else None,
                     "transcript_biotype": transcript.transcript_type,
                     "identity_status": "unresolved_input" if unresolved else "retrieved",
-                    "is_canonical": transcript.is_canonical if authority else None,
+                    "is_canonical": transcript.is_canonical if established else None,
                     "canonical_source": authority,
-                    "canonical_release": transcript.canonical_release if authority else None,
-                    "canonical_status": "established" if authority else "not_established",
+                    "canonical_release": release,
+                    "canonical_status": "established" if established else "not_established",
                 }
             )
 

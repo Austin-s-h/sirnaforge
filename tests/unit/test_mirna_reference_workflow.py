@@ -119,9 +119,16 @@ def test_skipped_run_does_not_reuse_stale_task_completion(tmp_path):
     assert contract["mirna"]["screening"]["status"] == "skipped"
 
 
-@pytest.mark.parametrize("authority", [None, "Ensembl REST lookup"])
-def test_target_identity_requires_real_canonical_authority(tmp_path, authority):
-    """A provider's heuristic boolean cannot establish canonical identity without provenance."""
+@pytest.mark.parametrize(
+    ("authority", "release", "expected_canonical"),
+    [
+        (None, None, None),
+        ("Ensembl REST lookup", None, None),
+        ("Ensembl REST lookup", "110", True),
+    ],
+)
+def test_target_identity_requires_versioned_canonical_authority(tmp_path, authority, release, expected_canonical):
+    """A provider's boolean is established only with a named source and its release."""
     workflow = SiRNAWorkflow(WorkflowConfig(output_dir=tmp_path / "run", gene_query="TP53"))
     transcript = TranscriptInfo(
         transcript_id="ENST1",
@@ -130,12 +137,14 @@ def test_target_identity_requires_real_canonical_authority(tmp_path, authority):
         database=DatabaseType.ENSEMBL,
         is_canonical=True,
         canonical_source=authority,
-        canonical_release="test-release" if authority else None,
+        canonical_release=release,
     )
     workflow._record_target_identity([transcript])
     identity = workflow._target_transcript_metadata[0]
-    assert identity["is_canonical"] is (True if authority else None)
+    assert identity["is_canonical"] is expected_canonical
     assert identity["canonical_source"] == authority
+    assert identity["canonical_release"] == release
+    assert identity["canonical_status"] == ("established" if expected_canonical else "not_established")
 
 
 @pytest.mark.parametrize("allowed,digest", [(False, "current"), (True, "other")])
