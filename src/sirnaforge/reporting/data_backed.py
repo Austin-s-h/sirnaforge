@@ -161,10 +161,15 @@ def write_report_from_run(
     phase_started = time.perf_counter()
     _write_detail_shards(store, shard_dir)
     phases["detail_shard_write"] = time.perf_counter() - phase_started
+    guide_index_file: str | None = None
     if selected == "paged_single_file":
         detail_directory = None
         detail_loading = "inline_paged_data"
     else:
+        phase_started = time.perf_counter()
+        guide_index = _write_guide_index(store, shard_dir)
+        phases["guide_index_write"] = time.perf_counter() - phase_started
+        guide_index_file = str(guide_index["file"])
         detail_directory = output_path.with_name(f"{output_path.stem}.details")
         if detail_directory.exists():
             shutil.rmtree(detail_directory)
@@ -175,6 +180,7 @@ def write_report_from_run(
         "entrypoint": output_path.name,
         "detail_directory": detail_directory_name if selected == "data_backed" else None,
         "detail_loading": detail_loading,
+        "guide_index_file": guide_index_file,
         "offline_file_origin_supported": True,
     }
     store.manifest["diagnostics"] = {
@@ -730,14 +736,37 @@ def _write_detail_shards(store: ReportArtifactStore, shard_dir: Path) -> None:
     store.manifest["tables"].update(_table_metadata(store, "guides"))
 
 
-def _write_data_backed_html(store: ReportArtifactStore, output: Path, shard_dir: str) -> None:
+def _write_guide_index(store: ReportArtifactStore, shard_dir: Path) -> dict[str, Any]:
+    """Publish the summary rows as a checksummed script beside data-backed HTML.
+
+    Keeping the guide index out of the HTML preserves file-origin loading while avoiding a
+    guide-count-proportional JSON tail in the entrypoint. Detail shards remain separate and are
+    still loaded only after a reader selects a guide.
+    """
     guides = pq.read_table(store.root / store.manifest["tables"]["guides"]["file"]).to_pylist()
+    for index, row in enumerate(guides):
+        row["shard"] = index // _SHARD_GUIDES
+    target = shard_dir / "guide-index.js"
+    payload = json.dumps(guides, separators=(",", ":")).replace("<", "\\u003c").replace("&", "\\u0026")
+    target.write_text(f"window.SF_GUIDE_INDEX={payload};\n")
+    metadata = {
+        "file": target.name,
+        "format": "javascript",
+        "rows": len(guides),
+        "bytes": target.stat().st_size,
+        "sha256": _sha256(target),
+    }
+    store.manifest["guide_index"] = metadata
+    return metadata
+
+
+def _write_data_backed_html(store: ReportArtifactStore, output: Path, shard_dir: str) -> None:
     summary = store.manifest["summary"]
-    for i, row in enumerate(guides):
-        row["shard"] = i // _SHARD_GUIDES
     manifest = json.dumps(store.manifest, separators=(",", ":")).replace("<", "\\u003c").replace("&", "\\u0026")
-    data = json.dumps(guides, separators=(",", ":")).replace("<", "\\u003c").replace("&", "\\u0026")
-    html = _DATA_BACKED_TEMPLATE.replace("__GUIDES__", data).replace("__MANIFEST__", manifest)
+    guide_index_file = store.manifest["reader"]["guide_index_file"]
+    guide_index_script = f'<script src="{shard_dir}/{guide_index_file}"></script>'
+    html = _DATA_BACKED_TEMPLATE.replace("__GUIDES__", "window.SF_GUIDE_INDEX||[]")
+    html = html.replace("__GUIDE_INDEX_SCRIPT__", guide_index_script).replace("__MANIFEST__", manifest)
     html = html.replace("__MODE__", str(store.manifest["report_mode"]))
     html = html.replace("__EVIDENCE_PANEL__", _evidence_panel(store.manifest))
     unresolved_count = store.manifest["summary"]["unresolved_guides"]
@@ -761,6 +790,7 @@ def _write_paged_html(store: ReportArtifactStore, output: Path, shard_dir: Path)
     manifest = json.dumps(store.manifest, separators=(",", ":")).replace("<", "\\u003c").replace("&", "\\u0026")
     scripts = "\n".join(path.read_text() for path in sorted(shard_dir.glob("*.js")))
     html = _DATA_BACKED_TEMPLATE.replace("__GUIDES__", data).replace("__MANIFEST__", manifest)
+    html = html.replace("__GUIDE_INDEX_SCRIPT__", "")
     html = html.replace("__MODE__", str(store.manifest["report_mode"]))
     html = html.replace("__EVIDENCE_PANEL__", _evidence_panel(store.manifest))
     unresolved_count = store.manifest["summary"]["unresolved_guides"]
@@ -973,6 +1003,7 @@ _DATA_BACKED_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="
 <body><header><h1>siRNAforge report · __MODE__</h1><div id="counts"></div><div id="gatecounts"></div><label>Search guides <input id="search" type="search"></label><label>Status <select id="status"><option value="">All</option><option>pass</option><option>warn</option><option>unknown</option><option>fail</option></select></label><label>Gate <select id="gate"><option value="">Any gate</option></select></label><label>Gate result <select id="gate-result"><option value="">Any result</option><option value="0">pass</option><option value="1">fail</option><option value="2">unknown</option><option value="3">not evaluated</option><option value="4">warn</option></select></label>__GENE_FILTER_CONTROL____CONSERVATION_FILTER_CONTROL____UNRESOLVED_CONTROL__<span id="visible-count"></span><button id="previous">Previous page</button><span id="page-info"></span><button id="next">Next page</button></header>
 <main>__EVIDENCE_PANEL__<section><table><thead><tr><th>Guide</th><th>Status</th><th>Rows</th><th>Design</th><th>Composite</th></tr></thead><tbody id="rows"></tbody></table></section><section id="details" aria-live="polite"><p>Select any guide to load its detail shard.</p></section></main>
 <!--__INLINE_SHARDS__-->
+__GUIDE_INDEX_SCRIPT__
 <script>
 const PAGE_SIZE=50;let currentPage=0;const G=__GUIDES__, M=__MANIFEST__, SHARD_DIR='__SHARD_DIR__', STATUS_COUNTS=__STATUS_COUNTS__;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

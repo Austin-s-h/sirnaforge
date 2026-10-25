@@ -83,6 +83,12 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
     assert manifest["summary"]["candidate_rows"] == n_guides
     assert manifest["summary"]["gene_filter_available"] is True
     assert len(manifest["summary"]["target_gene_options"]) == n_guides
+    assert manifest["guide_index"]["rows"] == n_guides
+    assert manifest["reader"]["guide_index_file"] == "guide-index.js"
+    guide_index_path = output.with_name("large-report.details") / manifest["guide_index"]["file"]
+    guide_index = json.loads(guide_index_path.read_text().removeprefix("window.SF_GUIDE_INDEX=").removesuffix(";\n"))
+    assert len(guide_index) == n_guides
+    assert guide_index[0]["guide"] == guides[0]
     assert pq.read_metadata(artifact_root / "hit_summary.parquet").num_rows == n_guides
     isoforms = pq.read_table(artifact_root / "isoforms.parquet").to_pylist()
     canonical = next(row for row in isoforms if row["transcript_id"] == "ENST0")
@@ -97,6 +103,8 @@ def test_data_backed_report_keeps_every_guide_and_loads_local_detail_shard(tmp_p
     assert diagnostics["phases_seconds"]["normalized_table_build"] >= 0
     assert diagnostics["output_html_bytes"] == output.stat().st_size
     html = output.read_text()
+    assert '<script src="large-report.details/guide-index.js"></script>' in html
+    assert "window.SF_GUIDE_INDEX=[" not in html
     # Gene labels belong to the summary/identity metadata; detailed hit rows belong in shards.
     detailed_hit_is_inline = "ENSTH1199" in html
     assert not detailed_hit_is_inline
@@ -137,6 +145,7 @@ elements['#gate'].appendChild=()=>{};
 global.window.location={hash:''};window.addEventListener=()=>{};
 global.document={querySelector:s=>elements[s],querySelectorAll:()=>[],createElement:()=>el(),head:{appendChild:()=>{}}};
 """
+        + f"vm.runInThisContext(fs.readFileSync({json.dumps(str(guide_index_path))},'utf8'));\n"
         + f"vm.runInThisContext({json.dumps(html_scripts[0])});\n"
         + f"vm.runInThisContext(fs.readFileSync({json.dumps(str(shard_path))},'utf8'));\n"
         + "elements['#geneenable'].checked=true;elements['#targetgene'].value='id:ENSG1199';elements['#geneenable'].handlers.change();"
@@ -342,6 +351,7 @@ def test_staged_conservation_filters_distinguish_matches_and_unavailable_evidenc
     html = output.read_text()
     assert '<fieldset id="conservation-filters"' in html
     assert 'role="status" aria-live="polite"' in html
+    guide_index_path = output.with_name(f"conservation-{mode}.details") / "guide-index.js"
     scripts = re.findall(r"<script>(.*?)</script>", html, flags=re.DOTALL)
     bootstrap = r"""
 const vm=require('vm');global.window={location:{hash:'#c=mouse'},addEventListener(){}};
@@ -349,7 +359,12 @@ const elements={};function el(){return {value:'',selectedIndex:0,checked:false,t
 for(const id of ['#counts','#gatecounts','#unresolved-only','#search','#status','#gate','#gate-result','#visible-count','#page-info','#previous','#next','#rows','#consdiagnostic','#cons-state','#cons-seed','#details'])elements[id]=el();
 const mouse=el();mouse.value='mouse';global.document={querySelector:s=>elements[s],querySelectorAll:s=>s==='[data-conservation]'?[mouse]:[],createElement:()=>el(),head:{appendChild(){}}};
 """
-    code = bootstrap + "\n".join(scripts)
+    guide_index_loader = (
+        f"\nvm.runInThisContext(fs.readFileSync({json.dumps(str(guide_index_path))},'utf8'));\n"
+        if mode == "data_backed"
+        else ""
+    )
+    code = bootstrap + guide_index_loader + "\n".join(scripts)
     code += "if(!mouse.checked||elements['#cons-seed'].checked!==true)process.exit(2);"
     code += "if(elements['#visible-count'].textContent!=='1 guides match current filters')process.exit(3);"
     code += "if(!elements['#cons-state'].textContent.startsWith('Conservation filter active: mouse'))process.exit(10);"
