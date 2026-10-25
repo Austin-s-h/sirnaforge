@@ -12,7 +12,7 @@ from review import differences, exact_oracle, run, sam_headers, sam_records
 
 
 class PerformanceHarnessTests(unittest.TestCase):
-    def test_order_ignored_but_missing_hits_and_tags_detected(self):
+    def test_order_ignored_but_missing_hits_and_tags_detected(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             left, right = Path(folder) / "left.sam", Path(folder) / "right.sam"
             header = "@SQ\tSN:ref\tLN:100\n"
@@ -27,22 +27,22 @@ class PerformanceHarnessTests(unittest.TestCase):
             right.write_text(header + first.replace("NM:i:0", "NM:i:2") + "\n" + second + "\n")
             self.assertFalse(differences(sam_records(left), sam_records(right))["equal"])
 
-    def test_nonzero_and_missing_command_are_not_measurement_success(self):
+    def test_nonzero_and_missing_command_are_not_measurement_success(self) -> None:
         self.assertEqual(run([sys.executable, "-c", "raise SystemExit(2)"], 5)["status"], "failed")
         # GNU time can report missing executable as nonzero rather than OSError.
         self.assertIn(run(["/definitely/missing/tool"], 5)["status"], {"unavailable", "failed"})
 
-    def test_timeout_is_reported(self):
+    def test_timeout_is_reported(self) -> None:
         self.assertEqual(run([sys.executable, "-c", "import time; time.sleep(2)"], 0.05)["status"], "timeout")
 
-    def test_malformed_sam_is_rejected(self):
+    def test_malformed_sam_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "bad.sam"
             path.write_text("truncated\trow\n")
             with self.assertRaises(ValueError):
                 sam_records(path)
 
-    def test_independent_exact_oracle_detects_shared_omission(self):
+    def test_independent_exact_oracle_detects_shared_omission(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             reference, queries, sam = [Path(folder) / name for name in ("reference.fa", "query.fa", "hits.sam")]
             reference.write_text(">ref\nACGTTTACGT\n")

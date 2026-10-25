@@ -74,7 +74,8 @@ def run(command: list[str], timeout: float, stdout_path: Path | None = None) -> 
         # GNU time is available on Linux; BSD time uses incompatible flags.
         timed = platform.system() == "Linux" and timer.exists()
         argv = [str(timer), "-f", "%U %S %M", "-o", str(metrics), *command] if timed else command
-        output = stdout_path.open("w") if stdout_path else subprocess.PIPE
+        output_file = stdout_path.open("w") if stdout_path else None
+        output = output_file if output_file is not None else subprocess.PIPE
         try:
             try:
                 process = subprocess.Popen(
@@ -91,8 +92,8 @@ def run(command: list[str], timeout: float, stdout_path: Path | None = None) -> 
             except OSError as error:
                 result.update(status="unavailable", error=str(error))
         finally:
-            if stdout_path:
-                output.close()
+            if output_file is not None:
+                output_file.close()
         if metrics.exists():
             lines = metrics.read_text().splitlines()
             fields = lines[-1].split() if lines else []
@@ -132,7 +133,7 @@ def sam_records(path: Path) -> Counter:
     PG is program provenance, recorded independently through binary checksum/version.
     Header reference names/lengths are compared separately by sam_headers().
     """
-    records = Counter()
+    records: Counter[tuple[str, ...]] = Counter()
     for line in path.read_text().splitlines():
         if line.startswith("@") or not line:
             continue
@@ -241,7 +242,7 @@ def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-s
         folder.mkdir()
         reference = folder / "reference.fasta"
         shutil.copyfile(args.reference, reference)
-        backend = {
+        backend: dict = {
             "path": executable,
             "binary_sha256": digest(Path(executable)),
             "version": run([executable, "version"], args.timeout),
