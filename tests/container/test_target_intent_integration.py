@@ -1,5 +1,6 @@
 """Installed CLI coverage for target intent across isoforms."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -50,6 +51,25 @@ def test_cli_target_intent_changes_candidate_eligibility(tmp_path, selectivity, 
             }
         )
     )
+    mirna_reference = tmp_path / "mature.fa"
+    mirna_reference.write_text(">hsa-synthetic-fixture\nACGUACGUACGUACGUACGUA\n")
+    mirna_manifest = tmp_path / "mirna-references.json"
+    mirna_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "references": [
+                    {
+                        "source": "mirbase",
+                        "species": "human",
+                        "release": "target-intent-offline-fixture",
+                        "sha256": hashlib.sha256(mirna_reference.read_bytes()).hexdigest(),
+                        "path": mirna_reference.name,
+                    }
+                ],
+            }
+        )
+    )
     output = tmp_path / "output"
     result = subprocess.run(
         [
@@ -62,9 +82,22 @@ def test_cli_target_intent_changes_candidate_eligibility(tmp_path, selectivity, 
             str(output),
             "--target-intent-config",
             str(intent),
+            "--run-mode",
+            "exploratory",
             "--species",
             "human",
-            "--skip-off-targets",
+            "--transcriptome-fasta",
+            f"human:{fasta}",
+            "--mirna-db",
+            "mirbase",
+            "--mirna-reference-manifest",
+            str(mirna_manifest),
+            "--transcript-seed-species",
+            "human",
+            "--transcript-seed-required-species",
+            "human",
+            "--max-transcript-seed-sites",
+            "1000",
         ],
         capture_output=True,
         text=True,
@@ -108,3 +141,24 @@ def test_cli_target_intent_changes_candidate_eligibility(tmp_path, selectivity, 
         and observations[candidate_id]["coverage_denominator_ids"] == expected_denominator
         for candidate_id in target_candidates["id"]
     )
+
+    workflow_summary = json.loads((output / "logs/workflow_summary.json").read_text())
+    seed_summary = workflow_summary["transcript_seed"]
+    assert seed_summary["status"] == "complete"
+    assert seed_summary["required_species"] == ["human"]
+    seed_observations = seed_summary["per_candidate"]
+    assert all(
+        seed_observations[candidate_id]["by_species"]["human"]["status"] == "complete"
+        for candidate_id in target_candidates["id"]
+    )
+    assert "max_transcript_seed_sites_verdict" in candidates
+    assert set(candidates.loc[target_candidates.index, "max_transcript_seed_sites_verdict"]) <= {"pass", "fail"}
+
+    qualified = pd.read_csv(output / "sirnaforge/candidates_qualified.csv")
+    qualified_fasta = output / "sirnaforge/candidates_qualified.fasta"
+    if expected_selective_pass:
+        assert guide in set(qualified["guide_sequence"])
+        assert qualified_fasta.is_file()
+        assert guide in qualified_fasta.read_text()
+    else:
+        assert guide not in set(qualified["guide_sequence"])
