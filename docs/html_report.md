@@ -155,9 +155,10 @@ per page; search, status, gate, gene, and conservation filters recompute the pag
 rather than truncating the report. The scale regression uses all 4,113 native OligoGym guide
 observations plus 20,565 explicitly synthetic hit-stress rows. In a data-backed build, the searchable
 HTML index is under 10 MB and the hit details remain in larger sidecar shards. Synthetic hit rows
-exercise report resource behavior only and are not biological off-target results. The data-backed
-reader does not yet provide every compact control, including threshold editing, maps, carts, and
-exports.
+exercise report resource behavior only and are not biological off-target results. Data-backed guide
+details include a transcript selector and candidate position map labeled with gene identity and
+canonical status. The reader still does not provide every compact control, including threshold
+editing, carts, and exports.
 
 ## The unit is the guide sequence
 
