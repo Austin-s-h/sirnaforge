@@ -271,6 +271,7 @@ const mouse=el();mouse.value='mouse';global.document={querySelector:s=>elements[
     code = bootstrap + "\n".join(scripts)
     code += "if(!mouse.checked||elements['#cons-seed'].checked!==true)process.exit(2);"
     code += "if(elements['#visible-count'].textContent!=='1 guides match current filters')process.exit(3);"
+    code += "if(!elements['#cons-state'].textContent.startsWith('Conservation filter active: mouse'))process.exit(10);"
     code += "mouse.checked=false;mouse.handlers.change();if(window.location.hash.includes('c='))process.exit(4);"
     code += "mouse.checked=true;mouse.handlers.change();elements['#cons-seed'].checked=false;elements['#cons-seed'].handlers.change();"
     code += "if(elements['#visible-count'].textContent!=='2 guides match current filters')process.exit(5);"
