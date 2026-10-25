@@ -1,0 +1,14 @@
+{
+  "species": "human",
+  "assembly": "GRCh38",
+  "release": "116",
+  "fasta": "/tmp/sirnaforge-ensembl-release116/human.fa",
+  "sha256": "bd85494fb64766200ec18bae873f3196b451c6eecbcfbedadd72684f19692ff8",
+  "source_url": "https://ftp.ensembl.org/pub/release-116/fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz",
+  "download_sha256": "683eb19310c40bf1396e4718f45afa2ce86755717c0990f47a171f535d248ea1",
+  "upstream_unix_sum": [
+    "22380",
+    "179589"
+  ],
+  "retrieved_at": "2026-10-24T18:33:19.801966+00:00"
+}

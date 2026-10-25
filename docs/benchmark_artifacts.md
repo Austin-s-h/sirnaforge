@@ -211,6 +211,17 @@ The vendored OligoGym target mappings identify human GRCh38 only. The four human
 macaque manifests under `references/representative/` describe a separate off-target reference set;
 they do not establish native target mappings in all four species, and they do not contain Ensembl
 release labels. Do not infer those labels from the representative FASTA checksums.
+A separate full-release mapping set is now available under
+`tests/data/benchmarks/oligogym_four_species_release116/`. Its `references/` directory
+preserves checksummed Ensembl release-116 acquisition records for human GRCh38,
+mouse GRCm39, rat GRCr8, and macaque Mmul_10. The four tables contain 66,204,
+18,624, 2,782, and 5,150 exact transcript sites respectively. Every mapped interval
+and oriented query was checked against its checksummed full cDNA FASTA. Human
+assays remain human observations: other species are explicitly sequence projections,
+with no transferred efficacy labels. See that directory's README for regeneration.
+For human native imports, use `species/human/observations.csv`,
+`species/human/mappings.csv`, and `references/human.json` together.
+
 The artifact checksums each native input, retains all exact transcript hits in
 `native_mappings.csv`, and records 1-based transcript coordinates, gene/transcript IDs, strand, and
 reference provenance. One exact hit is `confirmed`; multiple exact hits are `ambiguous`; missing or
