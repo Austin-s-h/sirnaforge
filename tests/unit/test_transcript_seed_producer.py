@@ -109,6 +109,37 @@ def test_workflow_maps_only_reconciled_guide_observations_and_writes_provenance(
     assert candidate.filter_verdicts["max_transcript_seed_sites"] == "pass"
     assert json.loads((tmp_path / "workflow/transcript_seed/guide_observations.json").read_text()) == result
 
+    # Exploratory species are still reported when complete, but their much larger count must not
+    # enter the required-species ceiling or change candidate eligibility.
+    (result_dir / "transcript_seed_human_summary.json").write_text(
+        json.dumps(
+            {
+                "species": "human",
+                "scope": "full_cdna",
+                "reference_sha256": "def456",
+                "transcripts_scanned": 1200,
+                "per_guide": {
+                    "submitted-guide": {
+                        "status": "complete",
+                        "site_count": 400,
+                        "transcript_count": 200,
+                        "gene_count": 60,
+                    }
+                },
+            }
+        )
+    )
+    workflow._completed_evidence_pairs = frozenset({("transcript_seed", "mouse"), ("transcript_seed", "human")})
+    exploratory = candidate.model_copy(deep=True)
+    exploratory.filter_verdicts.clear()
+    exploratory.filter_observed.clear()
+    complete = workflow._collect_transcript_seed_observations(tmp_path / "results", [exploratory])
+    exploratory_observation = complete["per_candidate"]["candidate-1"]
+    assert complete["status"] == "complete"
+    assert exploratory_observation["required_species_site_count"] == 4
+    assert exploratory_observation["by_species"]["human"]["site_count"] == 400
+    assert exploratory.filter_verdicts["max_transcript_seed_sites"] == "pass"
+
     withheld = candidate.model_copy(deep=True)
     withheld.filter_verdicts.clear()
     withheld.filter_observed.clear()
