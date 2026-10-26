@@ -19,10 +19,10 @@ local test environment.
 | Pixi locked runtime install | Three fresh-cache Linux x86_64 trials: median 9.65 s (8.76–10.47), median 249 MiB peak RSS (247–249), 1.29 GiB combined cache/prefix disk use | Locked install from an existing Pixi lock; one machine, network enabled, OS cache not evicted |
 | Micromamba runtime create | Three fresh-root Linux x86_64 trials with matching direct versions: median 35.18 s (31.56–42.47), median 1,413 MiB peak RSS (1,412–1,417), 2.66 GiB combined root disk use | Includes dependency solving and installation; 94 Pixi vs 98 micromamba packages |
 | Warm environment install | Three idempotent trials each; Pixi median 0.060 s, micromamba median 5.862 s | Cached no-op install comparison only; not environment creation or update performance |
-| CLI / Nextflow startup | Three fresh processes each: Pixi CLI median 1.31 s (1.29–3.34), Pixi Nextflow 1.06 s (1.04–1.08); current image CLI 1.66 s (1.65–1.72), Nextflow 1.44 s (1.41–1.46) | Same WSL2 host; Pixi `run` versus fresh Docker containers, so launch overhead differs. Nextflow versions also differ (25.10.2 vs 26.10.3); exploratory timings only |
-| Pixi application and offline Nextflow | Editable application install succeeded after pinning the PyPI launcher to 25.10.2 and pointing `NXF_DIST` at the Conda framework JAR; `sirnaforge --help` and three offline Nextflow launches succeeded | Resolves the observed launcher/framework mismatch for this locked Linux prototype |
+| Historical CLI / Nextflow startup | Three fresh processes each from the earlier mixed-owner manifest: Pixi CLI median 1.31 s; Pixi Nextflow 1.06 s; container CLI 1.66 s; Nextflow 1.44 s | Nextflow versions differed (25.10.2 vs 26.10.3); superseded by the matched direct-version image comparison below |
+| Historical Pixi application startup | Earlier editable install pinned the PyPI launcher to 25.10.2 and pointed `NXF_DIST` at the Conda framework JAR | Historical mixed-owner setup; current 26.10.3 container smoke is recorded below |
 | BWA comparison | Official MEM2 2.2.1 and source-built MEM3 0.15.0 passed controlled synthetic and 320-guide chr21 SAM parity and independent exact-match checks | Limited compatibility evidence, with compiler caveat below |
-| samtools and RNAfold | Unavailable on PATH | Container/runtime validation remains necessary |
+| Historical host tool inventory | samtools and RNAfold were unavailable on PATH | Both are included and version-checked in the current Pixi container/CI comparison below |
 
 The repository's existing uv cache was read-only in this session. Commands below
 use the existing `.venv` Python directly; no global tools were installed.
@@ -79,6 +79,48 @@ repetition. The install commands above document direct requirements, not an
 identical transitive closure or a matched solve/install lifecycle. A fair
 locked micromamba comparison would require an explicit exported lock/spec.
 
+## Pixi container comparison (Linux x86_64)
+
+The disposable image uses a generated context because `.dockerignore` excludes
+the prototype. From the repository root, build it with:
+
+```bash
+ctx=/tmp/sirnaforge-pixi-build-context
+mkdir -p "$ctx/scripts/performance/pixi"
+cp pyproject.toml README.md LICENSE "$ctx/"
+cp -a src "$ctx/"
+cp scripts/performance/pixi/{pixi.toml,pixi.lock,Dockerfile,conda-shim.sh,micromamba-activate.sh} \
+  "$ctx/scripts/performance/pixi/"
+docker build --no-cache -f scripts/performance/pixi/Dockerfile \
+  -t sirnaforge-pixi-review:latest "$ctx"
+```
+
+The runtime installs `procps` for Nextflow task metrics and sets writable HOME
+and Nextflow paths under `/tmp/nextflow` for numeric UIDs. Run as UID 12345 with
+a writable current directory:
+
+```bash
+docker run --rm --user 12345:12345 -w /tmp/nextflow \
+  sirnaforge-pixi-review:latest --help
+```
+
+The matched direct versions were Python 3.12.15, Nextflow 26.10.3, OpenJDK
+24.0.2, AWS CLI 2.38.1, PyArrow 26.0.0, pysam 0.24.1, ViennaRNA 2.7.2,
+BWA-MEM2 2.2.1, BWA-MEM3 0.15.0, and samtools 1.24. CLI help, native imports,
+all listed tools, and a Nextflow local Conda process using
+`conda-forge::python=3.12` passed under UID 12345. The Pixi image measured
+1,735,350,992 bytes; the micromamba baseline measured 2,252,135,962 bytes (23.0%
+smaller). Three cached builds took 0.55/0.49/0.46 seconds for Pixi and
+1.60/0.71/0.73 seconds for micromamba. Fresh-container CLI launch medians were
+2.44 seconds and 1.73 seconds; Nextflow medians were 1.44 and 1.51 seconds.
+These are one-host Docker observations without OS cache eviction, not isolated
+package-manager benchmarks. Trial details and image IDs are in
+`scripts/performance/measurements/pixi-runtime-startup.json`.
+
+One clean build and three cached builds were measured per image. The dependency
+closures differ, and package-update behavior and other platforms remain
+untested. This supports Linux container feasibility, not Pixi adoption.
+
 ## Reproduce inventory and bounded command measurements
 
 Run from the repository root with Python 3.11+ (or 3.10 with `tomli`):
@@ -125,29 +167,30 @@ Use separate throwaway prototype copies and caches for each cold trial; do not
 relabel a reused environment as cold. Hold resolved Python/Nextflow/Java/native
 tool versions fixed in the uv/micromamba baseline. Use the generic `measure`
 command for each exact installation or startup argv and record at least three
-successful trials plus variability. The cold install comparison now has three
-trials per manager, but dependency closures differ. Update behavior,
-clean/cached Docker builds, and representative application startup benchmarks
-remain pending. The observed difference is from one Linux host, not a general
-Pixi speedup claim.
+successful trials plus variability. The cold install comparison has three trials per manager, but dependency
+closures differ. Container build and representative startup results are recorded
+below. Comparable package-update behavior remains pending. These observations
+come from one Linux host and are not a general Pixi speedup claim.
 
 Dependency ownership in the revised Pixi prototype:
 
 - `pyproject.toml` and `uv.lock` remain the current Python dependency authority;
   `environment-dev.yml` duplicates much of the stack. The Pixi prototype now
-  assigns every direct runtime dependency to Conda except `fm-index`, which has
-  no candidate on the declared Conda channels and is assigned to PyPI.
+  assigns direct runtime dependencies to Conda except `fm-index` and `pyarrow`,
+  which are assigned to PyPI. `fm-index` has no candidate on the declared Conda
+  channels; PyArrow follows production PyPI/uv ownership and avoids a solver
+  conflict with the pinned AWS CLI closure.
 - Nextflow, pysam, and ViennaRNA are Conda-owned in the revised lock. Pixi's
   editable install task uses `pip install --no-deps --no-build-isolation`, so it
   does not reinstall project dependencies over Conda files. The Conda Nextflow
   launcher and framework remain paired, with `NXF_DIST` pointing to the bundled
   framework. The former PyPI overwrite observations are retained as historical
   evidence only.
-- A fresh locked `tests` environment installed without package-overwrite
-  warnings. The editable CLI, native pysam/ViennaRNA imports, PyPI `fm_index`
-  import, and offline Nextflow 25.10.2 launch all succeeded. This resolves the
-  prototype's package ownership conflict on Linux x86_64; it does not establish
-  cross-platform or Docker image parity.
+- The earlier locked `tests` environment installed without package-overwrite
+  warnings and passed CLI/native import checks, but it used the earlier lock. The
+  current application lock was rebuilt in the disposable Docker image; its
+  package imports and Nextflow 26.10.3 launch are recorded in the container
+  comparison below. The updated lock still needs its own Pixi CI run.
 - The prototype test feature installs pytest dependencies. The focused host
   test `test_gencode_structure_versions_and_gzip` passes in Pixi Python 3.12.15
   (pytest 9.1.1, pytest-asyncio 1.4.1) when run outside the execution sandbox.
@@ -163,12 +206,12 @@ Dependency ownership in the revised Pixi prototype:
   reported as the build version for an unstamped index. The index provenance
   now leaves that version unknown unless its stamp records a usable build-time
   version; the current runtime executable is recorded separately. After the
-  fix, the final full-host run passed 2,195 tests with 75 deselected. A fresh
-  offline Nextflow 25.10.2 local-process smoke also passed from the Pixi test
-  environment and wrote its expected output; `sirnaforge --help` passed from
+  fix, the final full-host run passed 2,195 tests with 75 deselected. A fresh offline Nextflow 25.10.2 local-process smoke also passed from that
+  earlier Pixi test environment and wrote its expected output; `sirnaforge --help` passed from
   the editable install. The Pixi test environment was then mounted read-only in
-  the project image and exercised as UID 12345: Python, the CLI, Nextflow 25.10.2,
-  and a Nextflow Conda process environment all ran successfully.
+  the project image and exercised as UID 12345: Python, CLI, Nextflow 25.10.2,
+  and a Nextflow Conda process environment all ran successfully in that earlier
+  configuration. Current image validation is recorded below.
   This exposed and fixed an existing production image defect: Nextflow expects
   `conda info --json` to report `conda_prefix` and sources that prefix's
   `bin/activate`, while micromamba reports a different JSON schema and the
@@ -181,45 +224,41 @@ Dependency ownership in the revised Pixi prototype:
   Reproduce with `pixi run --manifest-path scripts/performance/pixi/pixi.toml
   --environment tests python -m pytest -m '(dev or ci or release) and not
   runs_in_container and not requires_network' -n 0`. Green GitHub CI and Docker
-  runs also cover their configured environments, not the Pixi container; real
-  Pixi container/provider/cache validation remains necessary before adoption.
+  runs cover their configured environments, not the Pixi container. The current
+  Pixi image CLI/native-tool/Nextflow-provider smokes are recorded above; host
+  test-suite CI for the refreshed lock remains necessary before adoption.
 - Pixi managing the parent environment is separate from Nextflow creating
   process environments. Preserve the current micromamba process-environment
   mechanism until a supported replacement is demonstrated.
-- A dedicated Pixi CI lane now installs the checked-in `tests` environment with
-  `--locked`, checks the pinned Python/Nextflow/BWA-MEM2 tools, and runs the
-  existing host validation selection, including a real BWA-MEM2 index-build
-  and exact-guide alignment smoke. Actions run
-  [40292606798](https://github.com/Austin-s-h/sirnaforge/actions/runs/40292606798)
-  passed: 2,196 passed and 76 deselected, including the real index/alignment
-  regression. The commit's push-triggered Python run initially hit one
-  unrelated 10-second timeout in an existing report data test; the failed
-  Python 3.12 job passed on rerun in [run 40292602159](https://github.com/Austin-s-h/sirnaforge/actions/runs/40292602159).
+- The existing Pixi CI lane installs the checked-in `tests` environment with
+  `--locked`, checks runtime tools, and runs the host validation selection,
+  including a real BWA-MEM2 index-build and exact-guide alignment smoke. The
+  earlier lock passed in [run 40292606798](https://github.com/Austin-s-h/sirnaforge/actions/runs/40292606798):
+  2,196 passed and 76 deselected. That run does not validate the current lock,
+  which now also checks BWA-MEM3, samtools, and RNAfold versions.
 - The real BWA-MEM2 index-build and exact-guide alignment smoke also passed
   locally against the Pixi environment's BWA-MEM2 2.2.1 executable. The local
   sandbox could not fetch packages from conda.anaconda.org; the application
   environment was recreated outside the sandbox.
-- Other supported-platform checks, comparable update behavior, and Pixi Docker
-  build/image-size measurements remain outstanding. The startup observations
-  above are deliberately non-equivalent because Pixi and Docker add different
-  launch overhead, and the Nextflow versions differ.
+- Other supported-platform checks and comparable update behavior remain
+  outstanding. The new lock and expanded tool checks require the next Pixi CI
+  run. Docker feasibility and matched direct-version startup measurements are
+  recorded above.
 
 **Decision: defer Pixi adoption.** Keep uv/pip as the host Python owner and
 micromamba/Conda as the existing Nextflow process-environment provider. Do not
 replace either tool or the Docker setup with the prototype. Rollback is to
 remove the isolated `scripts/performance/pixi/` prototype and its lockfile; no
 production environment, cache, or user command needs migration because no
-Pixi-managed environment was adopted. The host suite, Pixi locked CI lane, real
-alignment/index smoke, Nextflow provider, arbitrary-UID cache path, and Pixi
-environment mounted into the current project image now pass on Linux x86_64.
-The single-owner dependency split is validated on Linux x86_64; its CI result
-and container measurement remain pending. Reconsider adoption only after
-comparable repeated update, Pixi image-size, and application/Nextflow startup
-measurements justify the additional owner.
+Pixi-managed environment was adopted. The earlier host suite and Pixi CI lane passed; the current application image
+passed CLI, native dependency, tool, and Nextflow provider smokes as UID 12345.
+The current lock awaits its Pixi CI run.
+The current single-owner dependency split and comparison image are validated on
+Linux x86_64. Reconsider adoption only after comparable repeated update and
+other supported-platform evidence justify the additional owner.
 
-#121 remains open until repeated update, Pixi image/build-size, and comparable
-startup measurements are complete. Record supported-platform gaps and the final
-migration/rollback recommendation before closing it.
+#121 remains open until repeated update behavior and supported-platform gaps
+are documented, and the final migration/rollback recommendation is recorded.
 
 Official references checked for this investigation:
 [Pixi manifest](https://pixi.prefix.dev/latest/reference/pixi_manifest/) and

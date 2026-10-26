@@ -148,6 +148,9 @@ jobs:
         pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests python --version
         pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests nextflow -version
         pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests bwa-mem2 version
+        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests bwa-mem3 version
+        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests samtools --version
+        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests RNAfold --version
 
     - name: Install editable application without dependency overwrites
       run: pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests install-app

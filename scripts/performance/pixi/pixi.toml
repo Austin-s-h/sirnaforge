@@ -9,12 +9,20 @@ python = "3.12.*"
 pip = "*"
 hatchling = "*"
 editables = "*"
-openjdk = ">=17,<18"
-nextflow = "==25.10.2"
+openjdk = "==24.0.2"
+nextflow = "==26.10.3"
 bwa-mem2 = "==2.2.1"
+bwa-mem3 = "==0.15.0"
 samtools = "==1.24"
-viennarna = "==2.7.0"
+viennarna = "==2.7.2"
 pysam = ">=0.23.0"
+awscli = "==2.38.1"
+curl = "*"
+wget = "*"
+jq = "*"
+pigz = "*"
+htslib = "*"
+micromamba = "*"
 biopython = ">=1.84"
 pandas = ">=2.3.0"
 numpy = ">=1.26.0,<2.5"
@@ -28,13 +36,13 @@ aiohttp = ">=3.12.0"
 httpx = ">=0.28.0"
 pandera = ">=0.26.0"
 psutil = ">=6.0.0"
-pyarrow = ">=18.0.0"
 jinja2 = ">=3.1.0"
 
-# fm-index is not available on the declared Conda channels; keep this one
-# application dependency on PyPI and assign every other runtime dependency to Conda.
+# fm-index has no candidate on the declared Conda channels. PyArrow stays with
+# the production PyPI/uv owner and avoids a Conda solver conflict with AWS CLI.
 [pypi-dependencies]
 fm-index = ">=2.3.4"
+pyarrow = ">=18.0.0"
 
 # Point the Conda launcher at the exact framework JAR supplied above for offline startup.
 [feature.application.activation.env]
