@@ -373,6 +373,48 @@ and macaque reference
 There was one measurement per backend; wall-clock values include index load and
 are not a multi-run performance claim.
 
+The source observations and exact release-116 reference acquisition manifests
+are retained under `tests/data/benchmarks/oligogym_four_species_release116/`.
+The canonical query FASTA can be regenerated without committing a generated
+copy; this recipe yields 3,395 unique 20–21 nt guides and records its own
+checksum (`e80d5cae150fd38526f4eb41cc1225c7d91fc43fed54484a97d24d608cbd0a2b`):
+
+```bash
+mkdir -p /tmp/sirnaforge-mem3-review/refs
+pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests \
+  python scripts/performance/prepare_oligogym_panel.py \
+  --output /tmp/sirnaforge-mem3-review/guides.fa
+for species in rat macaque; do
+  pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests \
+    python scripts/fetch_native_reference_release.py --release 116 \
+    --species "$species" --output /tmp/sirnaforge-mem3-review/refs
+done
+```
+
+The rat and macaque reference manifests include Ensembl URLs and checksums;
+their uncompressed FASTAs must match the hashes above before benchmarking. For
+three independent index-build trials per species, run the existing comparison
+harness in separate work directories and retain its compact JSON outputs:
+
+```bash
+for species in rat macaque; do
+  for trial in 1 2 3; do
+    pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests \
+      python scripts/performance/review.py --timeout 1800 \
+      --output "/tmp/sirnaforge-mem3-review/${species}-${trial}.json" bwa \
+      --mem2 bwa-mem2 --mem3 bwa-mem3 \
+      --reference "/tmp/sirnaforge-mem3-review/refs/${species}.fa" \
+      --queries /tmp/sirnaforge-mem3-review/guides.fa \
+      --work-dir "/tmp/sirnaforge-mem3-review/${species}-${trial}" \
+      --threads 1 --repetitions 3
+  done
+done
+```
+
+Each run rebuilds both indices, records member sizes/hashes and three alignment
+trials per backend, including wall/CPU time and peak RSS. Keep the worktree
+clean: references, indices, SAM and measurement outputs belong in `/tmp`.
+
 | Reference | Exact placements (oracle) | SAM records | MEM2 / MEM3 alignment | Peak RSS, MEM2 / MEM3 |
 | --- | ---: | ---: | ---: | ---: |
 | Rat | 2,451 / 2,451 each | 17,025 each; SAM parity equal | 2.249 / 0.393 s | 909 / 666 MiB |
