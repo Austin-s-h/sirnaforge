@@ -34,6 +34,23 @@ Multiple doses/replicates remain separate source observations. Sequence hashes
 are comparison/grouping aids, not validated development/held-out partitions. No
 validation split is assigned, and the old regression fixtures are unchanged.
 
+One source-specific exception is the 32-record `shabalina_independent` subset. The
+Shabalina et al. paper describes these as an additional set of 32 siRNAs that was
+not included in or analyzed with its 653-guide training set, and reports them as
+two low-concentration experiments. The checked-in sequence hashes confirm zero
+exact-sequence overlap with the 653 extracted training records: 32 observations,
+31 distinct guide sequences, and 10 source accession groups. The paper's results
+for its own models (R² 0.258 and 0.281) are not validation results for
+siRNAforge.
+
+This small set can support a predeclared, exploratory external check of applicable
+sequence-only efficacy features. It does not validate the complete default score
+or its gates: all entries are paired cores without full duplex geometry, chemistry
+is unstated, and target identity remains unestablished. It contains no measured
+unintended-repression endpoint. Any use must keep residual expression as its own
+endpoint, group uncertainty by source accession, and report these limitations.
+See the [primary paper](https://doi.org/10.1186/1471-2105-7-65), Results section.
+
 ## Interpretation boundaries
 
 - `compatible_core_only` means a reported 19–23 nt core can be represented for
@@ -95,5 +112,8 @@ linked original sources for the governing terms.
 | Kliuchnikov 2024 | <https://doi.org/10.1016/j.omtn.2024.102415> | CC BY 4.0 |
 | Takasaki measured categorical set | <https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/supplementaryFiles> | CC BY 2.0 |
 
-Do not describe these records as independent external validation merely because
-they arrive through another model repository, review or database.
+Do not describe a record as independent external validation merely because it
+arrives through another model repository, review or database. Independence must
+be established from primary-source study design and checked against the actual
+training sequences; the `shabalina_independent` subset above is documented on
+that basis, with its limits stated explicitly.
