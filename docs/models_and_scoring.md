@@ -115,7 +115,7 @@ class DesignParameters(BaseModel):
 
     # Sequence parameters
     sirna_length: int = 21     # Duplex length (19-23 nt)
-    top_n: int | None = None   # Candidates to report (None = all, the default)
+    top_n: int | None = None   # Distinct guides to shortlist (None = all, the default)
 
     # Quality control
     filters: FilterCriteria    # Threshold parameters
@@ -126,6 +126,10 @@ class DesignParameters(BaseModel):
     modification_pattern: str = "standard_2ome"
     default_overhang: str = "dTdT"
 ```
+
+Shortlists contain at most one row per normalized guide sequence. When a guide occurs in multiple
+eligible transcript contexts, its shortlist representative is the context with the minimum ranking
+score; full candidate outputs retain all context rows and their independent filter states.
 
 ### 1.3 FilterCriteria
 

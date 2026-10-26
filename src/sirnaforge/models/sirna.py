@@ -669,10 +669,11 @@ class DesignParameters(BaseModel):
         default=None,
         ge=1,
         description=(
-            "Number of top-ranked candidates reported in top_candidates (None = no limit, the "
-            "default). Screening is applied to every distinct candidate sequence regardless of this "
-            "value, so it does not gate off-target analysis or change how many candidates are "
-            "enumerated -- it only truncates what is reported."
+            "Number of distinct normalized guide sequences reported in top_candidates (None = no "
+            "limit, the default). A guide is represented by its lowest-scoring eligible "
+            "transcript context; all context rows remain in the full candidate tables. Screening "
+            "is applied to every distinct candidate sequence regardless of this value, so it does "
+            "not gate off-target analysis or change how many candidates are enumerated."
         ),
     )
 
@@ -1263,6 +1264,23 @@ def ranking_tiebreak_key(candidate: SiRNACandidate) -> tuple[str, str, int, str]
 def ranking_order_key(candidate: SiRNACandidate) -> tuple[float, str, str, int, str]:
     """Sort by descending ranking score, then by a stable guide/context/identity key."""
     return (-ranking_score(candidate), *ranking_tiebreak_key(candidate))
+
+
+def unique_guide_representatives(candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
+    """Return one conservative, deterministically ranked context row per normalized guide.
+
+    The guide's minimum score across contexts is used for ranking, so one unusually favorable
+    transcript context cannot give the same guide multiple shortlist slots.
+    """
+    by_guide: dict[str, list[SiRNACandidate]] = {}
+    for candidate in candidates:
+        guide = ranking_tiebreak_key(candidate)[0]
+        by_guide.setdefault(guide, []).append(candidate)
+    representatives = [
+        min(group, key=lambda candidate: (ranking_score(candidate), *ranking_tiebreak_key(candidate)))
+        for group in by_guide.values()
+    ]
+    return sorted(representatives, key=ranking_order_key)
 
 
 def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:

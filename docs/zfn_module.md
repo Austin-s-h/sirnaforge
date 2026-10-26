@@ -4,8 +4,8 @@
 >
 > The ZFN arm remains **experimental**; remaining integration and validation work is tracked
 > in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for
-> decisions without independent validation.** Historical hg38 runtime runs did not validate
-> correct on-target recovery and remain non-authoritative.
+> decisions without independent validation.** The integration and engineering defects tracked in
+> #82 are addressed; independent genomic and experimental validation remains outstanding.
 >
 > Supply both half-sites **5′→3′ on their respective binding strands**. For the published
 > CCR5 plus-strand genomic text `GTCATCCTCATC` + spacer + `AAACTGCAAAAG`, use left query
@@ -34,8 +34,8 @@ This guide is the user-facing entry point for ZFN design and off-target analysis
   - `sirnaforge/offtarget_sites.csv`
   - `logs/workflow_summary.json`
 - ✅ Workflow provenance is captured in `workflow_summary.json`.
-- ⚠️ Nextflow-backed ZFN execution path is present (including internal shard commands), but it is
-  **not reachable** from either CLI entry point: every run uses the in-process path. See [#82](https://github.com/Austin-s-h/sirnaforge/issues/82).
+- ✅ Nextflow-backed ZFN execution is available through the configured workflow path, including
+  shard commands for full-reference runs. Keep it experimental pending independent validation.
 - ✅ Automated tests exist for ZFN workflow, search/design behavior, and integration paths.
 - ✅ User/developer documentation for ZFN workflow usage is present.
 
@@ -75,9 +75,8 @@ sirnaforge zfn \
 ```
 
 `CTTTTGCAGTTT` is the reverse complement of the published CCR5 (−) half-site `AAACTGCAAAAG`.
-Passing the published text verbatim returns **0 sites**, including the on-target locus — see the
-orientation convention in the banner above and
-[#82](https://github.com/Austin-s-h/sirnaforge/issues/82). The default backend now supports the canonical 12 bp / 4-mismatch case. Highly
+Supply each query in its binding-strand orientation as described above. The default backend
+supports the canonical 12 bp / 4-mismatch case. Highly
 degenerate queries can still exceed its pattern safety limit; compare with
 `exhaustive_python` before interpreting a result.
 

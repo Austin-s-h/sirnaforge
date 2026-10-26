@@ -79,6 +79,61 @@ def test_equal_score_order_uses_stable_guide_context_key_not_input_order() -> No
     assert select((second, first), inputs).order == (1, 0)
 
 
+def test_shortlist_has_unique_guides_and_uses_lowest_eligible_context_score() -> None:
+    """Duplicate isoform rows stay in the ranking while one conservative row represents each guide."""
+    views = [
+        CandidateView(
+            candidate_id="guide-a-high",
+            ordinal=0,
+            passes_filters=True,
+            repeat_flagged=False,
+            scored_after_screening=True,
+            off_target_screened=True,
+            ranking_score=90.0,
+            stable_tiebreak_key=("ACGT", "ENST1", 10, "guide-a-high"),
+        ),
+        CandidateView(
+            candidate_id="guide-a-low",
+            ordinal=1,
+            passes_filters=True,
+            repeat_flagged=False,
+            scored_after_screening=True,
+            off_target_screened=True,
+            ranking_score=60.0,
+            stable_tiebreak_key=("ACGT", "ENST2", 20, "guide-a-low"),
+        ),
+        CandidateView(
+            candidate_id="guide-b",
+            ordinal=2,
+            passes_filters=True,
+            repeat_flagged=False,
+            scored_after_screening=True,
+            off_target_screened=True,
+            ranking_score=70.0,
+            stable_tiebreak_key=("TGCA", "ENST3", 30, "guide-b"),
+        ),
+    ]
+    inputs = SelectionInputs(
+        run_mode=RunMode.DESIGN_ONLY,
+        requirements=None,
+        completed_pairs=None,
+        query_species="human",
+        filter_channels={},
+        repeat_rejects=False,
+        top_n=2,
+    )
+
+    result = select(views, inputs)
+
+    assert result.order == (0, 2, 1)
+    assert result.eligible_ordinals == (0, 2, 1)
+    assert result.top_ordinals == (2, 1)
+    assert result.summary["eligible_candidates"] == 3
+    assert result.summary["shortlistable_unique_guides"] == 2
+    assert result.summary["top_candidates"] == 2
+    assert result.summary["shortlist_guide_aggregation"] == "minimum_eligible_context_score_per_normalized_guide"
+
+
 def test_unknown_species_gate_only_withholds_when_its_species_is_required() -> None:
     """An incomplete exploratory species limit cannot inherit another species' requiredness."""
     view = CandidateView(

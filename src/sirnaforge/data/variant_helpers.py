@@ -6,7 +6,12 @@ from Bio.Seq import Seq
 
 from sirnaforge.data.base import TranscriptInfo
 from sirnaforge.data.variant_resolution_helpers import normalize_chromosome
-from sirnaforge.models.sirna import DesignResult, SiRNACandidate, ranking_order_key
+from sirnaforge.models.sirna import (
+    DesignResult,
+    SiRNACandidate,
+    ranking_order_key,
+    unique_guide_representatives,
+)
 from sirnaforge.models.transcript_annotation import TranscriptAnnotation
 from sirnaforge.models.variant import VariantMode, VariantRecord
 from sirnaforge.utils.ensembl_ids import strip_version
@@ -206,7 +211,7 @@ def apply_variant_workflow(  # noqa: PLR0912
         for candidate in design_result.candidates
         if candidate.passes_filters is True or candidate.passes_filters == SiRNACandidate.FilterStatus.PASS
     ]
-    design_result.top_candidates = (passing or design_result.candidates)[: design_result.parameters.top_n]
+    design_result.top_candidates = unique_guide_representatives(passing)[: design_result.parameters.top_n]
     design_result.total_candidates = len(design_result.candidates)
     design_result.filtered_candidates = len(passing)
     return design_result

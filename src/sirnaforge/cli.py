@@ -1241,7 +1241,7 @@ def workflow(  # noqa: PLR0912
         "-n",
         min=1,
         help=(
-            "Cap how many top-ranked candidates are reported (default: no cap, report all). "
+            "Cap how many distinct guide sequences are shortlisted (default: no cap, report all). "
             "Screening and enumeration always cover every candidate, so this only truncates the "
             "reported set -- leave it unset to keep the full design space."
         ),

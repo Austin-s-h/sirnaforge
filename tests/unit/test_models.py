@@ -11,6 +11,7 @@ from sirnaforge.models.sirna import (
     FilterCriteria,
     SiRNACandidate,
     ranking_order_key,
+    unique_guide_representatives,
 )
 
 
@@ -97,6 +98,24 @@ class TestSiRNACandidate:
         )
 
         assert sorted([later_context, earlier_context], key=ranking_order_key) == [earlier_context, later_context]
+
+    def test_unique_guide_representatives_use_worst_context_score(self):
+        """A guide takes one shortlist slot and is ranked by its weakest context score."""
+        strong = SiRNACandidate(
+            id="guide-strong",
+            transcript_id="ENST1",
+            position=10,
+            guide_sequence="A" * 21,
+            passenger_sequence="T" * 21,
+            gc_content=0,
+            length=21,
+            asymmetry_score=0.5,
+            composite_score=90,
+        )
+        weak = strong.model_copy(update={"id": "guide-weak", "transcript_id": "ENST2", "composite_score": 40})
+        other = strong.model_copy(update={"id": "other", "guide_sequence": "C" * 21, "composite_score": 70})
+
+        assert unique_guide_representatives([strong, other, weak]) == [other, weak]
 
     def test_sequence_validation(self):
         """Test sequence validation."""

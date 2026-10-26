@@ -30,6 +30,7 @@ from sirnaforge.models.sirna import (
     DesignResult,
     SiRNACandidate,
     ranking_order_key,
+    unique_guide_representatives,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
 
@@ -180,7 +181,7 @@ class SiRNADesigner:
             if (c.passes_filters is True)
             or (hasattr(_ModelCandidate, "FilterStatus") and c.passes_filters == _ModelCandidate.FilterStatus.PASS)
         ]
-        top_candidates = (passing or all_candidates)[: self.parameters.top_n]
+        top_candidates = unique_guide_representatives(passing)[: self.parameters.top_n]
 
         processing_time = max(0.0, time.perf_counter() - start_time)  # Ensure non-negative
         # Compute transcript hit metrics for each candidate (how many input transcripts contain the guide)
@@ -241,7 +242,7 @@ class SiRNADesigner:
             if (c.passes_filters is True)
             or (hasattr(_ModelCandidate, "FilterStatus") and c.passes_filters == _ModelCandidate.FilterStatus.PASS)
         ]
-        top_candidates = (passing or scored_candidates)[: self.parameters.top_n]
+        top_candidates = unique_guide_representatives(passing)[: self.parameters.top_n]
 
         processing_time = max(0.0, time.perf_counter() - start_time)
         # For single-sequence runs, transcript hit metrics are trivial (hits=1, fraction=1.0)

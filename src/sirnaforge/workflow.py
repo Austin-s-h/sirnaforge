@@ -178,6 +178,7 @@ from sirnaforge.models.sirna import (
     ranking_order_key,
     ranking_score,
     ranking_tiebreak_key,
+    unique_guide_representatives,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.models.transcript_annotation import TranscriptAnnotation
@@ -1763,7 +1764,7 @@ class SiRNAWorkflow:
                 and c.passes_filters == _ModelSiRNACandidate.FilterStatus.PASS
             )
         ]
-        top_candidates = (passing or all_candidates)[: self.config.top_n]
+        top_candidates = unique_guide_representatives(passing)[: self.config.top_n]
 
         processing_time = max(0.0, time.perf_counter() - start)
         filtered_count = len(passing)
@@ -3527,8 +3528,9 @@ class SiRNAWorkflow:
         ``DesignResult`` -- publishes a selection under the same rules, the same states and the same
         console messages (#100).
 
-        Re-sorts ``candidates`` in place (the CSV writers emit them in this order) and returns the
-        first ``top_n`` eligible candidates.
+        Re-sorts ``candidates`` in place (the CSV writers emit them in this order) and returns up to
+        ``top_n`` distinct normalized guide sequences. Each sequence is represented by its lowest-
+        scoring eligible transcript context; every context row remains in the full candidate list.
         """
         # Before the views are built, because eligibility reads this gate's verdict off the candidate
         # and a gate that never ran has none to read (#105).
@@ -7117,8 +7119,8 @@ async def run_sirna_workflow(
         input_fasta: Local path or remote URI to an input FASTA file
         database: Database to search (ensembl, refseq, gencode)
         design_mode: Design mode (sirna, mirna, or zfn)
-        top_n_candidates: Cap on how many top-ranked candidates are reported (None = no cap, the
-            default). Enumeration and screening always cover every candidate.
+        top_n_candidates: Cap on distinct normalized guide sequences in the shortlist (None = no
+            cap). Enumeration and screening cover all transcript-context rows.
         screen_species: Species to screen against for off-target liabilities
         query_species: Organism the TARGET transcripts belong to. Defaults to the organism the
             gene-query database serves (human), which is also the species of the default
