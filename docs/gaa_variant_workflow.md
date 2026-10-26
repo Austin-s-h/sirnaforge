@@ -2,6 +2,8 @@
 
 The earlier illustrative GAA command used an unverified transcript/variant pairing and flags that are not part of the current CLI. It is not a validated GAA run. The unqualified `c.428A>G` string does not identify one allele, and this guide does not substitute a guessed GAA variant. A real GAA run needs a pinned human GRCh38 annotation/sequence release and a user-selected variant whose transcript and genomic reference alleles have been checked against those files.
 
+The scientific basis and limits of the scoring and off-target screens are summarized in [scientific_sources.md](scientific_sources.md); those publications do not validate a GAA-specific candidate or predict its clinical effect.
+
 ## Prepare pinned local inputs
 
 Obtain the GENCODE GTF and transcript FASTA from the same release and GRCh38 assembly, and retain the release identifier plus SHA-256 checksums with the files. See {ref}`annotation_providers.md <obtain-a-pinned-release>` for official download and format references. Keep a source VCF containing the exact GRCh38 SNV after checking its chromosome, 1-based position, REF, ALT, and transcript mapping against that pinned reference. Do not derive genomic coordinates by guessing from a coding HGVS string.

@@ -12,6 +12,14 @@ This page records what the cited papers support and how that evidence relates to
 | Jackson & Linsley (2010), [“Recognizing and avoiding siRNA off-target effects for target identification and therapeutic application”](https://pubmed.ncbi.nlm.nih.gov/20043028/), PMID 20043028, DOI [10.1038/nrd3010](https://doi.org/10.1038/nrd3010) | This review describes seed-mediated and other off-target effects and experimental/computational mitigation approaches. | Proof that any particular computational screen excludes all biologically relevant off-target effects. |
 | Lu & Mathews (2008), [“OligoWalk: an online siRNA design tool utilizing hybridization thermodynamics”](https://pubmed.ncbi.nlm.nih.gov/18490376/), PMID 18490376, DOI [10.1093/nar/gkn250](https://doi.org/10.1093/nar/gkn250) | OligoWalk combines hybridization thermodynamics, RNA structure, and sequence features to rank candidate oligos. | That siRNAforge implements OligoWalk or reproduces its outputs. |
 
+## Thermodynamic asymmetry and RNA structure software
+
+| Source | Supported claim | What it does not establish here |
+| --- | --- | --- |
+| Khvorova et al. (2003), [“Functional siRNAs and miRNAs exhibit strand bias”](https://pubmed.ncbi.nlm.nih.gov/14567918/), PMID 14567918, DOI [10.1016/S0092-8674(03)00801-8](https://doi.org/10.1016/S0092-8674(03)00801-8) | Experiments linked duplex-end thermodynamic asymmetry with strand bias in the tested small-RNA systems. | A universal loading threshold or calibrated siRNAforge efficacy score. |
+| Schwarz et al. (2003), [“Asymmetry in the assembly of the RNAi enzyme complex”](https://pubmed.ncbi.nlm.nih.gov/14567917/), PMID 14567917, DOI [10.1016/S0092-8674(03)00759-1](https://doi.org/10.1016/S0092-8674(03)00759-1) | Duplex-end stability contributes to strand selection during RNAi complex assembly in the studied systems. | That the current score normalization or filter threshold is experimentally calibrated. |
+| Lorenz et al. (2011), [“ViennaRNA Package 2.0”](https://pubmed.ncbi.nlm.nih.gov/22115189/), PMID 22115189, DOI [10.1186/1748-7188-6-26](https://doi.org/10.1186/1748-7188-6-26) | Describes algorithms and software for RNA secondary structure, base-pair probabilities, and RNA-RNA interaction thermodynamics. | Validation of siRNAforge's feature geometry, weights, thresholds, or biological predictions. |
+
 ## How these ideas map to siRNAforge
 
 - The current `design_experimental_v1` vector combines guide/passenger thermodynamic asymmetry, target accessibility, and GC content. Its weights are declared expert priors, not values fitted or independently validated by the cited papers. Each run records the vector and weights in its manifest. See [scoring.md](scoring.md) and [models_and_scoring.md](models_and_scoring.md).

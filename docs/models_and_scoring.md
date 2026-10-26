@@ -298,7 +298,7 @@ keys in `features` are ignored, since `component_scores` also carries diagnostic
 
 ### 2.2 Thermodynamic Asymmetry Score
 
-**Research basis**: Khvorova et al. (2003), Schwarz et al. (2003)
+**Research basis**: Khvorova et al. (2003), [“Functional siRNAs and miRNAs exhibit strand bias”](https://pubmed.ncbi.nlm.nih.gov/14567918/); Schwarz et al. (2003), [“Asymmetry in the assembly of the RNAi enzyme complex”](https://pubmed.ncbi.nlm.nih.gov/14567917/). These studies support a role for duplex-end asymmetry in strand selection in the tested systems. They do not calibrate this implementation's 7-nt windows, linear normalization, 0.65 filter threshold, or efficacy weights. See [scientific_sources.md](scientific_sources.md) for scope and limitations.
 
 RISC preferentially loads the strand with the less thermodynamically stable 5' end. The asymmetry score measures this preference:
 
@@ -330,7 +330,9 @@ before folding — ViennaRNA's `&` cofold notation pairs two 5'->3' strands anti
 itself. Reverse-complementing the passenger folded the guide against itself, which pinned
 `asymmetry_score` to exactly 0.5 for every 21 nt candidate (fixed in 0.5.2).
 
-**Interpretation**:
+The following 0–1 transform is a bounded ranking feature, not a probability of guide loading. The bins below are descriptive labels only; they are not experimentally calibrated efficacy or strand-selection categories. The default 0.65 gate remains an experimental policy threshold.
+
+**Descriptive score bands**:
 
 | Score    | Interpretation                           |
 | -------- | ---------------------------------------- |
@@ -970,9 +972,9 @@ class ChemicalModification(BaseModel):
 
 ## 9. References
 
-1. **Khvorova A, Reynolds A, Jayasena SD** (2003). Functional siRNAs and miRNAs exhibit strand bias. _Cell_ 115(2):209-216.
+1. **Khvorova A, Reynolds A, Jayasena SD** (2003). [Functional siRNAs and miRNAs exhibit strand bias](https://pubmed.ncbi.nlm.nih.gov/14567918/). _Cell_ 115(2):209-216. DOI: [10.1016/S0092-8674(03)00801-8](https://doi.org/10.1016/S0092-8674(03)00801-8).
 
-2. **Schwarz DS, Hutvágner G, Du T, Xu Z, Aronin N, Bhatt DP** (2003). Asymmetry in the assembly of the RNAi enzyme complex. _Cell_ 115(2):199-208.
+2. **Schwarz DS, Hutvágner G, Du T, Xu Z, Aronin N, Bhatt DP** (2003). [Asymmetry in the assembly of the RNAi enzyme complex](https://pubmed.ncbi.nlm.nih.gov/14567917/). _Cell_ 115(2):199-208. DOI: [10.1016/S0092-8674(03)00759-1](https://doi.org/10.1016/S0092-8674(03)00759-1).
 
 3. **Reynolds A, Leake D, Boese Q, Scaringe S, Marshall WS, Khvorova A** (2004). Rational siRNA design for RNA interference. _Nature Biotechnology_ 22(3):326-330.
 
