@@ -202,9 +202,16 @@ and compatibility targets BWA-MEM2 2.2.1. Consequently strict plain-mode tag
 differences need review rather than being treated as missing hits. The harness
 supports both plain and `--compat=bwa-mem2`; it does not enable fast mode.
 [Installation documentation](https://bwa-mem3.readthedocs.io/en/latest/getting-started/installation.html)
-now describes Bioconda distributions, while the documentation homepage still
-says Bioconda is forthcoming. Verify package availability and pin actual release,
-build/license/source before relying on either statement. The local results tested official MEM2 2.2.1 and source release MEM3 0.15.0; hashes/build commands are in `aligner-builds.json`. MEM3 required `ALLOW_UNSUPPORTED_COMPILER=1` with GCC 13, so timings are not representative upstream performance.
+describes Bioconda distributions. The [Bioconda bwa-mem3 recipe](https://bioconda.github.io/recipes/bwa-mem3/README.html)
+currently lists release `0.15.0-0`, its mixed MIT/Apache-2.0/Zlib licensing,
+and Linux aarch64 and macOS arm64 in addition to its default Linux x86-64
+builds. This verifies package metadata, not a successful local install. An
+attempt to add it to the isolated Pixi comparison environment could not resolve
+the Bioconda index because network DNS is unavailable in this session; the
+prototype lock remains unchanged. The local results tested official MEM2 2.2.1
+and source release MEM3 0.15.0; hashes/build commands are in
+`aligner-builds.json`. MEM3 required `ALLOW_UNSUPPORTED_COMPILER=1` with GCC 13,
+so timings are not representative upstream performance.
 
 The controlled synthetic comparison produced 32 equal SAM records. The pinned
 chr21 workload contains 320 deterministic exact antisense queries (19–23 nt).
