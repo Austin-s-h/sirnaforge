@@ -406,7 +406,7 @@ for species in rat macaque; do
       --reference "/tmp/sirnaforge-mem3-review/refs/${species}.fa" \
       --queries /tmp/sirnaforge-mem3-review/guides.fa \
       --work-dir "/tmp/sirnaforge-mem3-review/${species}-${trial}" \
-      --threads 1 --repetitions 3
+      --threads 1 --repetitions 3 --allow-sam-differences
   done
 done
 ```
@@ -414,6 +414,8 @@ done
 Each run rebuilds both indices, records member sizes/hashes and three alignment
 trials per backend, including wall/CPU time, peak RSS, and query throughput
 (guide count divided by median alignment wall time, including index loading).
+The option keeps completed runs and records any SAM differences in JSON; tool,
+index, reference-header, or query-membership failures still return nonzero.
 Keep the worktree clean: references, indices, SAM and measurement outputs belong
 in `/tmp`.
 

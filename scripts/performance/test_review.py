@@ -8,10 +8,28 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from review import differences, exact_oracle, iter_fasta_records, run, sam_headers, sam_records
+from review import (
+    bwa_comparison_succeeded,
+    differences,
+    exact_oracle,
+    iter_fasta_records,
+    run,
+    sam_headers,
+    sam_records,
+)
 
 
 class PerformanceHarnessTests(unittest.TestCase):
+    def test_sam_differences_can_be_reported_without_masking_execution_failures(self) -> None:
+        result = {
+            "backends": {"mem2": {"status": "ok"}, "mem3": {"status": "ok"}},
+            "parity": {"equal": False, "reference_headers_equal": True},
+        }
+        self.assertFalse(bwa_comparison_succeeded(result))
+        self.assertTrue(bwa_comparison_succeeded(result, allow_sam_differences=True))
+        result["backends"]["mem3"]["status"] = "alignment_failed"
+        self.assertFalse(bwa_comparison_succeeded(result, allow_sam_differences=True))
+
     def test_order_ignored_but_missing_hits_and_tags_detected(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             left, right = Path(folder) / "left.sam", Path(folder) / "right.sam"

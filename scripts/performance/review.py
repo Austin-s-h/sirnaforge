@@ -63,6 +63,19 @@ def machine() -> dict:
     }
 
 
+def bwa_comparison_succeeded(result: dict, allow_sam_differences: bool = False) -> bool:
+    """Require complete execution and matching references; optionally report SAM differences."""
+    parity = result.get("parity")
+    backends = result.get("backends", {})
+    return (
+        bool(backends)
+        and all(backend.get("status") == "ok" for backend in backends.values())
+        and parity is not None
+        and parity.get("reference_headers_equal") is True
+        and (allow_sam_differences or parity.get("equal") is True)
+    )
+
+
 def run(command: list[str], timeout: float, stdout_path: Path | None = None) -> dict:
     """Measure one subprocess, with GNU time resource metrics when installed.
 
@@ -396,6 +409,11 @@ def main() -> int:
     align.add_argument("--work-dir", type=Path, required=True)
     align.add_argument("--threads", type=int, default=1)
     align.add_argument("--repetitions", type=int, default=3)
+    align.add_argument(
+        "--allow-sam-differences",
+        action="store_true",
+        help="Report SAM differences without failing if both backends complete and reference headers match.",
+    )
     args = parser.parse_args()
     if args.timeout <= 0 or getattr(args, "repetitions", 1) < 1 or getattr(args, "threads", 1) < 1:
         parser.error("timeout, repetitions and threads must be positive")
@@ -421,9 +439,7 @@ def main() -> int:
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(f"Wrote {args.output}")
     if args.kind == "bwa":
-        return (
-            0 if result["parity"] and result["parity"]["equal"] and result["parity"]["reference_headers_equal"] else 1
-        )
+        return 0 if bwa_comparison_succeeded(result, args.allow_sam_differences) else 1
     if args.kind == "measure":
         return 0 if result["complete"] else 1
     return 0
