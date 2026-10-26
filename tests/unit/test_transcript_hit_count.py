@@ -22,9 +22,9 @@ def test_shared_guides(tmp_path):
     assert res.total_sequences == 2
     assert res.total_candidates > 0
 
-    top = res.top_candidates[0]
-    assert top.transcript_hit_count == 2
-    assert top.transcript_hit_fraction == 1.0
+    candidate = res.candidates[0]
+    assert candidate.transcript_hit_count == 2
+    assert candidate.transcript_hit_fraction == 1.0
 
 
 @pytest.mark.unit
@@ -44,9 +44,9 @@ def test_unique_guides(tmp_path):
     assert res.total_sequences == 2
     assert res.total_candidates > 0
 
-    # pick first top candidate and ensure it's not hitting both transcripts
-    top = res.top_candidates[0]
-    assert top.transcript_hit_count in (1, 2)
+    # Hit accounting belongs to the full candidate rows, including guides not shortlisted.
+    candidate = res.candidates[0]
+    assert candidate.transcript_hit_count in (1, 2)
     # If guides differ the hit fraction should be 0.5 when hit_count==1
-    if top.transcript_hit_count == 1:
-        assert top.transcript_hit_fraction == 0.5
+    if candidate.transcript_hit_count == 1:
+        assert candidate.transcript_hit_fraction == 0.5
