@@ -174,12 +174,13 @@ Dependency ownership requiring resolution before adoption:
   mechanism until a supported replacement is demonstrated.
 - A dedicated Pixi CI lane now installs the checked-in `tests` environment with
   `--locked`, checks the pinned Python/Nextflow/BWA-MEM2 tools, and runs the
-  existing host validation selection. Its first live Actions result is pending.
+  existing host validation selection, including a real BWA-MEM2 index-build
+  and exact-guide alignment smoke. Its first live Actions result is pending.
   The local sandbox could not fetch packages from conda.anaconda.org, so it
   could not independently recreate that environment in this session.
-- Pixi-backed alignment/index behavior, other supported-platform checks, and
-  comparable update, Docker build/image size, and representative
-  application/Nextflow startup measurements remain outstanding.
+- Other supported-platform checks, and comparable update, Docker build/image
+  size, and representative application/Nextflow startup measurements remain
+  outstanding.
 
 **Decision: defer Pixi adoption.** Keep uv/pip as the host Python owner and
 micromamba/Conda as the existing Nextflow process-environment provider. Do not
