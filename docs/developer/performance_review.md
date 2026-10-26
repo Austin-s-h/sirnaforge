@@ -68,13 +68,13 @@ Use fresh roots/prefixes for cold trials and the same roots for warm no-op trial
 
 ```bash
 PIXI_CACHE_DIR=/tmp/pixi-cold pixi install --locked \
-  --manifest-path scripts/performance/pixi/pixi.toml --environment runtime
+  --manifest-path /tmp/pixi-historical/pixi.toml --environment runtime
 MAMBA_ROOT_PREFIX=/tmp/mamba-cold micromamba create -y \
   -n runtime -c conda-forge -c bioconda \
   python=3.12.15 nextflow=25.10.2 openjdk=17.0.18 bwa-mem2=2.2.1 \
   samtools=1.24 pysam=0.24.1 viennarna=2.7.0
 PIXI_CACHE_DIR=/tmp/pixi-cold pixi install --locked \
-  --manifest-path scripts/performance/pixi/pixi.toml --environment runtime
+  --manifest-path /tmp/pixi-historical/pixi.toml --environment runtime
 MAMBA_ROOT_PREFIX=/tmp/mamba-cold micromamba install -y -n runtime \
   -c conda-forge -c bioconda \
   python=3.12.15 nextflow=25.10.2 openjdk=17.0.18 bwa-mem2=2.2.1 \
@@ -205,7 +205,8 @@ Dependency ownership in the revised Pixi prototype:
   warnings and passed CLI/native import checks, but it used the earlier lock. The
   current application lock was rebuilt in the disposable Docker image; its
   package imports and Nextflow 26.10.3 launch are recorded in the container
-  comparison below. The updated lock still needs its own Pixi CI run.
+  comparison below. The updated lock subsequently passed the dedicated Pixi CI
+  host-validation lane.
 - The prototype test feature installs pytest dependencies. The focused host
   test `test_gencode_structure_versions_and_gzip` passes in Pixi Python 3.12.15
   (pytest 9.1.1, pytest-asyncio 1.4.1) when run outside the execution sandbox.
@@ -240,14 +241,15 @@ Dependency ownership in the revised Pixi prototype:
   --environment tests python -m pytest -m '(dev or ci or release) and not
   runs_in_container and not requires_network' -n 0`. Green GitHub CI and Docker
   runs cover their configured environments, not the Pixi container. The current
-  Pixi image CLI/native-tool/Nextflow-provider smokes are recorded above; host
-  test-suite CI for the refreshed lock remains necessary before adoption.
+  Pixi image CLI/native-tool/Nextflow-provider smokes are recorded above, and
+  host test-suite CI for the refreshed lock has passed. Broader platform and
+  whole-stack update evidence remains necessary before adoption.
 - Pixi managing the parent environment is separate from Nextflow creating
   process environments. Preserve the current micromamba process-environment
   mechanism until a supported replacement is demonstrated.
 - The existing Pixi CI lane installs the checked-in `tests` environment with
   `--locked`, checks runtime tools, and runs the host validation selection,
-  including a real BWA-MEM2 index-build and exact-guide alignment smoke. The
+  including real BWA-MEM2 and BWA-MEM3 index/alignment smokes. The
   earlier lock passed in [run 40292606798](https://github.com/Austin-s-h/sirnaforge/actions/runs/40292606798):
   2,196 passed and 76 deselected. That run does not validate the current lock,
   which now also checks BWA-MEM3, samtools, and RNAfold versions.
@@ -272,8 +274,8 @@ package-update trial does not establish whole-stack update safety, and other
 platforms remain unvalidated. These limits block adoption, while the measured
 Linux prototype and its rollback path are complete.
 
-#121 is ready to close with the defer recommendation. Reopen the manager review
-if supported platforms expand or an adoption proposal needs broader update tests.
+#121 is closed with the defer recommendation. Reopen the manager review if
+supported platforms expand or an adoption proposal needs broader update tests.
 
 Official references checked for this investigation:
 [Pixi manifest](https://pixi.prefix.dev/latest/reference/pixi_manifest/) and
@@ -326,9 +328,10 @@ describes Bioconda distributions. The [Bioconda bwa-mem3 recipe](https://biocond
 currently lists release `0.15.0-0`, its mixed MIT/Apache-2.0/Zlib licensing,
 and Linux aarch64 and macOS arm64 in addition to its default Linux x86-64
 builds. This verifies package metadata, not a successful local install. An
-attempt to add it to the isolated Pixi comparison environment could not resolve
-the Bioconda index because network DNS is unavailable in this session; the
-prototype lock remains unchanged. The local results tested official MEM2 2.2.1
+attempt to resolve Bioconda in the isolated comparison environment failed
+because network DNS was unavailable; the separate checked-in Pixi runtime lock
+now pins MEM3 0.15.0 and its dedicated host CI lane validates a real index and
+repeated-hit alignment. The local results tested official MEM2 2.2.1
 and source release MEM3 0.15.0; hashes/build commands are in
 `aligner-builds.json`. MEM3 required `ALLOW_UNSUPPORTED_COMPILER=1` with GCC 13,
 so timings are not representative upstream performance.

@@ -135,7 +135,7 @@
     "Docker timings include starting a fresh Docker container; Pixi timings include the pixi run launcher. These are end-user command observations, not an isolated manager-overhead comparison.",
     "Nextflow versions differ (25.10.2 Pixi vs 26.10.3 image), so their startup timings are not a matched-version comparison.",
     "This startup comparison used the original mixed-owner Pixi application environment. The editable install then overwrote Conda files for Nextflow, pysam, and ViennaRNA. A revised single-owner locked environment now passes CLI, native import, and Nextflow smokes; startup trials have not yet been repeated against it.",
-    "No Pixi-managed Docker image was built; image-size and clean/cached Docker build comparisons remain open."
+    "Historical host-launch trials do not measure the later matched-direct-version Pixi and micromamba container comparison; the container comparison is separately recorded below."
   ],
   "decision": "defer Pixi adoption",
   "dependency_ownership_followup": {
@@ -179,8 +179,8 @@
     },
     "limits": [
       "Linux x86_64 only; no other declared platform was validated.",
-      "Startup timings were not repeated against this revised dependency ownership.",
-      "No Pixi-managed Docker image, image-size, or paired clean/cached build timing has been measured."
+      "Historical host `pixi run` launch timings were not repeated against this revised dependency ownership; the later matched-direct-version container startup comparison is recorded below.",
+      "The container comparison is a Linux x86_64 prototype and does not validate other platforms or production adoption."
     ]
   },
   "pixi_container_comparison": {
