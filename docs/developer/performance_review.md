@@ -363,15 +363,16 @@ Exact SAM/tag equality is not a blocker.
 
 To exercise representative references beyond the chr21 fixture, the same 3,395
 unique full-length guides (20–21 nt; derived from 4,113 OligoGym observations)
-were aligned once with one thread against Ensembl release-116 rat and macaque
-cDNA. MEM2 2.2.1 and MEM3 0.15.0 plain mode each built their own index. Inputs
+were aligned with one thread against Ensembl release-116 rat and macaque cDNA.
+MEM2 2.2.1 and MEM3 0.15.0 plain mode each built a fresh index in three
+independent trials per species; each index then had three alignment runs. Inputs
 were hashed; the guide FASTA SHA-256 is
-`5236565907d4940fa95b94fe0e1aae95122e7180775871c089a3dd36cea2884b`, rat
+`e80d5cae150fd38526f4eb41cc1225c7d91fc43fed54484a97d24d608cbd0a2b`, rat
 reference `14ad668039a84a3ffaf787944dd09194488392848574b20c484d50df56b07477`,
 and macaque reference
-`c702162e3053fb7bf4b0851f30b8b538d9885acfc737863bf2cc6e09d78db48d`.
-There was one measurement per backend; wall-clock values include index load and
-are not a multi-run performance claim.
+`c702162e3053fb7bf4b0851f30b8b538d9885acfc737863bf2cc6e09d78db48d`. Full
+provenance, binary and index hashes, and per-trial measurements are retained in
+[`bwa-mem3-v0.15.0-release116-panel-repeats.json`](../../scripts/performance/measurements/bwa-mem3-v0.15.0-release116-panel-repeats.json).
 
 The source observations and exact release-116 reference acquisition manifests
 are retained under `tests/data/benchmarks/oligogym_four_species_release116/`.
@@ -419,13 +420,18 @@ index, reference-header, or query-membership failures still return nonzero.
 Keep the worktree clean: references, indices, SAM and measurement outputs belong
 in `/tmp`.
 
-| Reference | Exact placements (oracle) | SAM records | MEM2 / MEM3 alignment | Peak RSS, MEM2 / MEM3 |
-| --- | ---: | ---: | ---: | ---: |
-| Rat | 2,451 / 2,451 each | 17,025 each; SAM parity equal | 2.249 / 0.393 s | 909 / 666 MiB |
-| Macaque | 4,701 expected; 4,697 observed each | 17,086 each; SAM parity equal | 2.062 / 0.324 s | 768 / 578 MiB |
+| Reference | Exact placements (oracle) | SAM records | Median index build, MEM2 / MEM3 | Index size, MEM2 / MEM3 | Median alignment, MEM2 / MEM3 | Peak index RSS, MEM2 / MEM3 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Rat | 2,451 expected and observed | 17,025 each; SAM parity equal | 60.55 / 29.32 s | 927 / 595 MB | 2.084 / 0.277 s | 3,819 / 1,683 MiB |
+| Macaque | 4,701 expected; 4,697 observed each | 17,086 each; SAM parity equal | 49.71 / 25.78 s | 780 / 501 MB | 1.976 / 0.259 s | 3,210 / 1,418 MiB |
 
-The four macaque exact placements missed by both aligners and no unexpected
-exact placements were reported. This shared omission needs interpretation in
+The three trials produced equal SAM multisets, matching reference headers, and
+complete query membership. Alignment peak RSS was 909 / 667 MiB (MEM2 / MEM3)
+for rat and 768 / 579 MiB for macaque. Median guide throughput was 1,629 / 12,270
+guides/s for rat and 1,718 / 13,104 guides/s for macaque. The OS page cache was
+not evicted between trials; these results are specific to one Linux x86_64 WSL2
+host and do not establish a general speedup. The four macaque exact placements
+missed by both aligners and no unexpected exact placements were reported. This shared omission needs interpretation in
 the workload's biological context; equality between backends does not establish
 completeness. For both species, the actual Python SAM parser produced identical
 parsed hits across backends (16,323 rat; 16,573 macaque). A real local-profile
@@ -467,21 +473,16 @@ rat/macaque panel evidence above or establish full human cDNA feasibility.
 
 Remaining before #122 can close:
 
-1. Rerun the rat/macaque panels with the committed guide generator and pinned
-   release-116 reference retrieval recipe above, then retain the compact raw
-   JSON results. The historical input checksums and summarized outputs remain,
-   but their FASTAs and raw result files were removed after measurement.
-2. Repeat representative high-hit panel measurements and record repetitions,
-   CPU time, throughput, index size, and end-to-end workflow cost. The current
-   panel evidence is one measurement per backend; human cDNA MEM3 indexing
-   exceeded the tested host's available memory.
-3. Exercise representative panels through downstream hit classes and gate
+1. Exercise representative panels through downstream hit classes and gate
    verdicts. Current evidence covers parsed hits and complete evidence
    reconciliation, not biological eligibility or gate equivalence. Exact SAM
    parity is waived by the user.
-4. Extend package/cache validation to any supported platforms beyond the
+2. Extend package/cache validation to any supported platforms beyond the
    passing Linux x86_64 host and Docker/Nextflow checks. Bioconda metadata for
    other architectures is not a successful integration test.
+3. Assess end-to-end workflow cost on representative workloads. The retained
+   repeated measurements cover index construction and alignment, while the
+   prior Nextflow panel smoke records completion and evidence reconciliation.
 
 **Decision so far: defer adoption.** BWA-MEM2 remains the default. The pinned
 Docker/Nextflow package smoke, backend-specific index, plain SAM parser, and
