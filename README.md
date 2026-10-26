@@ -32,12 +32,12 @@
 
 | Feature | Description |
 |---------|-------------|
-| **🔍 Multi-database search** | Automatic transcript retrieval from Ensembl, RefSeq (TODO), and GENCODE (TODO) |
+| **🔍 Multi-database search** | Remote Ensembl and NCBI RefSeq retrieval; human GENCODE lookup from local annotation and transcript FASTA files |
 | **🧬 Variant targeting** | Design and rank candidates against specific genetic variants with population AF filtering |
-| **🧾 Transcript annotations** | Fetch transcript models/interval annotations via a provider layer (Ensembl REST-backed) |
+| **🧾 Transcript annotations** | Ensembl REST or local GENCODE GTF / NCBI RefSeq GFF3/GTF models; local files record assembly and checksums |
 | **🌡️ Thermodynamic scoring** | ViennaRNA-based secondary structure prediction and stability analysis |
 | **🎯 Transcriptome Off-target analysis** | Transcriptome BWA-MEM2 `transcriptome` search with mismatch tolerance control |
-| **🧬 miRNA seed avoidance** | MirGeneDB, MirBase (TODO) seed-region matching against miRNA databases (positions 2-8; internal `pyahocorasick` default) |
+| **🧬 miRNA seed avoidance** | MirGeneDB, miRBase, or both for mature-miRNA seed matching (positions 2-8; internal `pyahocorasick` default) |
 | **🔤 Smart species handling** | Accepts any format (common names, miRBase codes, scientific names) — auto-normalizes to canonical |
 | **⚙️ Nextflow pipeline** | Scalable, containerized execution for high-throughput analysis |
 | **💉 Chemical modifications** | Track 2'-O-methyl, 2'-fluoro, and phosphorothioate patterns |
@@ -80,7 +80,7 @@ Choose your path based on what you need to do:
 
 ## 🚀 Quick Start
 
-Get your first results in 30 seconds:
+Run a gene workflow:
 
 ```bash
 # Docker
@@ -95,7 +95,7 @@ uv run sirnaforge workflow TP53 --output-dir results
 **What you get:**
 - Transcript sequences from Ensembl
 - Thermodynamically-scored siRNA candidates
-- Off-target analysis (Docker only)
+- Off-target analysis through the selected Nextflow runtime (Docker or a complete native toolchain)
 - Ranked results in CSV and FASTA formats
 - Automatic Ensembl transcriptome indexing across human, mouse, rat, and rhesus macaque (override with `--transcriptome-fasta`, or supply design-ready transcripts via `--input-fasta`)
 - A `reference_summary` block in `logs/workflow_summary.json` that records whether each reference was explicit, defaulted, or disabled
@@ -122,15 +122,14 @@ sirnaforge workflow BRCA1 \
 
 ### ZFN mutation constraints (composable)
 
-> **⚠️ EXPERIMENTAL — ZFN output is not decision-grade.** The ZFN arm ships experimental in 0.6.0
-> with known unfixed defects, tracked in
-> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82): the right half-site must be passed as
-> the reverse complement of its published `(−)` text or it matches nothing; the FokI seed budget
-> guards the wrong end of that half-site; a site inside a large containing gene can be reported
-> `intergenic`; the exported `worst_site_score` / `best_offtarget_score` fields are inverted; and
-> the default `pyahocorasick` backend raises `ValueError` above 3 mismatches on a 12 bp half-site.
-> Do not use ZFN output for any decision without independent validation. Start from the
-> [ZFN Module Guide](docs/zfn_module.md).
+> **⚠️ EXPERIMENTAL — ZFN output is not decision-grade.** The implementation defects tracked in
+> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82) have regression coverage, including the
+> right-half-site orientation, FokI seed geometry, nested gene overlaps, mismatch enumeration,
+> result fields, empty outputs, sharding, and the public Nextflow route. Exact and two-mismatch
+> searches against GRCh38 primary recover the CCR5 on-target and produce candidate sites; these
+> software checks do not establish nuclease activity, specificity, or agreement with an independent
+> experimental panel. Do not use ZFN output for decisions without independent validation. Start from
+> the [ZFN Module Guide](docs/zfn_module.md).
 
 ZFN mode accepts repeatable mutation constraints so you can combine per-subfinger and global budgets.
 
@@ -155,6 +154,28 @@ Constraint syntax for `--zfn-subfinger-mutation` is:
 - supported types: `substitution`, `transition`, `transversion`, `insertion`, `deletion`
 - shorthand: `mismatch` is accepted as an alias for `substitution`
 
+### Transcript database sources
+
+Ensembl is the default. NCBI RefSeq gene/sequence retrieval uses remote E-utilities:
+
+```bash
+sirnaforge search TP53 --database refseq --no-fallback
+```
+
+Human GENCODE search uses a local GTF and transcript FASTA from the same release and assembly:
+
+```bash
+export SIRNAFORGE_GENCODE_GTF=/data/gencode.annotation.gtf.gz
+export SIRNAFORGE_GENCODE_FASTA=/data/gencode.transcripts.fa.gz
+export SIRNAFORGE_GENCODE_ASSEMBLY=GRCh38
+sirnaforge search TP53 --database gencode --no-fallback
+```
+
+`workflow --database refseq` or `workflow --database gencode` selects the same retrieval providers. Local RefSeq GFF3/GTF
+files can supply structural annotations independently of sequence retrieval. Selecting a gene
+provider does not replace the transcriptome/miRNA screening references. See the
+[annotation provider guide](docs/annotation_providers.md) for file requirements and offline workflows.
+
 ### Custom inputs & offline mode
 
 Bring your own transcript sequences while still running the full workflow:
@@ -177,9 +198,14 @@ sirnaforge workflow BRCA1 \
   --transcriptome-fasta /data/reference/ensembl_human_cdna_111.fasta
 ```
 
-`--input-fasta` skips the gene search stage and designs directly from your sequences. When used alone, transcriptome off-target analysis is disabled (design-only mode). To enable transcriptome off-target with custom inputs, explicitly provide `--transcriptome-fasta`.
+`--input-fasta` skips gene search and designs directly from your sequences. When used alone,
+transcriptome screening is disabled. Supply `--transcriptome-fasta` or `--transcriptome-indices`
+to request screening with custom inputs.
 
-When `--transcriptome-fasta` is omitted the workflow automatically indexes the bundled Ensembl cDNA transcriptomes for human, mouse, rat, and macaque so multi-species off-target analysis runs out of the box.
+When screening is enabled without explicit references, the workflow downloads and indexes the
+selected Ensembl cDNA references (human, mouse, rat, and macaque by default), reusing valid caches.
+Explicit `--transcriptome-indices` replaces automatic downloads. Index construction and alignment
+use the same Nextflow runtime. See the [execution-mode guide](docs/installation.md).
 
 Hits on the target gene's orthologue in another screened species are classified `ortholog`, not counted as off-target liabilities. Orthologues are resolved against Ensembl Compara on stable gene IDs, because symbols do not travel across nomenclature authorities — human `TP53`'s mouse orthologue is `Trp53`. Each row's `ortholog_evidence` column says which evidence was used (`gene_id`, or the `symbol_heuristic` fallback), so a validated conservation call is never confused with a symbol coincidence. A custom `--transcriptome-fasta` gets the same treatment when its Ensembl cDNA headers identify the species.
 
@@ -244,8 +270,14 @@ Check off-target potential across multiple model organisms.
 # Species parameter drives both transcriptome and miRNA analysis
 sirnaforge workflow BRCA1 --species "human,mouse"
 # Override miRNA species independently if needed: --mirna-species "hsa,mmu,rno"
+
+# Use miRBase instead of the default MirGeneDB
+sirnaforge workflow BRCA1 --species human --mirna-db mirbase
+
+# Require both sources and deduplicate their mature sequences
+sirnaforge workflow BRCA1 --species human --mirna-db mirgenedb+mirbase
 ```
-Filter candidates that match microRNA seed regions to reduce off-target effects.
+Report and filter candidate seed matches against the selected mature-miRNA references.
 
 **⚙️ High-Throughput Analysis**
 ```bash
@@ -312,16 +344,20 @@ We welcome contributions! siRNAforge uses modern Python tooling with `make` work
 ```bash
 make test-dev        # Fast unit tests (~15s) - for development iteration
 make test-ci         # Smoke tests for CI/CD with coverage reports
-make test-release    # Comprehensive validation (all tests + coverage)
-make test            # All tests (shows passes/skips/fails)
+make test-release    # Deterministic host + container validation with coverage
+make test            # Normal suite; live-service tests are opt-in
 ```
 
 **🧪 Testing (By Requirement)**
 ```bash
-make test-requires-docker   # Tests requiring Docker daemon
-make test-requires-network  # Tests requiring network access
+make test-requires-network  # Explicit local-only live-service checks
 make test-requires-nextflow # Tests requiring Nextflow
 ```
+
+For a targeted live check, use
+`uv run pytest tests/integration/test_variant_live.py --run-network -v`.
+Normal runs skip live-service tests, both release stages exclude them, and CI rejects
+`--run-network`. See the [testing guide](docs/developer/testing_guide.md) for local Docker opt-in.
 
 **🔧 Code Quality**
 ```bash

@@ -46,6 +46,7 @@ from sirnaforge.config import (
     build_screening_requests,
     screening_kind_for_design_mode,
 )
+from sirnaforge.config.mirna_reference import read_reference_evidence, stage_reference_manifest
 from sirnaforge.config.reference_policy import parse_index_entries, resolve_reference_species
 from sirnaforge.config.run_policy import (
     FILTER_SPEC_BY_ID,
@@ -55,6 +56,7 @@ from sirnaforge.config.run_policy import (
     describe_parameters,
     resolve_run_policy,
 )
+from sirnaforge.core.aligner_backend import normalize_aligner
 from sirnaforge.core.design import (
     MiRNADesigner,
     SiRNADesigner,
@@ -117,6 +119,13 @@ from sirnaforge.core.selection import (
     SelectionInputs,
     select,
 )
+from sirnaforge.core.target_intent import (
+    ResolvedTargetIntent,
+    TargetIntentRequest,
+    TargetIntentVerdict,
+    evaluate_target_intent_guide,
+    resolve_target_intent,
+)
 from sirnaforge.core.thermodynamics import ThermodynamicCalculator
 from sirnaforge.data.base import AbstractTranscriptAnnotationClient, DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.ensembl_references import ENSEMBL_ASSEMBLIES, infer_species_from_cdna_headers
@@ -139,12 +148,14 @@ from sirnaforge.data.species_registry import (
 )
 from sirnaforge.data.transcript_index import TranscriptGeneIndex
 from sirnaforge.data.transcriptome_manager import INDEX_BUILD_ERROR_KEY, TranscriptomeManager
+from sirnaforge.data.variant_helpers import apply_variant_to_transcript_sequence, apply_variant_workflow
 from sirnaforge.models.evidence import (
     EvidenceStatus,
     ScreeningEvidenceEntry,
     ScreeningPlan,
 )
 from sirnaforge.models.policy import (
+    ChannelRequirement,
     EvidenceRequirements,
     FilterAction,
     FilterComparator,
@@ -164,14 +175,25 @@ from sirnaforge.models.sirna import (
     SelectionState,
     SiRNACandidate,
     build_candidate_row,
+    ranking_order_key,
     ranking_score,
+    ranking_tiebreak_key,
+    unique_guide_representatives,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
+from sirnaforge.models.transcript_annotation import TranscriptAnnotation
+from sirnaforge.models.transcript_seed import (
+    TRANSCRIPT_SEED_SITE_IDENTITY,
+    TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION,
+    TranscriptSequenceScope,
+)
 from sirnaforge.models.variant import VariantRecord
 from sirnaforge.models.zfn import (
+    ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION,
     GenomicAnnotationConfig,
     ZFNDesignParameters,
     ZFNDesignResult,
+    ZFNOffTargetSite,
     ZFNShardingConfig,
 )
 from sirnaforge.pipeline import NextflowConfig, NextflowRunner
@@ -188,7 +210,15 @@ from sirnaforge.provenance import (
     reported_term_partition,
     write_report_manifest,
 )
-from sirnaforge.reporting import ReportPayload, build_payload, write_quilt_summarize, write_report
+from sirnaforge.reporting import (
+    ReportMode,
+    ReportModeThresholds,
+    ReportPayload,
+    ReportWriteResult,
+    write_quilt_summarize,
+    write_quilt_summarize_from_run,
+    write_report_from_run,
+)
 from sirnaforge.utils.cache_utils import resolve_cache_subdir, stable_cache_key
 from sirnaforge.utils.control_candidates import DIRTY_CONTROL_LABEL, inject_dirty_controls
 from sirnaforge.utils.ensembl_ids import strip_version
@@ -207,6 +237,8 @@ from sirnaforge.workflow_variant import (
 )
 from sirnaforge.zfn import emit_zfn_experimental_warning
 from sirnaforge.zfn.design import ZFNDesigner
+from sirnaforge.zfn.nextflow_bridge import _site_from_row
+from sirnaforge.zfn.search import ExhaustiveZFNOffTargetSearcher
 
 logger = get_logger(__name__)
 console = Console(record=True, force_terminal=False, legacy_windows=True)
@@ -348,12 +380,19 @@ class OffTargetGateCounts(NamedTuple):
     mirna_high_risk: int = 0
     total_hits: int = 0
     genuine_off_target_count: int = 0
+    transcriptome_by_species: Mapping[str, Mapping[str, int]] | None = None
 
 
 _ZERO_OFFTARGET_COUNTS = OffTargetGateCounts()
 
 _TRANSCRIPTOME_CHANNEL = frozenset({ScreeningChannel.TRANSCRIPTOME})
 _MIRNA_SEED_CHANNEL = frozenset({ScreeningChannel.MIRNA_SEED})
+_TRANSCRIPT_SEED_CHANNEL = frozenset({ScreeningChannel.TRANSCRIPT_SEED})
+_SPECIES_TRANSCRIPTOME_LIMIT_COUNTERS = (
+    "transcriptome_hits_0mm",
+    "transcriptome_hits_1mm",
+    "transcriptome_hits_2mm",
+)
 
 #: Which screening channel supplies each post-screen gate's count. One mapping, because
 #: ``_check_offtarget_filters`` and ``_apply_post_screen_ranking`` both need this answer and must not
@@ -368,6 +407,7 @@ POST_SCREEN_FILTER_CHANNELS: Mapping[str, frozenset[ScreeningChannel]] = {
     "max_mirna_perfect_seed": _MIRNA_SEED_CHANNEL,
     "max_mirna_1mm_seed": _MIRNA_SEED_CHANNEL,
     "fail_on_high_risk_mirna": _MIRNA_SEED_CHANNEL,
+    "max_transcript_seed_sites": _TRANSCRIPT_SEED_CHANNEL,
     # Counts two channels at once, so it is decided by neither alone.
     "max_total_offtarget_hits": _TRANSCRIPTOME_CHANNEL | _MIRNA_SEED_CHANNEL,
 }
@@ -439,7 +479,7 @@ def refuse_renamed_arguments(supplied: Mapping[str, Any]) -> None:
 class WorkflowConfig:
     """Configuration for the complete siRNA design workflow."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0912
         self,
         output_dir: Path,
         gene_query: str,
@@ -467,6 +507,16 @@ class WorkflowConfig:
         variant_config: VariantWorkflowConfig | None = None,
         zfn_config: ZFNWorkflowConfig | None = None,
         resolved_policy: ResolvedRunPolicy | None = None,
+        mirna_reference_manifest: str | Path | None = None,
+        target_intent_request: TargetIntentRequest | None = None,
+        transcript_seed_species: Sequence[str] | None = None,
+        transcript_seed_required_species: Sequence[str] = (),
+        transcript_seed_scope: TranscriptSequenceScope | str = TranscriptSequenceScope.FULL_CDNA,
+        max_transcript_seed_sites: int | None = None,
+        aligner: str = "bwa-mem2",
+        report_mode: ReportMode = "auto",
+        report_artifact_dir: Path | None = None,
+        report_thresholds: ReportModeThresholds | None = None,
         **renamed: Any,
     ):
         """Initialize workflow configuration.
@@ -502,15 +552,38 @@ class WorkflowConfig:
                 "WorkflowConfig received both a resolved policy and different design_params; "
                 "pass one or the other so there is a single resolved configuration"
             )
-        self.design_params = (
-            resolved_policy.design_parameters if resolved_policy else (design_params or DesignParameters())
-        )
+        if resolved_policy is not None:
+            policy_threshold = resolved_policy.design_parameters.offtarget_filters.max_transcript_seed_sites
+            if max_transcript_seed_sites is not None and max_transcript_seed_sites != policy_threshold:
+                raise RunPolicyError(
+                    "WorkflowConfig received conflicting max_transcript_seed_sites and resolved_policy; "
+                    "configure the threshold through the resolved policy"
+                )
+            self.design_params = resolved_policy.design_parameters
+        else:
+            self.design_params = design_params or DesignParameters()
+            if max_transcript_seed_sites is not None:
+                if max_transcript_seed_sites < 0:
+                    raise RunPolicyError("max_transcript_seed_sites must be non-negative")
+                seed_filter_parameters = self.design_params.offtarget_filters.model_copy(
+                    update={"max_transcript_seed_sites": max_transcript_seed_sites}
+                )
+                self.design_params = self.design_params.model_copy(update={"offtarget_filters": seed_filter_parameters})
         self.resolved_policy = resolved_policy or describe_parameters(
             self.design_params, entry_point=EntryPoint.SCREENING_WORKFLOW, query_species=query_species
         )
         # single source of truth: number of candidates selected everywhere
         self.top_n = self.design_params.top_n
+        if report_mode not in ("auto", "compact_single_file", "paged_single_file", "data_backed"):
+            raise ValueError(f"Unsupported report mode: {report_mode}")
+        self.report_mode = report_mode
+        self.report_artifact_dir = report_artifact_dir
+        self.report_thresholds = report_thresholds
+        self.aligner = normalize_aligner(aligner)
         self.nextflow_config: dict[str, Any] = dict(nextflow_config) if nextflow_config else {}
+        configured_aligner = self.nextflow_config.get("aligner")
+        if configured_aligner is not None and normalize_aligner(str(configured_aligner)) != self.aligner:
+            raise ValueError("Conflicting aligner and nextflow_config aligner; select one backend consistently")
         stale_params = sorted(set(self.nextflow_config) & set(RENAMED_NEXTFLOW_PARAMS))
         if stale_params:
             raise ValueError(
@@ -545,6 +618,80 @@ class WorkflowConfig:
         # references to screen against, so no position in it identifies the target.
         stated_query_species = (query_species or "").strip()
         self.query_species: str | None = normalize_species_name(stated_query_species) if stated_query_species else None
+        self.mirna_reference_manifest = Path(mirna_reference_manifest) if mirna_reference_manifest else None
+        self.target_intent_request = target_intent_request
+        self.transcript_seed_scope = TranscriptSequenceScope(transcript_seed_scope)
+        self.max_transcript_seed_sites = self.design_params.offtarget_filters.max_transcript_seed_sites
+        existing_seed_requirements = tuple(
+            entry
+            for entry in self.resolved_policy.evidence_requirements.channel_requirements
+            if entry.channel is ScreeningChannel.TRANSCRIPT_SEED
+        )
+        seed_species_values = (
+            transcript_seed_species
+            if transcript_seed_species is not None
+            else tuple(entry.species for entry in existing_seed_requirements)
+        )
+        normalized_seed_species = tuple(dict.fromkeys(normalize_species_name(value) for value in seed_species_values))
+        required_seed_species = tuple(
+            dict.fromkeys(normalize_species_name(value) for value in transcript_seed_required_species)
+        )
+        if set(required_seed_species) - set(normalized_seed_species):
+            raise ValueError("transcript_seed_required_species must be a subset of transcript_seed_species")
+        self.transcript_seed_species = normalized_seed_species
+        self.transcript_seed_required_species = required_seed_species
+        if self.max_transcript_seed_sites is not None and not normalized_seed_species:
+            raise RunPolicyError("max_transcript_seed_sites requires at least one transcript-seed species")
+        seed_limited_species = {
+            species
+            for species, limits in self.design_params.offtarget_filters.species_liability_limits.items()
+            if any(
+                getattr(limits, metric) is not None
+                for metric in ("transcript_seed_sites", "transcript_seed_transcripts", "transcript_seed_genes")
+            )
+        }
+        missing_seed_species = seed_limited_species - set(normalized_seed_species)
+        if missing_seed_species:
+            names = ", ".join(sorted(missing_seed_species))
+            raise RunPolicyError(
+                f"species transcript-seed liability limits require matching --transcript-seed-species entries: {names}"
+            )
+        if normalized_seed_species:
+            requirements = list(self.resolved_policy.evidence_requirements.channel_requirements)
+            existing_by_species = {entry.species: entry for entry in existing_seed_requirements}
+            for species in normalized_seed_species:
+                existing_entry = existing_by_species.get(species)
+                requested_requiredness = (
+                    Requiredness.REQUIRED if species in required_seed_species else Requiredness.EXPLORATORY
+                )
+                if existing_entry is not None:
+                    if (
+                        transcript_seed_species is not None
+                        and existing_entry.requiredness is not requested_requiredness
+                    ):
+                        raise ValueError(f"transcript-seed requiredness for {species} conflicts with resolved policy")
+                    continue
+                requirements.append(
+                    ChannelRequirement(
+                        channel=ScreeningChannel.TRANSCRIPT_SEED,
+                        species=species,
+                        requiredness=requested_requiredness,
+                    )
+                )
+            if transcript_seed_species is not None and set(required_seed_species) - set(normalized_seed_species):
+                raise ValueError("transcript_seed_required_species must be a subset of transcript_seed_species")
+            evidence_requirements = EvidenceRequirements(
+                channel_requirements=tuple(requirements),
+                unknown_evidence_action=self.resolved_policy.evidence_requirements.unknown_evidence_action,
+            )
+            self.resolved_policy = self.resolved_policy.model_copy(
+                update={"evidence_requirements": evidence_requirements}
+            )
+        if normalized_seed_species:
+            self.nextflow_config.setdefault("transcript_seed_enabled", True)
+            self.nextflow_config.setdefault("transcript_seed_species", ",".join(normalized_seed_species))
+            self.nextflow_config.setdefault("transcript_seed_scope", self.transcript_seed_scope.value)
+            self.nextflow_config.setdefault("transcript_seed_site_identity", TRANSCRIPT_SEED_SITE_IDENTITY)
         self.mirna_database = mirna_database
         # One species vocabulary for the miRNA channel too, in the caller's own order (#100). The CLI
         # resolves --species into miRNA *database codes* -- `--species human,rhesus` becomes
@@ -610,6 +757,11 @@ class WorkflowConfig:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         (self.output_dir / "sirnaforge").mkdir(exist_ok=True)
         (self.output_dir / "off_target").mkdir(exist_ok=True)
+        if self.mirna_reference_manifest is not None:
+            staged_manifest = stage_reference_manifest(
+                self.mirna_reference_manifest, self.output_dir / "off_target" / "mirna_references"
+            )
+            self.nextflow_config["mirna_reference_manifest"] = str(staged_manifest)
         (self.output_dir / "logs").mkdir(exist_ok=True)
         if self.design_params.design_mode != DesignMode.ZFN:
             (self.output_dir / "transcripts").mkdir(exist_ok=True)
@@ -668,6 +820,12 @@ class SiRNAWorkflow:
         # rather than publishing a Compara call that never happened.
         self._orthology_mapping: OrthologueMapping | None = None
         self._annotation_summary: dict[str, Any] = {}
+        self._transcript_annotations: dict[str, TranscriptAnnotation] = {}
+        self._annotation_transcripts: list[TranscriptInfo] = []
+        self._resolved_target_intent: ResolvedTargetIntent | None = None
+        self._target_intent_observations: dict[str, dict[str, Any]] = {}
+        self._transcript_seed_summary: dict[str, Any] = {}
+        self._target_transcript_metadata: list[dict[str, Any]] = []
         self._gene_transcript_ids: set[str] = set()
         self._query_gene_ids: set[str] = set()
         self._query_gene_symbols: set[str] = set()
@@ -695,6 +853,7 @@ class SiRNAWorkflow:
         # Digest of the guide set the plan and every evidence entry are keyed on. Held so a
         # synthesized entry joins the plan entry it answers for rather than opening a second key.
         self._guide_set_digest: str | None = None
+        self._reference_producer_completed = False
         # Distinct guides handed to the aligner, as counted when the FASTA was written. None means
         # nothing was submitted through this workflow, never "all of them".
         self._submitted_guide_count: int | None = None
@@ -729,6 +888,7 @@ class SiRNAWorkflow:
             load_ortholog_table(self.config.ortholog_mapping_file) if self.config.ortholog_mapping_file else None
         )
         self._species_cdna_fasta: dict[str, Path] = {}
+        self._transcript_seed_fasta_by_species: dict[str, Path] = {}
         self._guide_to_transcripts: dict[str, frozenset[str]] = {}
         self._repeat_summary: dict[str, Any] = {"status": "not_run"}
 
@@ -739,7 +899,7 @@ class SiRNAWorkflow:
         # The payload and report path step 6 registered with Quilt, kept so the registration can be
         # re-issued once logs/workflow_summary.json exists. None until a report has been written, which
         # is what stops the re-issue from naming a summary no run produced.
-        self._report_registration: tuple[ReportPayload, Path] | None = None
+        self._report_registration: tuple[ReportPayload | ReportWriteResult, Path] | None = None
 
     async def run_complete_workflow(self) -> dict[str, Any]:
         """Run the complete design workflow (siRNA/miRNA or ZFN)."""
@@ -762,6 +922,7 @@ class SiRNAWorkflow:
             # Step 1: Transcript Retrieval
             progress.update(main_task, description="[cyan]Retrieving transcripts...")
             transcripts = await self.step1_retrieve_transcripts(progress)
+            self._record_target_identity(transcripts)
             progress.advance(main_task)
 
             # All isoforms of the queried gene are "on-target" - a guide hitting a sibling
@@ -781,6 +942,29 @@ class SiRNAWorkflow:
             self._protein_coding_transcript_ids = protein_coding_transcripts
             self._protein_coding_transcript_count = len(protein_coding_transcripts)
 
+            if self.config.target_intent_request is not None:
+                self._resolved_target_intent = resolve_target_intent(
+                    self.config.target_intent_request,
+                    self._annotation_transcripts,
+                    annotation_transcript_ids=[
+                        t.transcript_id for t in self._annotation_transcripts if t.transcript_id
+                    ],
+                    annotation_provenance=(
+                        f"database:{self.config.database.value};query:{self.config.gene_query};"
+                        f"source:{'input_fasta' if self.config.input_fasta else 'gene_search'}"
+                    ),
+                    enumeration_input_ids=[t.transcript_id for t in transcripts if t.transcript_id],
+                    sequence_species=self._query_species,
+                )
+                intent_path = self.config.output_dir / "target_intent" / "resolved_intent.json"
+                intent_path.parent.mkdir(parents=True, exist_ok=True)
+                intent_path.write_text(
+                    json.dumps(
+                        self._resolved_target_intent.model_dump(mode="json"),
+                        indent=2,
+                    )
+                )
+
             # Track species request: if config shows explicit request, use it; otherwise default was applied
             self._species_explicitly_requested = self.config.species_explicitly_requested
 
@@ -789,6 +973,10 @@ class SiRNAWorkflow:
             if self.config.variant_config and self.config.variant_config.has_variants:
                 progress.update(main_task, description="[cyan]Resolving variants...")
                 self.resolved_variants = await self.resolve_variants_step(progress)
+                if self.config.variant_config.variant_mode.value in {"target", "both"} and not self.resolved_variants:
+                    raise ValueError(
+                        "No eligible variants were resolved for allele-targeting design; inspect resolved_variants.json"
+                    )
                 progress.advance(main_task)
             else:
                 # Skip variant resolution step
@@ -803,6 +991,24 @@ class SiRNAWorkflow:
             # Step 3: siRNA Design
             progress.update(main_task, description="[cyan]Designing siRNAs...")
             design_results = await self.step3_design_sirnas(transcripts, progress)
+            if self.resolved_variants and self.config.variant_config:
+                assert self.sirnaforgeer is not None
+                design_results = apply_variant_workflow(
+                    design_results,
+                    self.resolved_variants,
+                    transcripts,
+                    self._transcript_annotations,
+                    self.config.variant_config.variant_mode.value,
+                    self.sirnaforgeer.design_from_sequence,
+                )
+                guide_mapping: dict[str, set[str]] = {}
+                for candidate in design_results.candidates:
+                    guide_mapping.setdefault(candidate.guide_sequence, set()).add(candidate.transcript_id)
+                self._store_guide_to_transcripts(guide_mapping)
+
+            if self._resolved_target_intent is not None:
+                self._evaluate_target_intent_candidates(design_results.candidates)
+
             progress.advance(main_task)
 
             # Step 4: Off-target Analysis and Scoring. Repeat detection now runs inside this
@@ -847,6 +1053,8 @@ class SiRNAWorkflow:
             "repeat_summary": self._repeat_summary,
             "offtarget_summary": offtarget_results,
             "reference_summary": self._summarize_screening_references(),
+            "target_intent": self._target_intent_summary(),
+            "transcript_seed": self._transcript_seed_summary or {"status": "not_requested"},
         }
 
         # Optionally save workflow summary JSON (store in logs/)
@@ -932,10 +1140,13 @@ class SiRNAWorkflow:
 
             # Step 1: Evaluate pair (design + exhaustive off-target search)
             progress.update(main_task, description="[cyan]Running ZFN pair evaluation & off-target search...")
-            zfn_result: ZFNDesignResult = self.zfn_designer.evaluate_pair(
-                params=zfn_params,
-                annotation=annotation,
-            )
+            if self.config.nextflow_config.get("design_mode") == "zfn":
+                zfn_result = await self._run_zfn_nextflow_search(zfn_params, annotation, start_time)
+            else:
+                zfn_result = self.zfn_designer.evaluate_pair(
+                    params=zfn_params,
+                    annotation=annotation,
+                )
             progress.advance(main_task)
 
             # Step 2: Generate reports
@@ -957,7 +1168,7 @@ class SiRNAWorkflow:
                 candidate_payloads.append(payload)
 
             candidate_data: dict[str, Any] = {
-                "schema_version": "zfn_candidate_summary.v1",
+                "schema_version": ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION,
                 "search_contract": zfn_params.canonical_search_contract().model_dump(mode="json"),
                 "candidates": candidate_payloads,
                 "summary": zfn_result.get_summary(),
@@ -1020,6 +1231,96 @@ class SiRNAWorkflow:
 
         return summary
 
+    async def _run_zfn_nextflow_search(
+        self,
+        params: ZFNDesignParameters,
+        annotation: GenomicAnnotationConfig | None,
+        start_time: float,
+    ) -> ZFNDesignResult:
+        """Run the ZFN search through the embedded Nextflow route with the direct contract intact."""
+        searcher = ExhaustiveZFNOffTargetSearcher()
+        genome_fasta = searcher._resolve_search_space_fasta(params)
+        annotation_path = searcher._resolve_annotation_path(annotation) if annotation is not None else None
+        if annotation_path is not None and annotation is not None:
+            annotation.annotation_path = str(annotation_path)
+
+        # Freeze all search/ranking parameters for task processes and aggregation. Paths whose
+        # Nextflow staging location is executor-specific are supplied separately as path inputs.
+        contract = params.model_copy(
+            update={
+                "search_space_fasta": str(genome_fasta),
+                "search_space_reference": None,
+                "search_space_index": None,
+            },
+            deep=True,
+        )
+        contract_path = self.config.output_dir / "logs" / "zfn_nextflow_contract.json"
+        contract_path.parent.mkdir(parents=True, exist_ok=True)
+        contract_path.write_text(contract.model_dump_json(indent=2), encoding="utf-8")
+        annotation_config_path: Path | None = None
+        if annotation is not None:
+            annotation_config_path = self.config.output_dir / "logs" / "zfn_annotation_config.json"
+            annotation_config_path.write_text(annotation.model_dump_json(indent=2), encoding="utf-8")
+
+        dummy_input = self.config.output_dir / "off_target" / ".zfn_nextflow_input.fa"
+        dummy_input.parent.mkdir(parents=True, exist_ok=True)
+        dummy_input.write_text(">zfn_pipeline_placeholder\nACGT\n", encoding="utf-8")
+        nf_output_dir = self.config.output_dir / "off_target" / "zfn_nextflow"
+
+        sharding = params.sharding
+        run_params: dict[str, Any] = {
+            **self.config.nextflow_config,
+            "design_mode": "zfn",
+            "zfn_left_half_site": params.left_half_site,
+            "zfn_right_half_site": params.right_half_site,
+            "zfn_genome_fasta": str(genome_fasta),
+            "zfn_params_json": str(contract_path),
+            "zfn_algorithm": params.algorithm.value,
+            "zfn_dimer_mode": params.dimer_mode.value,
+            "zfn_spacer_lengths": ",".join(str(value) for value in params.spacer_constraints.allowed_spacer_lengths),
+            "zfn_max_mismatches": params.half_site_constraints.max_mismatches,
+            "zfn_sharding_enabled": sharding.enabled,
+            "zfn_shard_chunk_mb": max(1, sharding.chunk_size_bp // 1_000_000),
+            "zfn_shard_overlap_bp": sharding.overlap_bp,
+            "zfn_shard_chromosomes": ",".join(sharding.chromosomes),
+        }
+        if annotation_path is not None:
+            run_params["zfn_annotation"] = str(annotation_path)
+        if annotation_config_path is not None:
+            run_params["zfn_annotation_config_json"] = str(annotation_config_path)
+        if params.search_space_index:
+            run_params["zfn_search_space_index"] = params.search_space_index
+        runner, _ = self._setup_nextflow_runner([], run_params)
+        try:
+            if not self._validate_nextflow_environment(runner):
+                raise RuntimeError("SIRNAFORGE_ZFN_USE_NEXTFLOW=1 requires an installed Nextflow runtime")
+            result = await runner.run_offtarget_analysis(
+                input_file=dummy_input,
+                output_dir=nf_output_dir,
+                screen_species=[],
+                additional_params=run_params,
+                show_progress=False,
+            )
+        finally:
+            dummy_input.unlink(missing_ok=True)
+
+        sites_csv = nf_output_dir / "zfn_offtarget" / "offtarget_sites.csv"
+        if result.get("status") != "completed" or not sites_csv.is_file():
+            raise RuntimeError(f"Nextflow ZFN search completed without aggregated sites: {result}")
+        with sites_csv.open("r", encoding="utf-8", newline="") as handle:
+            sites: list[ZFNOffTargetSite] = [_site_from_row(row) for row in csv.DictReader(handle)]
+        if self.zfn_designer is None:
+            raise RuntimeError("ZFN designer not initialized for design_mode=zfn")
+        candidate = self.zfn_designer.build_candidate(params, sites)
+        return ZFNDesignResult(
+            parameters=params,
+            annotation=annotation,
+            candidates=[candidate],
+            off_target_sites=sites,
+            processing_time_s=max(0.0, time.perf_counter() - start_time),
+            tool_versions=self.zfn_designer.tool_versions(),
+        )
+
     # ──────────────────────────────────────────────────────
     #  Design stages 1-3: transcripts, ORFs, candidate enumeration
     # ──────────────────────────────────────────────────────
@@ -1066,6 +1367,7 @@ class SiRNAWorkflow:
 
             if isinstance(self._annotation_client, LocalTranscriptModelClient):
                 await self._enrich_transcript_annotations(transcripts)
+            self._annotation_transcripts = list(transcripts)
             return transcripts
 
         # Otherwise perform a gene search
@@ -1079,6 +1381,7 @@ class SiRNAWorkflow:
 
         # Get transcripts
         transcripts = gene_result.transcripts
+        self._annotation_transcripts = list(transcripts)
         progress.advance(task)
 
         # Filter for protein-coding transcripts
@@ -1148,17 +1451,21 @@ class SiRNAWorkflow:
                 else ReferenceChoice.default("GRCh38", reason="auto-selected for annotation")
             )
 
+            required_for_variants = bool(self.config.variant_config and self.config.variant_config.has_variants)
+            requested_ids = transcript_ids if required_for_variants else transcript_ids[:10]
             bundle = await self._annotation_client.fetch_by_ids(
-                ids=transcript_ids[:10],  # Limit to first 10 to avoid excessive API calls
+                ids=requested_ids,
                 species=self._query_species,
                 reference=reference,
             )
+
+            self._transcript_annotations.update(bundle.transcripts)
 
             # Store summary for workflow output
             self._annotation_summary = {
                 "enabled": True,
                 "provider": local_client.provider if local_client else "ensembl_rest",
-                "transcripts_queried": len(transcript_ids[:10]),
+                "transcripts_queried": len(requested_ids),
                 "transcripts_resolved": bundle.resolved_count,
                 "transcripts_unresolved": bundle.unresolved_count,
                 "reference": reference.to_metadata(),
@@ -1169,7 +1476,7 @@ class SiRNAWorkflow:
 
             if bundle.resolved_count > 0:
                 console.print(
-                    f"📊 Genomic annotations: {bundle.resolved_count}/{len(transcript_ids[:10])} transcripts enriched"
+                    f"📊 Genomic annotations: {bundle.resolved_count}/{len(requested_ids)} transcripts enriched"
                 )
         except Exception as e:
             logger.debug(f"Transcript annotation enrichment failed (non-critical): {e}")
@@ -1242,6 +1549,105 @@ class SiRNAWorkflow:
 
         console.print(f"🔍 ORF validation: {len(valid_transcripts)}/{len(transcripts)} transcripts have valid ORFs")
         return {"results": orf_results, "valid_transcripts": valid_transcripts}
+
+    def _target_intent_allele_sequences(
+        self, candidate: SiRNACandidate, resolved: ResolvedTargetIntent
+    ) -> tuple[dict[str, str], set[str]]:
+        """Map an alternate candidate's exact GRCh38 variants into the frozen cDNA universe."""
+        if not candidate.allele_specific or "alt" not in candidate.targeted_alleles:
+            return {}, set()
+        variants = [VariantRecord.model_validate(item) for item in candidate.overlapped_variants]
+        overrides: dict[str, str] = {}
+        unresolved: set[str] = set()
+        for transcript in resolved.transcripts:
+            if transcript.sequence is None:
+                continue
+            annotation = self._transcript_annotations.get(transcript.transcript_id)
+            if annotation is None:
+                annotation = next(
+                    (
+                        value
+                        for identifier, value in self._transcript_annotations.items()
+                        if strip_version(identifier) == transcript.transcript_id
+                    ),
+                    None,
+                )
+            if annotation is None:
+                unresolved.add(transcript.transcript_id)
+                continue
+            sequence = transcript.sequence
+            changed = False
+            for variant in variants:
+                sequence, position = apply_variant_to_transcript_sequence(sequence, variant, annotation)
+                changed = changed or position is not None
+            if changed:
+                overrides[transcript.transcript_id] = sequence
+        return overrides, unresolved
+
+    def _evaluate_target_intent_candidates(self, candidates: Sequence[SiRNACandidate]) -> None:
+        """Record each guide's exact target-universe verdict and apply failing/unknown eligibility."""
+        resolved = self._resolved_target_intent
+        if resolved is None:
+            return
+        observations: dict[str, dict[str, Any]] = {}
+        denominator = resolved.intent.coverage_denominator
+        for candidate in candidates:
+            allele_sequences, unresolved_allele_transcripts = self._target_intent_allele_sequences(candidate, resolved)
+            evaluation = evaluate_target_intent_guide(
+                candidate.guide_sequence,
+                resolved,
+                sequence_overrides=allele_sequences,
+                unresolved_allele_transcript_ids=unresolved_allele_transcripts,
+            )
+            coverage_numerator = evaluation.covered_transcript_ids & denominator
+            missing_denominator_sequences = evaluation.missing_sequence_transcript_ids & denominator
+            candidate.isoform_coverage = (
+                isoform_coverage_sub_score(len(coverage_numerator), len(denominator))
+                if not missing_denominator_sequences
+                else None
+            )
+            candidate.filter_verdicts["target_intent"] = evaluation.verdict.value
+            if evaluation.verdict is TargetIntentVerdict.FAIL:
+                if candidate.passes_filters is True:
+                    candidate.passes_filters = False
+                candidate.quality_issues.append("TARGET_INTENT_FAIL")
+            elif evaluation.verdict is TargetIntentVerdict.UNKNOWN:
+                candidate.quality_issues.append("TARGET_INTENT_UNKNOWN")
+            observations[candidate.id] = {
+                "verdict": evaluation.verdict.value,
+                "covered_transcript_ids": sorted(evaluation.covered_transcript_ids),
+                "coverage_numerator_ids": sorted(coverage_numerator),
+                "coverage_denominator_ids": sorted(denominator),
+                "isoform_coverage": candidate.isoform_coverage,
+                "uncovered_required_transcript_ids": sorted(evaluation.uncovered_required_transcript_ids),
+                "excluded_hit_transcript_ids": sorted(evaluation.excluded_hit_transcript_ids),
+                "missing_sequence_transcript_ids": sorted(evaluation.missing_sequence_transcript_ids),
+                "unresolved_allele_transcript_ids": sorted(evaluation.unresolved_allele_transcript_ids),
+                "unresolved_target_species": sorted(evaluation.unresolved_target_species),
+            }
+        self._target_intent_observations = observations
+        output = self.config.output_dir / "target_intent" / "guide_observations.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps({"schema_version": "1", "guides": observations}, indent=2))
+
+    def _target_intent_summary(self) -> dict[str, Any]:
+        """Report the resolved coverage universe and the location of guide-level observations."""
+        resolved = self._resolved_target_intent
+        if resolved is None:
+            return {"status": "not_configured"}
+        return {
+            "status": "resolved",
+            "selectivity": str(resolved.intent.selectivity),
+            "target_species": sorted(resolved.intent.target_species),
+            "unresolved_target_species": sorted(resolved.unresolved_target_species),
+            "offtarget_screen_species": sorted(resolved.intent.offtarget_screen_species),
+            "annotation_universe_count": len(resolved.intent.annotation_universe),
+            "coverage_denominator": sorted(resolved.intent.coverage_denominator),
+            "enumeration_inputs": sorted(resolved.intent.enumeration_inputs),
+            "annotation_provenance": resolved.intent.annotation_provenance,
+            "resolved_intent_file": str(self.config.output_dir / "target_intent" / "resolved_intent.json"),
+            "guide_observations_file": str(self.config.output_dir / "target_intent" / "guide_observations.json"),
+        }
 
     async def step3_design_sirnas(self, transcripts: list[TranscriptInfo], progress: Progress) -> DesignResult:
         """Step 3: Design siRNA candidates for valid transcripts.
@@ -1348,7 +1754,7 @@ class SiRNAWorkflow:
             c.transcript_hit_fraction = (hits / total_seqs) if total_seqs > 0 else 0.0
 
         # Sort, compute top-N (prefer passing candidates)
-        all_candidates.sort(key=ranking_score, reverse=True)
+        all_candidates.sort(key=ranking_order_key)
         passing = [
             c
             for c in all_candidates
@@ -1358,7 +1764,7 @@ class SiRNAWorkflow:
                 and c.passes_filters == _ModelSiRNACandidate.FilterStatus.PASS
             )
         ]
-        top_candidates = (passing or all_candidates)[: self.config.top_n]
+        top_candidates = unique_guide_representatives(passing)[: self.config.top_n]
 
         processing_time = max(0.0, time.perf_counter() - start)
         filtered_count = len(passing)
@@ -1628,22 +2034,27 @@ class SiRNAWorkflow:
         # Rendering the report and registering it are two writes with two failure modes, so they get
         # two handlers (#103): a shared handler would mislog a successful render as failed whenever
         # only the registration write failed.
-        payload: ReportPayload | None = None
+        report_result: ReportWriteResult | None = None
         report_path: Path | None = None
         render_error: str | None = None
         try:
-            # Pass the resolved policy: rediscovering it from the manifest works, but this run holds
-            # the gates it actually applied, and a default panel would report other thresholds.
-            payload = build_payload(self.config.output_dir, policy=self.config.resolved_policy)
-            report_path = write_report(payload, report_html_path)
+            report_result = write_report_from_run(
+                self.config.output_dir,
+                report_html_path,
+                mode=self.config.report_mode,
+                artifact_dir=self.config.report_artifact_dir,
+                thresholds=self.config.report_thresholds,
+                policy=self.config.resolved_policy,
+            )
+            report_path = report_result.output
         except Exception as e:
             render_error = f"{type(e).__name__}: {e}"
-            logger.warning(f"Failed to write self-contained HTML report: {e}")
+            logger.warning(f"Failed to write HTML report: {e}")
 
         summarize_path: Path | None = None
-        if self.config.quilt_summarize and payload is not None and report_path is not None:
-            self._report_registration = (payload, report_path)
-            summarize_path = self._write_quilt_summarize(payload, report_path)
+        if self.config.quilt_summarize and report_result is not None and report_path is not None:
+            self._report_registration = (report_result, report_path)
+            summarize_path = self._write_quilt_summarize(report_result, report_path)
 
         # Unconditional, because manifest.json claims report.html only as PENDING, and the sidecar is
         # the only place the outcome can be recorded without rewriting the bytes the report quoted.
@@ -1676,11 +2087,13 @@ class SiRNAWorkflow:
                 "   - Selection exports: sirnaforge/ (candidates_qualified.csv/.fasta, candidates_provisional.csv)"
             )
         if report_path is not None and report_path.exists():
-            console.print("   - Self-contained HTML report: sirnaforge/report.html")
+            console.print(
+                f"   - HTML report ({report_result.mode if report_result else 'unknown'}): sirnaforge/report.html"
+            )
         if summarize_path is not None and summarize_path.exists():
             console.print("   - Quilt package summary: quilt_summarize.json")
 
-    def _write_quilt_summarize(self, payload: ReportPayload, report_path: Path) -> Path | None:
+    def _write_quilt_summarize(self, payload: ReportPayload | ReportWriteResult, report_path: Path) -> Path | None:
         """Register the run's artifacts where Quilt reads them; return the path, or ``None`` if it failed.
 
         At the run root, not beside the report: Quilt reads a summarize file only at the package root,
@@ -1690,6 +2103,14 @@ class SiRNAWorkflow:
         """
         out_path = Path(self.config.output_dir) / "quilt_summarize.json"
         try:
+            if isinstance(payload, ReportWriteResult):
+                return write_quilt_summarize_from_run(
+                    report_path,
+                    self.config.output_dir,
+                    payload.manifest.get("summary", {}),
+                    payload.manifest.get("mode_facts") or {},
+                    out_path=out_path,
+                )
             return write_quilt_summarize(payload, report_path, self.config.output_dir, out_path=out_path)
         except Exception as e:
             logger.warning(f"Failed to write Quilt package summary: {e}")
@@ -2013,7 +2434,51 @@ class SiRNAWorkflow:
             },
             "files": files,
             "provenance": self._build_provenance_block(report_html=report_html),
+            "reference_evidence": self._reference_evidence(),
+            "target_identity": {
+                "schema_version": 1,
+                "transcripts": self._target_transcript_metadata,
+                "resolvers": {
+                    "ensembl": {
+                        "template": "https://www.ensembl.org/id/{identifier}",
+                        "release_template": "https://e{release}.ensembl.org/id/{identifier}",
+                    },
+                    "mirgenedb": {"template": "https://mirgenedb.org/show/{species}/{name}"},
+                },
+            },
         }
+
+    def _record_target_identity(self, transcripts: Sequence[TranscriptInfo]) -> None:
+        """Publish source assertions, keeping input labels and RefSeq heuristics unresolved."""
+        self._target_transcript_metadata = []
+        for transcript in transcripts:
+            unresolved = bool(self.config.input_fasta)
+            authority = transcript.canonical_source if not unresolved else None
+            release = transcript.canonical_release if authority else None
+            established = bool(authority and release)
+            self._target_transcript_metadata.append(
+                {
+                    "transcript_id": transcript.transcript_id,
+                    "gene_id": transcript.gene_id if not unresolved else None,
+                    "gene_symbol": transcript.gene_name if not unresolved else None,
+                    "transcript_biotype": transcript.transcript_type,
+                    "identity_status": "unresolved_input" if unresolved else "retrieved",
+                    "is_canonical": transcript.is_canonical if established else None,
+                    "canonical_source": authority,
+                    "canonical_release": release,
+                    "canonical_status": "established" if established else "not_established",
+                }
+            )
+
+    def _reference_evidence(self) -> dict[str, Any]:
+        return read_reference_evidence(
+            self.config.output_dir,
+            source=self.config.mirna_database,
+            species=list(self.config.mirna_species),
+            skipped=not self.config.design_params.check_off_targets or not self.config.mirna_species,
+            allow_artifact=self._reference_producer_completed,
+            expected_digest=self._guide_set_digest,
+        )
 
     def _build_provenance_block(self, *, report_html: Path | None) -> dict[str, Any]:
         """Name the build and the references this run's science rests on, or say why it cannot.
@@ -2027,7 +2492,7 @@ class SiRNAWorkflow:
         silence, so the degraded block says what went wrong instead of dropping the key.
         """
         try:
-            build = dict(build_identity())
+            build = dict(build_identity(aligner=self.config.aligner))
             # Omitted rather than nulled when no Nextflow screen ran: there is no pipeline to revise.
             if self._nextflow_cache_info is not None:
                 build["pipeline_revision"] = pipeline_revision_identity(
@@ -2245,13 +2710,16 @@ class SiRNAWorkflow:
                 "index_prefix": reference.index,
                 # The 12-hex cache stem is an md5 of a release-floating URL, so it identifies the
                 # request and not the bytes; it must never be read as a digest.
-                "path_scope": "container" if build_identity()["container"]["in_container"] else "host",
+                "path_scope": "container"
+                if build_identity(aligner=self.config.aligner)["container"]["in_container"]
+                else "host",
             },
         }
         entry.update(self._reference_bytes_provenance(reference, evidence))
         entry["index"] = index_attestation(
             Path(reference.index),
             reference_fasta_name=Path(reference.fasta).name if reference.fasta else None,
+            aligner=self.config.aligner,
         )
         entry["classification_index"] = self._classification_index_provenance(species)
         return entry
@@ -2600,6 +3068,7 @@ class SiRNAWorkflow:
                     "species": species,
                     "requiredness": self._orthology_requiredness(species),
                     "status": self._orthology_status(mapping, species),
+                    "reason": mapping.reasons_by_species.get(species),
                     "gene_ids": sorted(mapping.gene_ids_by_species.get(species, frozenset())),
                     "route": absent(
                         "not_retained",
@@ -2913,18 +3382,29 @@ class SiRNAWorkflow:
         # --skip-off-targets/check_off_targets=False cost nearly as much as a real screen, and
         # make "skipped by user request" untrue.
         if not getattr(self.config.design_params, "check_off_targets", True):
-            console.print("⚠️  Off-target analysis skipped by user request")
-            console.print("   ↳ repeat-element detection skipped too: it needs the same cDNA reference")
-            self._repeat_summary = {
-                "status": "skipped",
-                "reason": "user_disabled",
-                "repeat_flagged_count": 0,
-                "threshold_fraction": self.config.design_params.filters.max_repeat_transcript_fraction,
-            }
-            # Still rebuild top_candidates: repeat flags may have been stamped elsewhere, and
-            # downstream reporting expects a ranked list on every path (issue #80 F4/F5).
-            self._apply_post_screen_ranking(design_results)
-            return self._publish_run_status({"status": "skipped", "reason": "user_disabled"})
+            if self.config.transcript_seed_species:
+                # Seed liabilities are a separate channel over the already materialized reference.
+                # The embedded workflow can skip BWA while still running that producer.
+                console.print("ℹ️  Transcriptome alignments skipped; transcript-seed analysis remains enabled")
+                self._repeat_summary = {
+                    "status": "skipped",
+                    "reason": "user_disabled",
+                    "repeat_flagged_count": 0,
+                    "threshold_fraction": self.config.design_params.filters.max_repeat_transcript_fraction,
+                }
+            else:
+                console.print("⚠️  Off-target analysis skipped by user request")
+                console.print("   ↳ repeat-element detection skipped too: it needs the same cDNA reference")
+                self._repeat_summary = {
+                    "status": "skipped",
+                    "reason": "user_disabled",
+                    "repeat_flagged_count": 0,
+                    "threshold_fraction": self.config.design_params.filters.max_repeat_transcript_fraction,
+                }
+                # Still rebuild top_candidates: repeat flags may have been stamped elsewhere, and
+                # downstream reporting expects a ranked list on every path (issue #80 F4/F5).
+                self._apply_post_screen_ranking(design_results)
+                return self._publish_run_status({"status": "skipped", "reason": "user_disabled"})
 
         # One `finally`, so selection runs on every exit: the returns, the caught Nextflow failure, and
         # an exception that propagates. Not a try/except, because `_prepare_offtarget_input`'s
@@ -2937,6 +3417,10 @@ class SiRNAWorkflow:
             # Resolve the screening references once; repeat detection and Nextflow both reuse them
             # instead of each fetching/indexing their own copy.
             additional_params: dict[str, Any] = dict(self.config.nextflow_config)
+            if self.config.transcript_seed_species and not getattr(
+                self.config.design_params, "check_off_targets", True
+            ):
+                additional_params["skip_transcriptome_alignment"] = True
             # Before resolution, so a reference that cannot be fetched is still a planned unit that
             # reconciles as failed rather than a species that was never mentioned again (#100).
             self._record_screening_plan(input_fasta, additional_params)
@@ -3044,8 +3528,9 @@ class SiRNAWorkflow:
         ``DesignResult`` -- publishes a selection under the same rules, the same states and the same
         console messages (#100).
 
-        Re-sorts ``candidates`` in place (the CSV writers emit them in this order) and returns the
-        first ``top_n`` eligible candidates.
+        Re-sorts ``candidates`` in place (the CSV writers emit them in this order) and returns up to
+        ``top_n`` distinct normalized guide sequences. Each sequence is represented by its lowest-
+        scoring eligible transcript context; every context row remains in the full candidate list.
         """
         # Before the views are built, because eligibility reads this gate's verdict off the candidate
         # and a gate that never ran has none to read (#105).
@@ -3150,6 +3635,7 @@ class SiRNAWorkflow:
             scored_after_screening=bool(candidate.scored_after_screening),
             off_target_screened=bool(candidate.off_target_screened),
             ranking_score=ranking_score(candidate),
+            stable_tiebreak_key=ranking_tiebreak_key(candidate),
             unknown_filter_ids=frozenset(
                 filter_id for filter_id, verdict in verdicts.items() if verdict == FilterEvaluation.UNKNOWN.value
             ),
@@ -3179,7 +3665,35 @@ class SiRNAWorkflow:
             requirements=policy.evidence_requirements if policy is not None else None,
             completed_pairs=self._completed_evidence_pairs,
             query_species=self._query_species,
-            filter_channels=POST_SCREEN_FILTER_CHANNELS,
+            filter_channels={
+                **POST_SCREEN_FILTER_CHANNELS,
+                **{
+                    resolved.filter_id: (
+                        _TRANSCRIPTOME_CHANNEL
+                        if resolved.setting_key.endswith(
+                            ("transcriptome_hits_0mm", "transcriptome_hits_1mm", "transcriptome_hits_2mm")
+                        )
+                        else _TRANSCRIPT_SEED_CHANNEL
+                    )
+                    for resolved in (policy.filters if policy is not None else ())
+                    if resolved.setting_key.startswith("species_liability_limits.")
+                },
+            },
+            filter_evidence_pairs={
+                resolved.filter_id: frozenset(
+                    (channel.value, species)
+                    for channel in (
+                        _TRANSCRIPTOME_CHANNEL
+                        if resolved.setting_key.endswith(
+                            ("transcriptome_hits_0mm", "transcriptome_hits_1mm", "transcriptome_hits_2mm")
+                        )
+                        else _TRANSCRIPT_SEED_CHANNEL
+                    )
+                    for species in resolved.descriptor.scope.species
+                )
+                for resolved in (policy.filters if policy is not None else ())
+                if resolved.setting_key.startswith("species_liability_limits.")
+            },
             repeat_rejects=repeat_action is FilterAction.FAIL,
             top_n=self.config.top_n,
             design_input_shortfalls=dict(self._design_input_shortfalls),
@@ -3286,7 +3800,7 @@ class SiRNAWorkflow:
         try:
             # Indexing belongs to the same Nextflow provider/image as alignment.
             # Reuse a valid cached index, otherwise hand the pipeline the FASTA.
-            manager = TranscriptomeManager(auto_build_indices=False)
+            manager = TranscriptomeManager(auto_build_indices=False, aligner=self.config.aligner)
 
             # Check if it's a pre-configured source
             if transcriptome_ref in manager.SOURCES:
@@ -3298,14 +3812,18 @@ class SiRNAWorkflow:
                     raw_result = manager.get_filtered_transcriptome(
                         transcriptome_ref, filters=filter_spec, build_index=True
                     )
+                    full_result = manager.get_transcriptome(transcriptome_ref, build_index=False)
                 else:
                     raw_result = manager.get_transcriptome(transcriptome_ref, build_index=True)
+                    full_result = raw_result
 
                 if raw_result is None:
                     return None
 
                 enriched_result: dict[str, Any] = {"source_species": manager.SOURCES[transcriptome_ref].species}
                 enriched_result.update(raw_result)
+                if full_result and full_result.get("fasta"):
+                    enriched_result["full_fasta"] = full_result["fasta"]
                 self._carry_index_build_error(manager, raw_result, enriched_result)
                 return enriched_result
 
@@ -3447,6 +3965,9 @@ class SiRNAWorkflow:
         if not self._transcript_index.for_species(species):
             self._transcript_index.build(species, Path(fasta))
         self._species_cdna_fasta.setdefault(species, Path(fasta))
+        full_fasta = payload.get("full_fasta") or fasta
+        if self._readable_cdna_fasta(Path(full_fasta)):
+            self._transcript_seed_fasta_by_species[species] = Path(full_fasta)
 
         # An index when there is one, otherwise the FASTA -- and then the reference travels on the
         # FASTA parameter, so the pipeline indexes it. Naming a FASTA as an index prefix instead
@@ -3761,7 +4282,7 @@ class SiRNAWorkflow:
 
         return aggregated
 
-    async def _resolve_screening_references(self, additional_params: dict[str, Any]) -> bool:
+    async def _resolve_screening_references(self, additional_params: dict[str, Any]) -> bool:  # noqa: PLR0912
         """Resolve every screening reference request and write the resolved set into the parameters.
 
         One resolver for both doors, so the pipeline receives one species list and one index list
@@ -3802,6 +4323,20 @@ class SiRNAWorkflow:
         if not references:
             return False
 
+        if self.config.transcript_seed_species:
+            seed_fastas = [
+                f"{species}:{self._transcript_seed_fasta_by_species[species]}"
+                for species in self.config.transcript_seed_species
+                if species in self._transcript_seed_fasta_by_species
+            ]
+            if seed_fastas:
+                additional_params["transcript_seed_fastas"] = ",".join(seed_fastas)
+            additional_params["transcript_seed_species"] = ",".join(self.config.transcript_seed_species)
+            additional_params["transcript_seed_scope"] = self.config.transcript_seed_scope.value
+            additional_params["transcript_seed_site_identity"] = TRANSCRIPT_SEED_SITE_IDENTITY
+            if self.config.max_transcript_seed_sites is not None:
+                additional_params["max_transcript_seed_sites"] = self.config.max_transcript_seed_sites
+
         # An already-built index and a FASTA still to be indexed travel on different parameters: the
         # pipeline reads one as a prefix and indexes the other, and naming a FASTA as a prefix aligns
         # nothing while reporting success.
@@ -3824,11 +4359,15 @@ class SiRNAWorkflow:
     def _plan_search_settings(additional_params: Mapping[str, Any]) -> dict[str, str | int | float | bool | None]:
         """The alignment settings a plan entry needs to be reproducible, as stated for this run."""
         settings: dict[str, str | int | float | bool | None] = {}
-        for key in ("max_hits", "bwa_k", "bwa_T", "seed_start", "seed_end"):
+        for key in ("aligner", "max_hits", "bwa_k", "bwa_T", "seed_start", "seed_end"):
             if key not in additional_params:
                 continue
             value = additional_params[key]
             settings[key] = value if isinstance(value, str | int | float | bool) or value is None else str(value)
+        for key in ("transcript_seed_scope", "transcript_seed_site_identity", "max_transcript_seed_sites"):
+            if key in additional_params:
+                value = additional_params[key]
+                settings[key] = value if isinstance(value, str | int | float | bool) or value is None else str(value)
         return settings
 
     def _requested_screening_units(self) -> tuple[tuple[tuple[str, str | None], ...], tuple[str, ...]]:
@@ -3879,6 +4418,7 @@ class SiRNAWorkflow:
             guide_set_digest=self._guide_set_digest,
             transcriptome=transcriptome,
             mirna_species=mirna_species,
+            transcript_seed_species=self.config.transcript_seed_species,
             search_settings=self._plan_search_settings(additional_params),
         )
 
@@ -3949,6 +4489,7 @@ class SiRNAWorkflow:
         """
         if additional_params is None:
             additional_params = dict(self.config.nextflow_config)
+            additional_params["aligner"] = self.config.aligner
             # Recorded before resolution, never after: see _record_screening_plan (#100).
             self._record_screening_plan(input_fasta, additional_params)
             has_transcriptome = await self._resolve_screening_references(additional_params)
@@ -3958,8 +4499,12 @@ class SiRNAWorkflow:
         self._log_nextflow_targets(active_species, has_transcriptome, additional_params)
 
         if not active_species and not has_transcriptome:
-            console.print("ℹ️  No transcriptome indices configured; skipping Nextflow run")
-            return await self._basic_offtarget_analysis(candidates)
+            if self.config.transcript_seed_species:
+                # Target-seed analysis may run from materialized references even when BWA is disabled.
+                has_transcriptome = False
+            else:
+                console.print("ℹ️  No transcriptome indices configured; skipping Nextflow run")
+                return await self._basic_offtarget_analysis(candidates)
 
         runner, _ = self._setup_nextflow_runner(active_species, additional_params)
 
@@ -3982,6 +4527,7 @@ class SiRNAWorkflow:
 
         self._publish_nextflow_work_reference()
 
+        self._reference_producer_completed = results["status"] == "completed"
         if results["status"] == "completed":
             return await self._process_nextflow_results(candidates, nf_output_dir, results)
 
@@ -4135,6 +4681,21 @@ class SiRNAWorkflow:
             mirna_screened=mirna_screened,
             unresolved_orthology_species=ortholog_mapping.unresolved_species,
         )
+        transcript_seed_observations = self._collect_transcript_seed_observations(output_dir, updated_candidates)
+        missing_required_seed = set(self.config.transcript_seed_required_species) - {
+            species
+            for channel, species in (self._completed_evidence_pairs or frozenset())
+            if channel == ScreeningChannel.TRANSCRIPT_SEED.value
+        }
+        if missing_required_seed:
+            published_status = "partial"
+            warning_msg = (
+                "⚠️  Required transcript-seed evidence is incomplete for: "
+                + ", ".join(sorted(missing_required_seed))
+                + "; candidate site counts remain unknown."
+            )
+            console.print(warning_msg)
+            workflow_warnings.append(warning_msg)
         stats["mirna_channel_screened"] = mirna_screened
         stats["orthology"] = ortholog_mapping.summary()
         # Held for the manifest: this is the only place that knows whether a lookup happened.
@@ -4178,6 +4739,7 @@ class SiRNAWorkflow:
                 "execution_metadata": results,
                 "filtering_stats": stats,
                 "aggregated": aggregated_views,
+                "transcript_seed": transcript_seed_observations,
                 "warnings": workflow_warnings,
             },
             # An output directory that does not exist is a failure to execute, not a thin result: the
@@ -4185,6 +4747,160 @@ class SiRNAWorkflow:
             # published `status` stays whatever this method decided, per #100's beside-not-instead rule.
             reason=_EXECUTION_ERROR_REASON if parsed.get("status") == "missing" else None,
         )
+
+    def _collect_transcript_seed_observations(  # noqa: PLR0912
+        self, output_dir: Path, candidates: Sequence[SiRNACandidate]
+    ) -> dict[str, Any]:
+        """Attach producer observations to candidates without inferring zeros for missing evidence."""
+        requested = self.config.transcript_seed_species
+        if not requested:
+            return {"status": "not_requested", "species": [], "per_candidate": {}}
+
+        summaries: dict[str, dict[str, Any]] = {}
+        for species in requested:
+            summary_path = output_dir / "transcript_seed" / f"transcript_seed_{species}_summary.json"
+            if not summary_path.exists():
+                # Some Nextflow configurations publish directly in the result directory.
+                summary_path = output_dir / f"transcript_seed_{species}_summary.json"
+            try:
+                payload = json.loads(summary_path.read_text()) if summary_path.exists() else None
+            except (OSError, json.JSONDecodeError):
+                payload = None
+            if (
+                isinstance(payload, dict)
+                and payload.get("species") == species
+                and payload.get("schema_version") == TRANSCRIPT_SEED_SUMMARY_SCHEMA_VERSION
+                and payload.get("site_identity") == TRANSCRIPT_SEED_SITE_IDENTITY
+            ):
+                summaries[species] = payload
+
+        required = set(self.config.transcript_seed_required_species)
+        completed = self._completed_evidence_pairs or frozenset()
+        observations: dict[str, Any] = {}
+        for candidate in candidates:
+            query_id = candidate.screen_query_id or self._candidate_id_to_representative.get(candidate.id, candidate.id)
+            by_species: dict[str, Any] = {}
+            required_counts: list[int] = []
+            required_complete = True
+            for species in requested:
+                payload = summaries.get(species)
+                per_guide = payload.get("per_guide", {}) if payload else {}
+                result = per_guide.get(query_id) if isinstance(per_guide, dict) else None
+                site_count = result.get("site_count") if isinstance(result, dict) else None
+                pair_complete = (ScreeningChannel.TRANSCRIPT_SEED.value, species) in completed
+                valid = (
+                    isinstance(result, dict)
+                    and result.get("status") == "complete"
+                    and isinstance(result.get("site_count"), int)
+                    and pair_complete
+                )
+                by_species[species] = result if valid else {"status": "unknown", "site_count": None}
+                if species in required:
+                    if valid and isinstance(site_count, int):
+                        required_counts.append(site_count)
+                    else:
+                        required_complete = False
+
+            observed = sum(required_counts) if required_complete and required else None
+            if self.config.max_transcript_seed_sites is not None:
+                seed_action = self._filter_action_for(
+                    "max_transcript_seed_sites", self.config.max_transcript_seed_sites
+                )
+                candidate.record_filter_verdict(
+                    "max_transcript_seed_sites",
+                    observed=observed,
+                    passed=observed is None or observed <= self.config.max_transcript_seed_sites,
+                    action=seed_action,
+                    status=SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS,
+                )
+            policy = getattr(self.config, "resolved_policy", None)
+            if policy is not None:
+                seed_fields = {
+                    "transcript_seed_sites": "site_count",
+                    "transcript_seed_transcripts": "transcript_count",
+                    "transcript_seed_genes": "gene_count",
+                }
+                for resolved in policy.filters:
+                    if not resolved.setting_key.startswith("species_liability_limits."):
+                        continue
+                    metric = resolved.setting_key.rsplit(".", 1)[-1]
+                    result_field = seed_fields.get(metric)
+                    if result_field is None:
+                        continue
+                    limit_species = next(iter(resolved.descriptor.scope.species), None)
+                    if limit_species is None:
+                        continue
+                    result = by_species.get(limit_species)
+                    raw_value = result.get(result_field) if isinstance(result, dict) else None
+                    observed_value = raw_value if isinstance(raw_value, int) else None
+                    gate_complete_pairs = completed
+                    if (
+                        metric == "transcript_seed_genes"
+                        and isinstance(result, dict)
+                        and result.get("gene_count_is_lower_bound") is True
+                    ):
+                        gate_complete_pairs = completed - {(ScreeningChannel.TRANSCRIPT_SEED.value, limit_species)}
+                    gate = GateSpec(
+                        filter_id=resolved.filter_id,
+                        threshold=resolved.descriptor.threshold,
+                        action=resolved.descriptor.action,
+                        comparator=resolved.descriptor.comparator,
+                        channels=_TRANSCRIPT_SEED_CHANNEL,
+                        evidence_pairs=frozenset({(ScreeningChannel.TRANSCRIPT_SEED.value, limit_species)}),
+                    )
+                    outcome = evaluate_gate(gate, observed_value, complete_pairs=gate_complete_pairs)
+                    record_gate_outcome(
+                        candidate,
+                        outcome,
+                        status=SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS,
+                    )
+                    if (
+                        outcome.evaluation is FilterEvaluation.FAIL
+                        and outcome.action is FilterAction.WARN
+                        and "GATE_WARNED" not in candidate.quality_issues
+                    ):
+                        candidate.quality_issues.append("GATE_WARNED")
+            observations[candidate.id] = {
+                "guide_set_id": query_id,
+                "scope": self.config.transcript_seed_scope.value,
+                "required_species": sorted(required),
+                "by_species": by_species,
+                "required_species_site_count": observed,
+                "threshold": self.config.max_transcript_seed_sites,
+                "verdict": candidate.filter_verdicts.get("max_transcript_seed_sites"),
+            }
+
+        status = (
+            "complete"
+            if set(requested) <= set(summaries)
+            and all((ScreeningChannel.TRANSCRIPT_SEED.value, species) in completed for species in requested)
+            else "partial"
+        )
+        result = {
+            "status": status,
+            "scope": self.config.transcript_seed_scope.value,
+            "species": list(requested),
+            "required_species": sorted(required),
+            "exploratory_species": sorted(set(requested) - required),
+            "reference_checksums": {species: summaries[species].get("reference_sha256") for species in summaries},
+            "reference_statuses": {
+                species: {
+                    "status": "complete"
+                    if (ScreeningChannel.TRANSCRIPT_SEED.value, species) in completed
+                    else summaries[species].get("status", "unknown"),
+                    "detail": summaries[species].get("detail"),
+                    "transcripts_unavailable": summaries[species].get("transcripts_unavailable", []),
+                }
+                for species in summaries
+            },
+            "transcripts_scanned": {species: summaries[species].get("transcripts_scanned") for species in summaries},
+            "per_candidate": observations,
+        }
+        path = self.config.output_dir / "transcript_seed" / "guide_observations.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(result, indent=2))
+        self._transcript_seed_summary = result
+        return result
 
     @staticmethod
     def _offtarget_detail_files(parsed: Mapping[str, Any], output_dir: Path) -> dict[str, list[str]]:
@@ -5168,9 +5884,51 @@ class SiRNAWorkflow:
             observed[filter_id] = value
             statuses[filter_id] = status
 
+        policy = getattr(self.config, "resolved_policy", None)
+        if policy is not None:
+            species_counts = counts.transcriptome_by_species or {}
+            for resolved in policy.filters:
+                if not resolved.setting_key.startswith("species_liability_limits."):
+                    continue
+                metric = resolved.setting_key.rsplit(".", 1)[-1]
+                limit_species = next(iter(resolved.descriptor.scope.species), None)
+                if limit_species is None:
+                    continue
+                if metric.startswith("transcriptome_hits_"):
+                    channels = _TRANSCRIPTOME_CHANNEL
+                    gate_value: int | None = species_counts.get(limit_species, {}).get(metric)
+                elif metric.startswith("transcript_seed_"):
+                    # The transcript-seed producer writes its per-species result before this gate
+                    # on the normal path. Preserve it; this fallback supplies UNKNOWN on paths
+                    # where no producer result was reconciled.
+                    if resolved.filter_id in candidate.filter_verdicts:
+                        continue
+                    channels = _TRANSCRIPT_SEED_CHANNEL
+                    gate_value = None
+                else:
+                    continue
+                specs.append(
+                    GateSpec(
+                        filter_id=resolved.filter_id,
+                        threshold=resolved.descriptor.threshold,
+                        action=resolved.descriptor.action,
+                        comparator=resolved.descriptor.comparator,
+                        channels=channels,
+                        evidence_pairs=frozenset((channel.value, limit_species) for channel in channels),
+                    )
+                )
+                observed[resolved.filter_id] = gate_value
+                statuses[resolved.filter_id] = SiRNACandidate.FilterStatus.EXCESS_OFF_TARGETS
+
         outcomes = evaluate_gates(specs, observed, complete_pairs=complete_pairs)
         for outcome in outcomes:
             record_gate_outcome(candidate, outcome, status=statuses[outcome.filter_id])
+            if (
+                outcome.evaluation is FilterEvaluation.FAIL
+                and outcome.action is FilterAction.WARN
+                and "GATE_WARNED" not in candidate.quality_issues
+            ):
+                candidate.quality_issues.append("GATE_WARNED")
 
         rejection = first_rejection(outcomes)
         return rejection is not None, statuses[rejection.filter_id] if rejection is not None else None
@@ -5514,9 +6272,9 @@ class SiRNAWorkflow:
             candidate.off_target_screened = not unscreened_candidate
 
             # Which channel x SPECIES pairs THIS candidate holds evidence for. Pairs, not channels: a
-            # gate whose scope is every screened species -- max_off_target_count is the live one --
-            # passed on a lower bound whenever a secondary species failed, because completeness was
-            # decided query-species-only. A candidate the aligner never saw holds nothing.
+            # gate whose scope is every screened species must not pass on a lower bound whenever a
+            # secondary species failed. Current transcriptome gates are query-species scoped. A
+            # candidate the aligner never saw holds nothing.
             complete_pairs: frozenset[tuple[str, str]] = (
                 frozenset() if never_submitted else run_complete_pairs - unscreened_pairs
             )
@@ -5540,7 +6298,12 @@ class SiRNAWorkflow:
                 # zero was measured.
                 self._gate_offtarget_counts(
                     candidate,
-                    counts=_ZERO_OFFTARGET_COUNTS,
+                    counts=OffTargetGateCounts(
+                        transcriptome_by_species={
+                            species: dict.fromkeys(_SPECIES_TRANSCRIPTOME_LIMIT_COUNTERS, 0)
+                            for species in requested_species
+                        }
+                    ),
                     filter_criteria=filter_criteria,
                     complete_pairs=complete_pairs,
                     stats=stats,
@@ -5560,6 +6323,9 @@ class SiRNAWorkflow:
             transcriptome_query_total = 0
             transcriptome_human_total = 0
             transcriptome_seed_0mm = 0
+            transcriptome_by_species: dict[str, dict[str, int]] = {
+                species: dict.fromkeys(_SPECIES_TRANSCRIPTOME_LIMIT_COUNTERS, 0) for species in requested_species
+            }
             mirna_total = 0
             mirna_query_total = 0
             mirna_human_total = 0
@@ -5641,6 +6407,9 @@ class SiRNAWorkflow:
                         transcriptome_totals[nm] += 1
                         if treated_as_query:
                             transcriptome_query[nm] += 1
+                        transcriptome_by_species.setdefault(
+                            hit_species, dict.fromkeys(_SPECIES_TRANSCRIPTOME_LIMIT_COUNTERS, 0)
+                        )[_SPECIES_TRANSCRIPTOME_LIMIT_COUNTERS[nm]] += 1
 
                     if seed_mismatches == 0:
                         transcriptome_seed_0mm += 1
@@ -5669,6 +6438,7 @@ class SiRNAWorkflow:
             candidate.transcriptome_hits_0mm_query = transcriptome_query[0]
             candidate.transcriptome_hits_1mm_query = transcriptome_query[1]
             candidate.transcriptome_hits_2mm_query = transcriptome_query[2]
+            candidate.transcriptome_hits_query_le2 = sum(transcriptome_query.values())
             candidate.mirna_hits_0mm_seed_query = mirna_query_0mm_seed
             candidate.mirna_hits_high_risk_query = mirna_high_risk_query
             candidate.total_offtarget_hits_query = transcriptome_query_total + mirna_query_total
@@ -5714,7 +6484,8 @@ class SiRNAWorkflow:
                     mirna_0mm_seed=mirna_query_0mm_seed,
                     mirna_high_risk=mirna_high_risk_query,
                     total_hits=transcriptome_query_total + mirna_query_total,
-                    genuine_off_target_count=liabilities_counted(hit_counts),
+                    genuine_off_target_count=sum(transcriptome_query.values()),
+                    transcriptome_by_species=transcriptome_by_species,
                 ),
                 filter_criteria=filter_criteria,
                 complete_pairs=complete_pairs,
@@ -5925,7 +6696,11 @@ class SiRNAWorkflow:
             # candidate happened to be enumerated from. Absent for design_from_sequence/miRNA
             # paths, in which case the term stays inactive rather than computing a wrong number.
             guide_transcripts = self._guide_to_transcripts.get(normalize_guide_sequence(candidate.guide_sequence))
-            if guide_transcripts is not None:
+            if self._resolved_target_intent is not None:
+                # Target intent has already measured against its frozen annotation denominator;
+                # recomputing from the enumerated guide map would silently shrink coverage.
+                pass
+            elif guide_transcripts is not None:
                 isoform_cov = isoform_coverage_sub_score(
                     len(self._protein_coding_transcript_ids & guide_transcripts),
                     self._protein_coding_transcript_count,
@@ -6324,6 +7099,16 @@ async def run_sirna_workflow(
     plfold_window: int | None = None,
     plfold_max_bp_span: int | None = None,
     accessibility_log_floor: float | None = None,
+    mirna_reference_manifest: str | Path | None = None,
+    target_intent_request: TargetIntentRequest | None = None,
+    transcript_seed_species: Sequence[str] | None = None,
+    transcript_seed_required_species: Sequence[str] = (),
+    transcript_seed_scope: TranscriptSequenceScope | str = TranscriptSequenceScope.FULL_CDNA,
+    max_transcript_seed_sites: int | None = None,
+    aligner: str = "bwa-mem2",
+    report_mode: ReportMode = "auto",
+    report_artifact_dir: Path | None = None,
+    report_thresholds: ReportModeThresholds | None = None,
     **renamed: Any,
 ) -> dict[str, Any]:
     """Run complete siRNA design workflow.
@@ -6334,8 +7119,8 @@ async def run_sirna_workflow(
         input_fasta: Local path or remote URI to an input FASTA file
         database: Database to search (ensembl, refseq, gencode)
         design_mode: Design mode (sirna, mirna, or zfn)
-        top_n_candidates: Cap on how many top-ranked candidates are reported (None = no cap, the
-            default). Enumeration and screening always cover every candidate.
+        top_n_candidates: Cap on distinct normalized guide sequences in the shortlist (None = no
+            cap). Enumeration and screening cover all transcript-context rows.
         screen_species: Species to screen against for off-target liabilities
         query_species: Organism the TARGET transcripts belong to. Defaults to the organism the
             gene-query database serves (human), which is also the species of the default
@@ -6343,6 +7128,16 @@ async def run_sirna_workflow(
         transcriptome_indices: Comma-separated species:/index_prefix transcriptome references the
             caller has already built. Replaces automatic transcriptome references; explicitly
             supplied transcriptome FASTAs are screened alongside these indices.
+        mirna_reference_manifest: Optional JSON manifest of pinned local mature miRNA references.
+        target_intent_request: Optional validated target-intent declaration, resolved against the full annotation set.
+        transcript_seed_species: Species with a usable materialized cDNA reference to scan for seed sites.
+        transcript_seed_required_species: Subset of transcript_seed_species required for qualification; others are exploratory.
+        transcript_seed_scope: Full cDNA or explicit 3′UTR; plain cDNA FASTA has no UTR annotation.
+        max_transcript_seed_sites: Optional per-guide ceiling over requested transcript-seed species.
+        report_mode: HTML report layout selection; auto chooses from artifact size and row counts.
+        report_artifact_dir: Optional destination for normalized report artifacts.
+        report_thresholds: Optional deterministic auto-mode size and row-count limits.
+        aligner: Transcriptome alignment backend: bwa-mem2 or bwa-mem3 (plain mode).
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
@@ -6540,6 +7335,16 @@ async def run_sirna_workflow(
         query_species=query_species,
         mirna_database=mirna_database,
         mirna_species=mirna_species,
+        mirna_reference_manifest=mirna_reference_manifest,
+        aligner=aligner,
+        report_mode=report_mode,
+        report_artifact_dir=report_artifact_dir,
+        report_thresholds=report_thresholds,
+        target_intent_request=target_intent_request,
+        transcript_seed_species=transcript_seed_species,
+        transcript_seed_required_species=transcript_seed_required_species,
+        transcript_seed_scope=transcript_seed_scope,
+        max_transcript_seed_sites=max_transcript_seed_sites,
         transcriptome_fasta=transcriptome_fasta,
         transcriptome_filter=transcriptome_filter,
         transcriptome_selection=transcriptome_selection,
@@ -6578,6 +7383,8 @@ async def run_offtarget_only_workflow(
     run_mode: str | None = None,
     policy_config: Path | str | None = None,
     filter_actions: Mapping[str, Any] | None = None,
+    mirna_reference_manifest: str | Path | None = None,
+    aligner: str = "bwa-mem2",
     **renamed: Any,
 ) -> dict[str, Any]:
     """Run off-target-only workflow for pre-designed siRNA candidates.
@@ -6594,6 +7401,8 @@ async def run_offtarget_only_workflow(
         query_species: Organism the input guides were designed against (defaults to human)
         transcriptome_indices: Comma-separated species:/index_prefix transcriptome references the
             caller has already built. Replaces automatic references while retaining explicit FASTAs.
+        mirna_reference_manifest: Optional JSON manifest of pinned local mature miRNA references.
+        aligner: Transcriptome alignment backend: bwa-mem2 or bwa-mem3 (plain mode).
         mirna_database: miRNA reference database identifier
         mirna_species: miRNA reference species identifiers
         transcriptome_fasta: Path or URL to transcriptome FASTA for off-target analysis
@@ -6740,6 +7549,8 @@ async def run_offtarget_only_workflow(
         query_species=query_species,
         mirna_database=mirna_database,
         mirna_species=mirna_species,
+        mirna_reference_manifest=mirna_reference_manifest,
+        aligner=aligner,
         transcriptome_fasta=transcriptome_fasta,
         transcriptome_filter=transcriptome_filter,
         transcriptome_selection=transcriptome_selection,

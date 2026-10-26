@@ -34,6 +34,104 @@ Multiple doses/replicates remain separate source observations. Sequence hashes
 are comparison/grouping aids, not validated development/held-out partitions. No
 validation split is assigned, and the old regression fixtures are unchanged.
 
+One source-specific exception is the 32-record `shabalina_independent` subset. The
+Shabalina et al. paper describes these as an additional set of 32 siRNAs that was
+not included in or analyzed with its 653-guide training set, and reports them as
+two low-concentration experiments. The checked-in sequence hashes confirm zero
+exact-sequence overlap with the 653 extracted training records: 32 observations,
+31 distinct guide sequences, and 10 source accession groups. The paper's results
+for its own models (R² 0.258 and 0.281) are not validation results for
+siRNAforge.
+
+This small set can support a predeclared, exploratory external check of applicable
+sequence-only efficacy features. It does not validate the complete default score
+or its gates: all entries are paired cores without full duplex geometry, chemistry
+is unstated, and target identity remains unestablished. It contains no measured
+unintended-repression endpoint. Any use must keep residual expression as its own
+endpoint, group uncertainty by source accession, and report these limitations.
+See the [primary paper](https://doi.org/10.1186/1471-2105-7-65), Results section.
+
+A fixed, exploratory check of the shipped GC feature is reproducible with
+`uv run python scripts/validate_shabalina_independent.py`. At scoring version
+4.1.0, the default design GC score has a pooled Spearman ρ of −0.215 against
+residual expression (the expected direction is negative), but its accession
+fixed-effect slope is +12.47 residual-expression percentage points per score
+unit, with within-accession Pearson r = +0.159. These are point estimates over
+32 observations and 10 unverified accession groups, not inferential validation;
+the opposing pooled and within-accession directions do not support promoting the
+GC weight. The script emits the source checksums, profile identity, group counts,
+and limitations with the metrics.
+
+The Wang et al. 2009 blinded validation experiment provides a second, independent
+efficacy panel. Supplementary Table S3 contains 140 designs (135 unique 19-nt
+paired-guide cores), each measured at 3 nM and 30 nM across 14 target genes. The
+paper describes a randomized, blinded assay of three design groups and reports
+the two doses separately ([primary paper](https://doi.org/10.1093/nar/gkp864));
+the normalized extract retains the source rows and dose metadata. Exact guide
+comparison against the extracted Shabalina 653-guide training panel finds no
+overlap. This does not establish non-overlap with every model training set used
+in the Wang paper or with all external collections.
+
+Run `uv run python scripts/validate_wang2009_independent.py` to reproduce a
+fixed, exploratory comparison of guide A/U(1–5), shipped duplex asymmetry, and
+the shipped GC feature on the 19-nt cores. The script reports pooled associations
+and a leave-one-target-out comparison of A/U alone, asymmetry alone, and both
+together, with design-algorithm group as a nuisance covariate. Guide sequences
+are grouped by target and dose before evaluation; the folds hold out all guides
+from one target, and an explicit check rejects guide sequences shared across
+target folds. The point estimates show no clear held-out improvement from
+combining A/U and asymmetry: paired target-bootstrap intervals for the combined
+score's difference from either feature alone include zero at both doses.
+Target-level bootstrap intervals and each target's score are printed. This is
+an exploratory analysis of one assay and 14 target clusters; it is not a
+multi-study development/validation design. Repeated
+dose observations are handled separately. This extract contains efficacy
+outcomes only; it does not contain the paper's separate cellular phenotype
+specificity experiment, so it cannot satisfy the unintended-repression endpoint
+or promote the complete default score. Script output records exact extract,
+profile/term, and feature-code hashes and states these limits.
+
+The leave-one-target-out mean Spearman ρ values for A/U alone, asymmetry alone,
+and both were 0.670, 0.678, and 0.677 at 3 nM, and 0.608, 0.621, and 0.608 at
+30 nM. Paired target-bootstrap 95% intervals for the combined-minus-asymmetry
+difference were [−0.015, 0.012] and [−0.032, 0.001], respectively; the
+combined-minus-A/U intervals were [−0.075, 0.075] and [−0.070, 0.058]. The
+combined model did not show a held-out gain over either individual feature in
+this panel. This does not determine a universal replacement or validate weights.
+
+## Additional archival efficacy source: DSIR 2012
+
+The separately tracked `independent_panels/dsir_2012.jsonl` recovers guide/passenger
+sequences and measured residual target-mRNA expression from the primary paper's
+Supplementary Tables S1 and S3. The S1/S3 join contains 129 unique 21-nt guide
+records across 10 genes; the article prose describes 128 sequences, so the
+one-record discrepancy is retained and documented in the panel manifest. The
+assays used 20 nM siRNA in HeLa cells, with a 72-hour endpoint except BCL2L1
+at 24 hours. The paper used two design rounds, with the second informed by
+first-round findings. DSIR-designed, high-score-selected guides introduce
+selection and range restriction. Its sequences have no 19-nt core or full
+21-nt guide match in the tracked source extracts or OligoGym files audited by
+the script; this does not prove separation from every external training corpus.
+
+Run `uv run python scripts/validate_dsir2012_independent.py` for the fixed
+within-target rank check. Across ten target groups, mean per-target Spearman ρ
+against residual expression was −0.022 for asymmetry calculated on the verified
+19-nt paired core (95% target-cluster bootstrap interval [−0.177, 0.145]) and
++0.066 for the shipped GC feature calculated on the full guide
+([−0.114, 0.237]); lower residual expression means stronger knockdown, so a
+negative association is the expected direction. The asymmetry result is an
+applicability-limited proxy because these source duplexes have two-base 3′
+overhangs, unlike the shipped fully complementary 21-nt duplex geometry. Both
+intervals include zero, and the GC point estimate is in the opposite direction.
+These are exploratory point estimates for individual sequence terms, not
+held-out profile validation.
+The paper analyzed multiple same-panel features, which adds source reuse limits.
+It includes no broad measured unintended-repression endpoint; three guides were
+checked only for cross-repression of CSNK2A2. This source does not satisfy the
+liability or full-profile promotion requirements in #98/#102. Extraction and
+source-file checksums, row counts, license, and these limits are recorded in
+[`independent_panels/README.md`](independent_panels/README.md).
+
 ## Interpretation boundaries
 
 - `compatible_core_only` means a reported 19–23 nt core can be represented for
@@ -95,5 +193,8 @@ linked original sources for the governing terms.
 | Kliuchnikov 2024 | <https://doi.org/10.1016/j.omtn.2024.102415> | CC BY 4.0 |
 | Takasaki measured categorical set | <https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1764479/supplementaryFiles> | CC BY 2.0 |
 
-Do not describe these records as independent external validation merely because
-they arrive through another model repository, review or database.
+Do not describe a record as independent external validation merely because it
+arrives through another model repository, review or database. Independence must
+be established from primary-source study design and checked against the actual
+training sequences; the `shabalina_independent` subset above is documented on
+that basis, with its limits stated explicitly.

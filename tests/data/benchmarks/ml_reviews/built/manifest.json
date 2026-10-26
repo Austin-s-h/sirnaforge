@@ -70,8 +70,10 @@
   "interpretation": "Source rows are overlapping assay views, not independent new measurements. No validation split assigned.",
   "outputs": {
     "excluded.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "observations.jsonl": "66042929c005fe4d961b91db526493115b91c1c82683381436437a6d031812a4",
     "records.csv": "32838dfd207da8ea8b05d2426ebb8186f8f84c8464718055f2fca4ed722da7a1"
   },
+  "rebuildable_outputs": [
+    "observations.jsonl"
+  ],
   "schema_version": "1.0.0"
 }

@@ -1,6 +1,7 @@
 """Pydantic models for siRNA design data structures."""
 
 import json
+import re
 from enum import Enum
 from typing import Any, ClassVar
 
@@ -9,6 +10,7 @@ from pandera.typing import DataFrame
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo
 
 from sirnaforge.core.repeat_detection import DEFAULT_REPEAT_TRANSCRIPT_FRACTION
+from sirnaforge.data.species_registry import normalize_species_name
 from sirnaforge.models.modifications import StrandMetadata, StrandRole
 from sirnaforge.models.policy import DECLARED_FILTER_IDS, FilterAction, FilterEvaluation
 from sirnaforge.models.schemas import SiRNACandidateSchema
@@ -201,14 +203,81 @@ class OffTargetFilterCriteria(BaseModel):
     Controls which siRNA candidates fail due to excessive off-target potential.
     """
 
-    # Genuine off-target threshold (on-target, ortholog and repeat-mediated hits excluded)
-    # 15 is calibrated against one internal 94-design reference set: it is the lowest cap at which
-    # the gate enriches for expert-chosen guides rather than depleting them. At 3 the gate was
-    # depleted (p = 0.89) and at 10 it carried no information (p = 0.51). Single-target calibration.
+    class SpeciesLiabilityLimits(BaseModel):
+        """Uncalibrated, user-supplied ceilings for one species' independent liability channels."""
+
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        transcriptome_hits_0mm: int | None = Field(default=None, ge=0)
+        transcriptome_hits_1mm: int | None = Field(default=None, ge=0)
+        transcriptome_hits_2mm: int | None = Field(default=None, ge=0)
+        transcript_seed_sites: int | None = Field(default=None, ge=0)
+        transcript_seed_transcripts: int | None = Field(default=None, ge=0)
+        transcript_seed_genes: int | None = Field(default=None, ge=0)
+        action: FilterAction = Field(
+            default=FilterAction.FAIL,
+            description=(
+                "Action for this species' explicitly configured ceilings. Use fail for required evidence and warn "
+                "for exploratory/descriptive species; no numerical limit is supplied by default."
+            ),
+        )
+
+        @model_validator_typed(mode="after")
+        def require_at_least_one_limit(self) -> "OffTargetFilterCriteria.SpeciesLiabilityLimits":
+            """Reject empty per-species entries instead of implying a configured gate."""
+            if not any(
+                getattr(self, name) is not None
+                for name in (
+                    "transcriptome_hits_0mm",
+                    "transcriptome_hits_1mm",
+                    "transcriptome_hits_2mm",
+                    "transcript_seed_sites",
+                    "transcript_seed_transcripts",
+                    "transcript_seed_genes",
+                )
+            ):
+                raise ValueError("at least one species liability ceiling must be configured")
+            return self
+
+    species_liability_limits: dict[str, SpeciesLiabilityLimits] = Field(
+        default_factory=dict,
+        description=(
+            "Optional species-keyed transcriptome and transcript-seed ceilings. Each species entry sets one "
+            "explicit fail/warn action and one or more numeric limits; no universal limits are assumed."
+        ),
+    )
+
+    @field_validator_typed("species_liability_limits", mode="before")
+    @classmethod
+    def canonicalize_species_liability_keys(cls, value: Any) -> Any:
+        """Normalize species aliases and reject aliases that collide after normalization."""
+        if not isinstance(value, dict):
+            return value
+        normalized: dict[str, Any] = {}
+        for raw_species, limits in value.items():
+            species = normalize_species_name(str(raw_species)).strip().lower()
+            if species in normalized:
+                raise ValueError(f"duplicate species liability limits after normalization: {species}")
+            normalized[species] = limits
+        slugs: dict[str, str] = {}
+        for species in normalized:
+            slug = re.sub(r"[^a-z0-9]+", "_", species).strip("_")
+            if not slug:
+                raise ValueError("species liability limit keys must contain a letter or digit")
+            if slug in slugs:
+                raise ValueError(f"species liability keys collide in exported filter ids: {slugs[slug]} and {species}")
+            slugs[slug] = species
+        return normalized
+
+    # Optional query-species, <=2-mismatch liability ceiling. The former default of 15 was
+    # calibrated on an all-species, all-mismatch total and does not transfer to this scoped count.
     max_off_target_count: int | None = Field(
-        default=15,
+        default=None,
         ge=0,
-        description="Maximum genuine off-target sites (default 15). Excludes on-target, ortholog and repeat hits.",
+        description=(
+            "Optional maximum of genuine query-species transcriptome liabilities with 0–2 mismatches. "
+            "None disables this uncalibrated aggregate ceiling; per-mismatch gates remain separate."
+        ),
     )
 
     # Transcriptome off-target thresholds
@@ -239,12 +308,21 @@ class OffTargetFilterCriteria(BaseModel):
     # Read against transcriptome_hits_seed_0mm. This is the only *targeted* gate on a partial
     # (clipped or gapped) hit whose seed paired perfectly: such a hit has a guide-level nm > 2, so
     # it lands in no mismatch stratum and max_transcriptome_hits_{0,1,2}mm never see it. The only
-    # other thing that counts it is the blunt max_off_target_count ceiling (default 15).
+    # other thing that could count it is the optional max_off_target_count ceiling, scoped to
+    # query-species hits with nm<=2, so this partial hit is excluded.
     # Unlike the three mismatch thresholds this one counts ALL screened species, matching the
     # reported transcriptome_hits_seed_0mm column exactly. Defaults to None (off) because a safe
     # ceiling has not been calibrated against truth data; set it to opt in.
     max_transcriptome_seed_perfect: int | None = Field(
         default=None, ge=0, description="Maximum transcriptome hits with perfect seed (positions 2-8, None = no limit)"
+    )
+    max_transcript_seed_sites: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Maximum canonical siRNA seed-complementary transcript sites across required transcript-seed species; "
+            "None disables the optional transcript-seed liability gate"
+        ),
     )
 
     # miRNA off-target thresholds
@@ -591,10 +669,11 @@ class DesignParameters(BaseModel):
         default=None,
         ge=1,
         description=(
-            "Number of top-ranked candidates reported in top_candidates (None = no limit, the "
-            "default). Screening is applied to every distinct candidate sequence regardless of this "
-            "value, so it does not gate off-target analysis or change how many candidates are "
-            "enumerated -- it only truncates what is reported."
+            "Number of distinct normalized guide sequences reported in top_candidates (None = no "
+            "limit, the default). A guide is represented by its lowest-scoring eligible "
+            "transcript context; all context rows remain in the full candidate tables. Screening "
+            "is applied to every distinct candidate sequence regardless of this value, so it does "
+            "not gate off-target analysis or change how many candidates are enumerated."
         ),
     )
 
@@ -741,8 +820,8 @@ class SiRNACandidate(BaseModel):
         description=(
             "Sites counted as liabilities: on-target, ortholog and repeat hits excluded; hits "
             "whose class could not be decided INCLUDED (see undetermined_hits), so a missing "
-            "reference cannot loosen the screen. The enforced ceiling is "
-            "OffTargetFilterCriteria.max_off_target_count (default 15)"
+            "reference cannot loosen the screen. This is descriptive; the optional ceiling uses "
+            "query-species liabilities with nm<=2 and is disabled by default."
         ),
     )
     # Reporting only; direction depends on which stage wrote it last (see the field description) --
@@ -789,11 +868,16 @@ class SiRNACandidate(BaseModel):
     transcriptome_hits_2mm_query: int = Field(
         default=0, ge=0, description="2-mismatch liabilities in the query species (or unlabelled); gate input"
     )
+    transcriptome_hits_query_le2: int = Field(
+        default=0,
+        ge=0,
+        description="Query-species genuine liabilities with 0–2 mismatches; optional max_off_target_count input",
+    )
     # The only counter that sees a PARTIAL hit whose seed paired perfectly: nm is a guide-level
     # distance, so a clipped/gapped hit (e.g. 6S15M/NM:i:0, clip on positions 16-21, seed intact)
     # carries nm=6 -- counted here and in transcriptome_hits_total/off_target_count but in NO
-    # mismatch stratum. Only max_transcriptome_seed_perfect (default None) and max_off_target_count
-    # (default 15) gate it. Not split by species, unlike the _0mm/_1mm/_2mm counters.
+    # mismatch stratum. Only max_transcriptome_seed_perfect can opt into gating it. Not split by
+    # species, unlike the _0mm/_1mm/_2mm counters.
     transcriptome_hits_seed_0mm: int = Field(
         default=0, ge=0, description="Transcriptome hits with perfect seed match (positions 2-8), all species"
     )
@@ -1163,6 +1247,42 @@ def ranking_score(candidate: SiRNACandidate) -> float:
     return candidate.design_score if candidate.design_score is not None else 0.0
 
 
+def ranking_tiebreak_key(candidate: SiRNACandidate) -> tuple[str, str, int, str]:
+    """Return stable biological and identity fields for equal-score candidate ordering.
+
+    Guide normalization follows repeat matching (uppercase DNA, with U converted to T). Transcript,
+    position, and candidate ID then make rows deterministic when the guide occurs in several contexts.
+    """
+    return (
+        candidate.guide_sequence.upper().replace("U", "T"),
+        candidate.transcript_id,
+        candidate.position,
+        candidate.id,
+    )
+
+
+def ranking_order_key(candidate: SiRNACandidate) -> tuple[float, str, str, int, str]:
+    """Sort by descending ranking score, then by a stable guide/context/identity key."""
+    return (-ranking_score(candidate), *ranking_tiebreak_key(candidate))
+
+
+def unique_guide_representatives(candidates: list[SiRNACandidate]) -> list[SiRNACandidate]:
+    """Return one conservative, deterministically ranked context row per normalized guide.
+
+    The guide's minimum score across contexts is used for ranking, so one unusually favorable
+    transcript context cannot give the same guide multiple shortlist slots.
+    """
+    by_guide: dict[str, list[SiRNACandidate]] = {}
+    for candidate in candidates:
+        guide = ranking_tiebreak_key(candidate)[0]
+        by_guide.setdefault(guide, []).append(candidate)
+    representatives = [
+        min(group, key=lambda candidate: (ranking_score(candidate), *ranking_tiebreak_key(candidate)))
+        for group in by_guide.values()
+    ]
+    return sorted(representatives, key=ranking_order_key)
+
+
 def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
     """Map one SiRNACandidate to its canonical output-row dict.
 
@@ -1177,6 +1297,7 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
     passes_filters = pass_state.value if hasattr(pass_state, "value") else pass_state
     verdicts = candidate.filter_verdicts or {}
     observed = candidate.filter_observed or {}
+    dynamic_filter_ids = sorted((set(verdicts) | set(observed)) - set(DECLARED_FILTER_IDS))
 
     def _maybe_attr(name: str, default: Any = None) -> Any:
         return getattr(candidate, name, default)
@@ -1262,12 +1383,13 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         # Two questions, two columns. passes_filters is the gate verdict; selection_state is what the
         # run was willing to claim about the candidate, which can differ once eligibility turns on the
         # evidence behind a gate rather than only on the gate's own outcome (#100).
-        # The six gate inputs, so every declared gate's own column is on the row and a client
+        # The gate inputs, so every declared gate's own column is on the row and a client
         # re-applying its descriptor reproduces the run's verdict (#101).
         "max_poly_run_length": _maybe_attr("max_poly_run_length", 0),
         "transcriptome_hits_0mm_query": _maybe_attr("transcriptome_hits_0mm_query", 0),
         "transcriptome_hits_1mm_query": _maybe_attr("transcriptome_hits_1mm_query", 0),
         "transcriptome_hits_2mm_query": _maybe_attr("transcriptome_hits_2mm_query", 0),
+        "transcriptome_hits_query_le2": _maybe_attr("transcriptome_hits_query_le2", 0),
         "mirna_hits_0mm_seed_query": _maybe_attr("mirna_hits_0mm_seed_query", 0),
         "mirna_hits_high_risk_query": _maybe_attr("mirna_hits_high_risk_query", 0),
         "total_offtarget_hits_query": _maybe_attr("total_offtarget_hits_query", 0),
@@ -1290,6 +1412,8 @@ def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
         # blank (a blank cell reads as a verdict).
         **{f"{filter_id}_verdict": verdicts.get(filter_id, _NOT_EVALUATED) for filter_id in DECLARED_FILTER_IDS},
         **{f"{filter_id}_observed": observed.get(filter_id) for filter_id in DECLARED_FILTER_IDS},
+        **{f"{filter_id}_verdict": verdicts[filter_id] for filter_id in dynamic_filter_ids if filter_id in verdicts},
+        **{f"{filter_id}_observed": observed[filter_id] for filter_id in dynamic_filter_ids if filter_id in observed},
     }
 
 

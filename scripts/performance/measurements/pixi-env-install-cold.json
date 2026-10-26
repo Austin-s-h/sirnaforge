@@ -1,0 +1,315 @@
+{
+  "kind": "pixi_locked_install_vs_micromamba_solve_and_install",
+  "machine": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "cpu_count": 12,
+    "python": "3.11.13",
+    "git_revision": "f4626b7f0322b25233361667f79098133b2bff95"
+  },
+  "trials": {
+    "pixi": [
+      {
+        "command": [
+          "env",
+          "PIXI_CACHE_DIR=/tmp/pixi-micromamba-cold-trials/pixi-cache-1",
+          "/home/hovland/.pixi/bin/pixi",
+          "install",
+          "--locked",
+          "--manifest-path",
+          "/tmp/pixi-micromamba-cold-trials/pixi-project-1/pixi.toml",
+          "--environment",
+          "runtime"
+        ],
+        "timeout_seconds": 300,
+        "status": "ok",
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "\u2714 The runtime environment has been installed.\n",
+        "cpu_user_seconds": 9.93,
+        "cpu_system_seconds": 12.69,
+        "peak_rss_kib": 254856,
+        "wall_seconds": 8.764749620997463,
+        "trial": 1,
+        "resolved_package_count": 94,
+        "direct_versions": {
+          "python": "3.12.15",
+          "nextflow": "25.10.2",
+          "openjdk": "17.0.18",
+          "bwa-mem2": "2.2.1",
+          "samtools": "1.24",
+          "pysam": "0.24.1",
+          "viennarna": "2.7.0"
+        },
+        "trial_cache_state": "fresh manager cache/root and fresh environment prefix",
+        "managed_disk_allocated_bytes": 1380876288
+      },
+      {
+        "command": [
+          "env",
+          "PIXI_CACHE_DIR=/tmp/pixi-micromamba-cold-trials/pixi-cache-2",
+          "/home/hovland/.pixi/bin/pixi",
+          "install",
+          "--locked",
+          "--manifest-path",
+          "/tmp/pixi-micromamba-cold-trials/pixi-project-2/pixi.toml",
+          "--environment",
+          "runtime"
+        ],
+        "timeout_seconds": 300,
+        "status": "ok",
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "\u2714 The runtime environment has been installed.\n",
+        "cpu_user_seconds": 10.35,
+        "cpu_system_seconds": 12.4,
+        "peak_rss_kib": 252516,
+        "wall_seconds": 9.652297658991301,
+        "trial": 2,
+        "resolved_package_count": 94,
+        "direct_versions": {
+          "python": "3.12.15",
+          "nextflow": "25.10.2",
+          "openjdk": "17.0.18",
+          "bwa-mem2": "2.2.1",
+          "samtools": "1.24",
+          "pysam": "0.24.1",
+          "viennarna": "2.7.0"
+        },
+        "trial_cache_state": "fresh manager cache/root and fresh environment prefix",
+        "managed_disk_allocated_bytes": 1380884480
+      },
+      {
+        "command": [
+          "env",
+          "PIXI_CACHE_DIR=/tmp/pixi-micromamba-cold-trials/pixi-cache-3",
+          "/home/hovland/.pixi/bin/pixi",
+          "install",
+          "--locked",
+          "--manifest-path",
+          "/tmp/pixi-micromamba-cold-trials/pixi-project-3/pixi.toml",
+          "--environment",
+          "runtime"
+        ],
+        "timeout_seconds": 300,
+        "status": "ok",
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "\u2714 The runtime environment has been installed.\n",
+        "cpu_user_seconds": 10.95,
+        "cpu_system_seconds": 13.08,
+        "peak_rss_kib": 255064,
+        "wall_seconds": 10.474048652002239,
+        "trial": 3,
+        "resolved_package_count": 94,
+        "direct_versions": {
+          "python": "3.12.15",
+          "nextflow": "25.10.2",
+          "openjdk": "17.0.18",
+          "bwa-mem2": "2.2.1",
+          "samtools": "1.24",
+          "pysam": "0.24.1",
+          "viennarna": "2.7.0"
+        },
+        "trial_cache_state": "fresh manager cache/root and fresh environment prefix",
+        "managed_disk_allocated_bytes": 1380888576
+      }
+    ],
+    "micromamba": [
+      {
+        "command": [
+          "env",
+          "MAMBA_ROOT_PREFIX=/tmp/pixi-micromamba-cold-trials/mamba-root-1",
+          "MAMBA_PKGS_DIRS=/tmp/pixi-micromamba-cold-trials/mamba-root-1/pkgs",
+          "/home/hovland/.local/bin/micromamba",
+          "create",
+          "-y",
+          "-p",
+          "/tmp/pixi-micromamba-cold-trials/mamba-root-1/envs/runtime",
+          "-c",
+          "conda-forge",
+          "-c",
+          "bioconda",
+          "python=3.12.15",
+          "nextflow=25.10.2",
+          "openjdk=17.0.18",
+          "bwa-mem2=2.2.1",
+          "samtools=1.24",
+          "pysam=0.24.1",
+          "viennarna=2.7.0"
+        ],
+        "timeout_seconds": 300,
+        "status": "ok",
+        "returncode": 0,
+        "stdout": "                              1.5.7  hb78ec9c_7             conda-forge     601kB\n\n  Summary:\n\n  Install: 98 packages\n\n  Total download: 374MB\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\n\nTransaction starting\nLinking libzlib-1.3.2-h25fd6f3_3\nLinking libgomp-16.2.0-he0feb66_7\nLinking zstd-1.5.7-hb78ec9c_7\nLinking _openmp_mutex-4.5-20_gnu\nLinking ld_impl_linux-64-2.46.1-default_hbd61a6d_103\nLinking libgcc-16.2.0-ha9f2e26_7\nLinking xorg-libxdmcp-1.1.5-h7cc23a3_2\nLinking xorg-libxau-1.0.12-h7cc23a3_2\nLinking xorg-libice-1.1.2-h280c20c_0\nLinking libgfortran5-16.2.0-h6b99dfc_7\nLinking libev-4.33-h280c20c_3\nLinking c-ares-1.34.9-hebe6cf0_0\nLinking libwebp-base-1.6.0-hd42ef1d_1\nLinking pthread-stubs-0.4-h7cc23a3_1004\nLinking libnsl-2.0.1-hb9d3cd8_1\nLinking liblzma-5.8.3-hb03c661_1\nLinking libdeflate-1.25-hd45a770_1\nLinking bzip2-1.0.8-hda65f42_10\nLinking keyutils-1.6.3-h7cc23a3_1\nLinking libiconv-1.18-h0cb94f2_3\nLinking libffi-3.7.0-h81df57d_1\nLinking libjpeg-turbo-3.2.0-hb03c661_1\nLinking libpng-1.6.59-h922cc85_0\nLinking giflib-6.1.3-hebe6cf0_2\nLinking alsa-lib-1.2.16.1-h7cc23a3_1\nLinking libstdcxx-16.2.0-h934c35e_7\nLinking libgcc-ng-16.2.0-h69a702a_7\nLinking tk-8.6.13-noxft_h1df4ec4_4\nLinking ncurses-6.6-hdb14827_1\nLinking coreutils-9.12-hebe6cf0_0\nLinking libxcrypt-4.4.38-h280c20c_0\nLinking libuuid-2.42.4-hcfc3c73_0\nLinking libpython-3.12.15-ha57cdbe_2_cpython\nLinking libexpat-2.8.5-hd2095e1_0\nLinking libgfortran-16.2.0-h69a702a_7\nLinking libxcb-1.17.0-hb83e432_2\nLinking pcre2-10.47-h8b3dc9c_1\nLinking libfreetype6-2.14.3-h5e6c136_2\nLinking icu-78.3-py310h44b86e0_2\nLinking graphite2-1.3.15-h54a6638_1\nLinking gmp-6.3.0-hfd2156b_3\nLinking pixman-0.46.4-h54a6638_3\nLinking lerc-4.2.0-hdb68285_0\nLinking libstdcxx-ng-16.2.0-hdf11a46_7\nLinking libedit-3.1.20260512-pl5321h373387f_0\nLinking readline-8.3-hd6e31c0_1\nLinking perl-5.32.1-10_h7cc23a3_perl5\nLinking xorg-libsm-1.2.6-h0d788c3_1\nLinking libopenblas-0.3.34-pthreads_hf13c14d_2\nLinking xorg-libx11-1.8.14-hb83e432_0\nLinking libglib-2.90.0-h569388d_0\nLinking libfreetype-2.14.3-ha770c72_2\nLinking libsqlite-3.54.1-h13e7031_0\nLinking libpsl-0.23.1-hd9e3e90_1\nLinking mpfr-4.2.2-ha2cb11d_1\nLinking libtiff-4.7.2-hcc2c06a_1\nLinking libblas-3.11.0-11_h4a7cf45_openblas\nLinking xorg-libxfixes-6.0.2-h7cc23a3_1\nLinking xorg-libxt-1.3.1-h7cc23a3_1\nLinking xorg-libxrender-0.9.13-h7cc23a3_0\nLinking xorg-libxext-1.3.7-h7cc23a3_1\nLinking fontconfig-2.18.3-h4db4eae_1\nLinking lcms2-2.19.1-h9073bf1_3\nLinking libcblas-3.11.0-11_h0358290_openblas\nLinking xorg-libxrandr-1.5.5-h7cc23a3_1\nLinking xorg-libxi-1.8.4-h7cc23a3_0\nLinking gsl-2.7-he838d99_0\nLinking xorg-libxtst-1.2.6-h7cc23a3_0\nLinking tzdata-2026e-h5d301ff_0\nLinking ca-certificates-2026.10.23-hbd8a1cb_0\nLinking python_abi-3.12-9_cp312\nLinking font-ttf-dejavu-sans-mono-2.37-hab24e00_0\nLinking font-ttf-ubuntu-0.83-h77eed37_3\nLinking font-ttf-inconsolata-3.000-h77eed37_0\nLinking font-ttf-source-code-pro-2.038-h77eed37_0\nLinking fonts-conda-forge-1-hc364b38_1\nLinking fonts-conda-ecosystem-1-0\nLinking bwa-mem2-2.2.1-he70b90d_8\nLinking openssl-3.6.5-h781a0a9_0\nLinking cairo-1.18.6-h3c89d7e_0\nLinking libssh2-1.11.1-h6154650_1\nLinking libnghttp2-1.68.1-h74cf4be_1\nLinking krb5-1.22.2-hbc21106_2\nLinking python-3.12.15-h5f976f7_2_cpython\nLinking libharfbuzz-15.0.0-h23af247_0\nLinking libcups-2.3.3-h7a8fb5f_6\nLinking libcurl-8.23.0-ha042cf0_0\nLinking openjdk-17.0.18-h1602c4f_18\nLinking curl-8.23.0-ha042cf0_0\nLinking packaging-26.3-pyhc364b38_0\nLinking setuptools-84.2.1-pyhe730653_0\nLinking wheel-0.48.0-pyhd8ed1ab_0\nLinking pip-26.2.2-pyh8b19718_0\nLinking htslib-1.24-ha79157c_0\nLinking viennarna-2.7.0-py312pl5321h6f0ddca_1\nLinking pysam-0.24.1-py312hf5ad864_0\nLinking samtools-1.24-h9dcdb79_1\nLinking nextflow-25.10.2-h2a3209d_0\n\nTransaction finished\n\n\nTo activate this environment, use:\n\n    micromamba activate runtime\n\nOr to execute a single command in this environment, use:\n\n    micromamba run -n runtime mycommand\n\n",
+        "stderr": "",
+        "cpu_user_seconds": 27.24,
+        "cpu_system_seconds": 20.45,
+        "peak_rss_kib": 1446716,
+        "wall_seconds": 35.176938204996986,
+        "trial": 1,
+        "resolved_package_count": 98,
+        "direct_versions": {
+          "python": "3.12.15",
+          "nextflow": "25.10.2",
+          "openjdk": "17.0.18",
+          "bwa-mem2": "2.2.1",
+          "samtools": "1.24",
+          "pysam": "0.24.1",
+          "viennarna": "2.7.0"
+        },
+        "trial_cache_state": "fresh manager cache/root and fresh environment prefix",
+        "managed_disk_allocated_bytes": 2858680320
+      },
+      {
+        "command": [
+          "env",
+          "MAMBA_ROOT_PREFIX=/tmp/pixi-micromamba-cold-trials/mamba-root-2",
+          "MAMBA_PKGS_DIRS=/tmp/pixi-micromamba-cold-trials/mamba-root-2/pkgs",
+          "/home/hovland/.local/bin/micromamba",
+          "create",
+          "-y",
+          "-p",
+          "/tmp/pixi-micromamba-cold-trials/mamba-root-2/envs/runtime",
+          "-c",
+          "conda-forge",
+          "-c",
+          "bioconda",
+          "python=3.12.15",
+          "nextflow=25.10.2",
+          "openjdk=17.0.18",
+          "bwa-mem2=2.2.1",
+          "samtools=1.24",
+          "pysam=0.24.1",
+          "viennarna=2.7.0"
+        ],
+        "timeout_seconds": 300,
+        "status": "ok",
+        "returncode": 0,
+        "stdout": "                              1.5.7  hb78ec9c_7             conda-forge     601kB\n\n  Summary:\n\n  Install: 98 packages\n\n  Total download: 374MB\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\n\nTransaction starting\nLinking libzlib-1.3.2-h25fd6f3_3\nLinking libgomp-16.2.0-he0feb66_7\nLinking zstd-1.5.7-hb78ec9c_7\nLinking _openmp_mutex-4.5-20_gnu\nLinking ld_impl_linux-64-2.46.1-default_hbd61a6d_103\nLinking libgcc-16.2.0-ha9f2e26_7\nLinking xorg-libxdmcp-1.1.5-h7cc23a3_2\nLinking xorg-libxau-1.0.12-h7cc23a3_2\nLinking xorg-libice-1.1.2-h280c20c_0\nLinking libgfortran5-16.2.0-h6b99dfc_7\nLinking libev-4.33-h280c20c_3\nLinking c-ares-1.34.9-hebe6cf0_0\nLinking libwebp-base-1.6.0-hd42ef1d_1\nLinking pthread-stubs-0.4-h7cc23a3_1004\nLinking libnsl-2.0.1-hb9d3cd8_1\nLinking liblzma-5.8.3-hb03c661_1\nLinking libdeflate-1.25-hd45a770_1\nLinking bzip2-1.0.8-hda65f42_10\nLinking keyutils-1.6.3-h7cc23a3_1\nLinking libiconv-1.18-h0cb94f2_3\nLinking libffi-3.7.0-h81df57d_1\nLinking libjpeg-turbo-3.2.0-hb03c661_1\nLinking libpng-1.6.59-h922cc85_0\nLinking giflib-6.1.3-hebe6cf0_2\nLinking alsa-lib-1.2.16.1-h7cc23a3_1\nLinking libstdcxx-16.2.0-h934c35e_7\nLinking libgcc-ng-16.2.0-h69a702a_7\nLinking tk-8.6.13-noxft_h1df4ec4_4\nLinking ncurses-6.6-hdb14827_1\nLinking coreutils-9.12-hebe6cf0_0\nLinking libxcrypt-4.4.38-h280c20c_0\nLinking libuuid-2.42.4-hcfc3c73_0\nLinking libpython-3.12.15-ha57cdbe_2_cpython\nLinking libexpat-2.8.5-hd2095e1_0\nLinking libgfortran-16.2.0-h69a702a_7\nLinking libxcb-1.17.0-hb83e432_2\nLinking pcre2-10.47-h8b3dc9c_1\nLinking libfreetype6-2.14.3-h5e6c136_2\nLinking icu-78.3-py310h44b86e0_2\nLinking graphite2-1.3.15-h54a6638_1\nLinking gmp-6.3.0-hfd2156b_3\nLinking pixman-0.46.4-h54a6638_3\nLinking lerc-4.2.0-hdb68285_0\nLinking libstdcxx-ng-16.2.0-hdf11a46_7\nLinking libedit-3.1.20260512-pl5321h373387f_0\nLinking readline-8.3-hd6e31c0_1\nLinking perl-5.32.1-10_h7cc23a3_perl5\nLinking xorg-libsm-1.2.6-h0d788c3_1\nLinking libopenblas-0.3.34-pthreads_hf13c14d_2\nLinking xorg-libx11-1.8.14-hb83e432_0\nLinking libglib-2.90.0-h569388d_0\nLinking libfreetype-2.14.3-ha770c72_2\nLinking libsqlite-3.54.1-h13e7031_0\nLinking libpsl-0.23.1-hd9e3e90_1\nLinking mpfr-4.2.2-ha2cb11d_1\nLinking libtiff-4.7.2-hcc2c06a_1\nLinking libblas-3.11.0-11_h4a7cf45_openblas\nLinking xorg-libxfixes-6.0.2-h7cc23a3_1\nLinking xorg-libxt-1.3.1-h7cc23a3_1\nLinking xorg-libxrender-0.9.13-h7cc23a3_0\nLinking xorg-libxext-1.3.7-h7cc23a3_1\nLinking fontconfig-2.18.3-h4db4eae_1\nLinking lcms2-2.19.1-h9073bf1_3\nLinking libcblas-3.11.0-11_h0358290_openblas\nLinking xorg-libxrandr-1.5.5-h7cc23a3_1\nLinking xorg-libxi-1.8.4-h7cc23a3_0\nLinking gsl-2.7-he838d99_0\nLinking xorg-libxtst-1.2.6-h7cc23a3_0\nLinking tzdata-2026e-h5d301ff_0\nLinking ca-certificates-2026.10.23-hbd8a1cb_0\nLinking python_abi-3.12-9_cp312\nLinking font-ttf-dejavu-sans-mono-2.37-hab24e00_0\nLinking font-ttf-ubuntu-0.83-h77eed37_3\nLinking font-ttf-inconsolata-3.000-h77eed37_0\nLinking font-ttf-source-code-pro-2.038-h77eed37_0\nLinking fonts-conda-forge-1-hc364b38_1\nLinking fonts-conda-ecosystem-1-0\nLinking bwa-mem2-2.2.1-he70b90d_8\nLinking openssl-3.6.5-h781a0a9_0\nLinking cairo-1.18.6-h3c89d7e_0\nLinking libssh2-1.11.1-h6154650_1\nLinking libnghttp2-1.68.1-h74cf4be_1\nLinking krb5-1.22.2-hbc21106_2\nLinking python-3.12.15-h5f976f7_2_cpython\nLinking libharfbuzz-15.0.0-h23af247_0\nLinking libcups-2.3.3-h7a8fb5f_6\nLinking libcurl-8.23.0-ha042cf0_0\nLinking openjdk-17.0.18-h1602c4f_18\nLinking curl-8.23.0-ha042cf0_0\nLinking packaging-26.3-pyhc364b38_0\nLinking setuptools-84.2.1-pyhe730653_0\nLinking wheel-0.48.0-pyhd8ed1ab_0\nLinking pip-26.2.2-pyh8b19718_0\nLinking htslib-1.24-ha79157c_0\nLinking viennarna-2.7.0-py312pl5321h6f0ddca_1\nLinking pysam-0.24.1-py312hf5ad864_0\nLinking samtools-1.24-h9dcdb79_1\nLinking nextflow-25.10.2-h2a3209d_0\n\nTransaction finished\n\n\nTo activate this environment, use:\n\n    micromamba activate runtime\n\nOr to execute a single command in this environment, use:\n\n    micromamba run -n runtime mycommand\n\n",
+        "stderr": "",
+        "cpu_user_seconds": 26.77,
+        "cpu_system_seconds": 19.85,
+        "peak_rss_kib": 1446264,
+        "wall_seconds": 31.56079322300502,
+        "trial": 2,
+        "resolved_package_count": 98,
+        "direct_versions": {
+          "python": "3.12.15",
+          "nextflow": "25.10.2",
+          "openjdk": "17.0.18",
+          "bwa-mem2": "2.2.1",
+          "samtools": "1.24",
+          "pysam": "0.24.1",
+          "viennarna": "2.7.0"
+        },
+        "trial_cache_state": "fresh manager cache/root and fresh environment prefix",
+        "managed_disk_allocated_bytes": 2858598400
+      },
+      {
+        "command": [
+          "env",
+          "MAMBA_ROOT_PREFIX=/tmp/pixi-micromamba-cold-trials/mamba-root-3",
+          "MAMBA_PKGS_DIRS=/tmp/pixi-micromamba-cold-trials/mamba-root-3/pkgs",
+          "/home/hovland/.local/bin/micromamba",
+          "create",
+          "-y",
+          "-p",
+          "/tmp/pixi-micromamba-cold-trials/mamba-root-3/envs/runtime",
+          "-c",
+          "conda-forge",
+          "-c",
+          "bioconda",
+          "python=3.12.15",
+          "nextflow=25.10.2",
+          "openjdk=17.0.18",
+          "bwa-mem2=2.2.1",
+          "samtools=1.24",
+          "pysam=0.24.1",
+          "viennarna=2.7.0"
+        ],
+        "timeout_seconds": 300,
+        "status": "ok",
+        "returncode": 0,
+        "stdout": "                              1.5.7  hb78ec9c_7             conda-forge     601kB\n\n  Summary:\n\n  Install: 98 packages\n\n  Total download: 374MB\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\n\nTransaction starting\nLinking libzlib-1.3.2-h25fd6f3_3\nLinking libgomp-16.2.0-he0feb66_7\nLinking zstd-1.5.7-hb78ec9c_7\nLinking _openmp_mutex-4.5-20_gnu\nLinking ld_impl_linux-64-2.46.1-default_hbd61a6d_103\nLinking libgcc-16.2.0-ha9f2e26_7\nLinking xorg-libxdmcp-1.1.5-h7cc23a3_2\nLinking xorg-libxau-1.0.12-h7cc23a3_2\nLinking xorg-libice-1.1.2-h280c20c_0\nLinking libgfortran5-16.2.0-h6b99dfc_7\nLinking libev-4.33-h280c20c_3\nLinking c-ares-1.34.9-hebe6cf0_0\nLinking libwebp-base-1.6.0-hd42ef1d_1\nLinking pthread-stubs-0.4-h7cc23a3_1004\nLinking libnsl-2.0.1-hb9d3cd8_1\nLinking liblzma-5.8.3-hb03c661_1\nLinking libdeflate-1.25-hd45a770_1\nLinking bzip2-1.0.8-hda65f42_10\nLinking keyutils-1.6.3-h7cc23a3_1\nLinking libiconv-1.18-h0cb94f2_3\nLinking libffi-3.7.0-h81df57d_1\nLinking libjpeg-turbo-3.2.0-hb03c661_1\nLinking libpng-1.6.59-h922cc85_0\nLinking giflib-6.1.3-hebe6cf0_2\nLinking alsa-lib-1.2.16.1-h7cc23a3_1\nLinking libstdcxx-16.2.0-h934c35e_7\nLinking libgcc-ng-16.2.0-h69a702a_7\nLinking tk-8.6.13-noxft_h1df4ec4_4\nLinking ncurses-6.6-hdb14827_1\nLinking coreutils-9.12-hebe6cf0_0\nLinking libxcrypt-4.4.38-h280c20c_0\nLinking libuuid-2.42.4-hcfc3c73_0\nLinking libpython-3.12.15-ha57cdbe_2_cpython\nLinking libexpat-2.8.5-hd2095e1_0\nLinking libgfortran-16.2.0-h69a702a_7\nLinking libxcb-1.17.0-hb83e432_2\nLinking pcre2-10.47-h8b3dc9c_1\nLinking libfreetype6-2.14.3-h5e6c136_2\nLinking icu-78.3-py310h44b86e0_2\nLinking graphite2-1.3.15-h54a6638_1\nLinking gmp-6.3.0-hfd2156b_3\nLinking pixman-0.46.4-h54a6638_3\nLinking lerc-4.2.0-hdb68285_0\nLinking libstdcxx-ng-16.2.0-hdf11a46_7\nLinking libedit-3.1.20260512-pl5321h373387f_0\nLinking readline-8.3-hd6e31c0_1\nLinking perl-5.32.1-10_h7cc23a3_perl5\nLinking xorg-libsm-1.2.6-h0d788c3_1\nLinking libopenblas-0.3.34-pthreads_hf13c14d_2\nLinking xorg-libx11-1.8.14-hb83e432_0\nLinking libglib-2.90.0-h569388d_0\nLinking libfreetype-2.14.3-ha770c72_2\nLinking libsqlite-3.54.1-h13e7031_0\nLinking libpsl-0.23.1-hd9e3e90_1\nLinking mpfr-4.2.2-ha2cb11d_1\nLinking libtiff-4.7.2-hcc2c06a_1\nLinking libblas-3.11.0-11_h4a7cf45_openblas\nLinking xorg-libxfixes-6.0.2-h7cc23a3_1\nLinking xorg-libxt-1.3.1-h7cc23a3_1\nLinking xorg-libxrender-0.9.13-h7cc23a3_0\nLinking xorg-libxext-1.3.7-h7cc23a3_1\nLinking fontconfig-2.18.3-h4db4eae_1\nLinking lcms2-2.19.1-h9073bf1_3\nLinking libcblas-3.11.0-11_h0358290_openblas\nLinking xorg-libxrandr-1.5.5-h7cc23a3_1\nLinking xorg-libxi-1.8.4-h7cc23a3_0\nLinking gsl-2.7-he838d99_0\nLinking xorg-libxtst-1.2.6-h7cc23a3_0\nLinking tzdata-2026e-h5d301ff_0\nLinking ca-certificates-2026.10.23-hbd8a1cb_0\nLinking python_abi-3.12-9_cp312\nLinking font-ttf-dejavu-sans-mono-2.37-hab24e00_0\nLinking font-ttf-ubuntu-0.83-h77eed37_3\nLinking font-ttf-inconsolata-3.000-h77eed37_0\nLinking font-ttf-source-code-pro-2.038-h77eed37_0\nLinking fonts-conda-forge-1-hc364b38_1\nLinking fonts-conda-ecosystem-1-0\nLinking bwa-mem2-2.2.1-he70b90d_8\nLinking openssl-3.6.5-h781a0a9_0\nLinking cairo-1.18.6-h3c89d7e_0\nLinking libssh2-1.11.1-h6154650_1\nLinking libnghttp2-1.68.1-h74cf4be_1\nLinking krb5-1.22.2-hbc21106_2\nLinking python-3.12.15-h5f976f7_2_cpython\nLinking libharfbuzz-15.0.0-h23af247_0\nLinking libcups-2.3.3-h7a8fb5f_6\nLinking libcurl-8.23.0-ha042cf0_0\nLinking openjdk-17.0.18-h1602c4f_18\nLinking curl-8.23.0-ha042cf0_0\nLinking packaging-26.3-pyhc364b38_0\nLinking setuptools-84.2.1-pyhe730653_0\nLinking wheel-0.48.0-pyhd8ed1ab_0\nLinking pip-26.2.2-pyh8b19718_0\nLinking htslib-1.24-ha79157c_0\nLinking viennarna-2.7.0-py312pl5321h6f0ddca_1\nLinking pysam-0.24.1-py312hf5ad864_0\nLinking samtools-1.24-h9dcdb79_1\nLinking nextflow-25.10.2-h2a3209d_0\n\nTransaction finished\n\n\nTo activate this environment, use:\n\n    micromamba activate runtime\n\nOr to execute a single command in this environment, use:\n\n    micromamba run -n runtime mycommand\n\n",
+        "stderr": "",
+        "cpu_user_seconds": 26.67,
+        "cpu_system_seconds": 29.54,
+        "peak_rss_kib": 1451288,
+        "wall_seconds": 42.469023187004495,
+        "trial": 3,
+        "resolved_package_count": 98,
+        "direct_versions": {
+          "python": "3.12.15",
+          "nextflow": "25.10.2",
+          "openjdk": "17.0.18",
+          "bwa-mem2": "2.2.1",
+          "samtools": "1.24",
+          "pysam": "0.24.1",
+          "viennarna": "2.7.0"
+        },
+        "trial_cache_state": "fresh manager cache/root and fresh environment prefix",
+        "managed_disk_allocated_bytes": 2858602496
+      }
+    ]
+  },
+  "inputs": {
+    "pixi.toml": "2c599b6bfb7947853f9aff941e91e4fd127d345a700d36964f976ea568767924",
+    "pixi.lock": "cfb62fecf1e970b54c1bbf5ba7dbc0b3e751d76732c50d331fd26fa91ed23417"
+  },
+  "summary": {
+    "pixi": {
+      "all_success": true,
+      "wall_seconds": [
+        8.76,
+        9.65,
+        10.47
+      ],
+      "peak_rss_mib": [
+        248.9,
+        246.6,
+        249.1
+      ],
+      "wall_median_seconds": 9.652297658991301,
+      "wall_range_seconds": [
+        8.764749620997463,
+        10.474048652002239
+      ],
+      "peak_rss_median_mib": 248.8828125,
+      "peak_rss_range_mib": [
+        246.59765625,
+        249.0859375
+      ],
+      "managed_disk_mib": 1316.9
+    },
+    "micromamba": {
+      "all_success": true,
+      "wall_seconds": [
+        35.18,
+        31.56,
+        42.47
+      ],
+      "peak_rss_mib": [
+        1412.8,
+        1412.4,
+        1417.3
+      ],
+      "wall_median_seconds": 35.176938204996986,
+      "wall_range_seconds": [
+        31.56079322300502,
+        42.469023187004495
+      ],
+      "peak_rss_median_mib": 1412.80859375,
+      "peak_rss_range_mib": [
+        1412.3671875,
+        1417.2734375
+      ],
+      "managed_disk_mib": 2726.2
+    }
+  },
+  "measurement_method": {
+    "cache_state": "new Pixi cache/project or micromamba root for every trial; network downloads enabled; host OS page cache not evicted",
+    "disk_size": "allocated bytes from du -s -B1 over each manager cache plus installed prefix, in one invocation to deduplicate hardlinks; Pixi cache and prefix share hardlinked package files",
+    "comparability": "Same seven direct tool versions. Resolved closures differ: Pixi 94 packages, micromamba 98 packages (four additional packaging tools). One machine, one platform, three repetitions per manager; network conditions were not isolated."
+  }
+}

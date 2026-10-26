@@ -100,6 +100,49 @@ def test_prepare_writes_an_artifact_for_the_vendored_huesken_subset_panel(tmp_pa
 
 @requires_benchmark_workflow
 @pytest.mark.unit
+def test_prepare_cli_imports_native_sidecars_and_reference_provenance(tmp_path: Path) -> None:
+    """The four native CLI inputs reach prepare and write checksummed mapping evidence."""
+    native = Path(__file__).parents[1] / "data" / "benchmarks" / "oligogym_native_design"
+    reference_manifest = tmp_path / "reference.json"
+    reference_manifest.write_text(
+        json.dumps(
+            {
+                "species": "human",
+                "assembly": "GRCh38",
+                "release": "caller-declared test provenance",
+                "sha256": "a" * 64,
+            }
+        )
+    )
+    result = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "prepare",
+            "--panel",
+            "ichihara",
+            "--paired-length",
+            "19",
+            "--native-observations-csv",
+            str(native / "observations.csv"),
+            "--native-mappings-csv",
+            str(native / "mappings.csv"),
+            "--native-reference-manifest",
+            str(reference_manifest),
+            "--out-dir",
+            str(tmp_path / "artifacts"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    artifact = tmp_path / "artifacts" / "ichihara__len19"
+    manifest = _read_manifest(artifact)
+    assert manifest["native_reference"]["release"] == "caller-declared test provenance"
+    assert manifest["outputs"]["native_mappings_csv"]["exists"] is True
+
+
+@requires_benchmark_workflow
+@pytest.mark.unit
 def test_design_widens_gc_min_while_the_default_policy_keeps_the_shipped_floor(tmp_path: Path) -> None:
     """`--gc-min` widens only the benchmark policy; `default_run_policy` must report the untouched floor.
 

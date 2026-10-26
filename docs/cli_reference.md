@@ -116,6 +116,24 @@ evidence of the kind it reads — and all three mean **not evaluated**, never pa
 waived while staying `qualified` is required evidence completeness (`--run-mode exploratory` is how
 you say that out loud).
 
+`--species-liability-limits` accepts a JSON object keyed by species. Each species entry supplies one
+or more explicit ceilings for transcriptome alignments at 0/1/2 mismatches and transcript-seed
+sites, transcripts, or genes, plus an `action` of `fail` or `warn`. For example:
+
+```bash
+sirnaforge workflow TP53 --species human,mouse --transcript-seed-species human \
+  --species-liability-limits '{"human":{"transcriptome_hits_0mm":0,"transcript_seed_genes":5,"action":"fail"},"mouse":{"transcriptome_hits_2mm":20,"action":"warn"}}'
+```
+
+These limits have no biological defaults; choose values for the species and assay you are running.
+Transcript-seed limits require the corresponding species in `--transcript-seed-species` so that
+the configured scan actually runs.
+The transcriptome counts include only classified liabilities and count blank species labels with the
+query species. Seed counts come from completed full-cDNA or 3′UTR scans. Unresolved gene counts are
+lower bounds: an observed count above a ceiling can fail, while a count below it remains unknown until
+gene resolution is complete. Every configured ceiling is exported as its own `<filter_id>_observed`
+and `<filter_id>_verdict` column. An unrequested species or incomplete evidence cannot produce a pass.
+
 The three words are three different mechanisms, and that is why their limits differ:
 
 - `off` works by **clearing the gate's threshold**, which the existing gate code already reads as "no

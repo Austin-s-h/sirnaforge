@@ -1,0 +1,1001 @@
+{
+  "schema_version": 1,
+  "kind": "bwa_mem3_release116_repeated_panel_comparison",
+  "measured_at_utc": "2026-10-26T11:14:29.486226+00:00",
+  "code_revision": "f6def50d87376b566390e5d0890e8987e5da63ac",
+  "machine": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "cpu_count": 12,
+    "python": "3.12.15",
+    "git_revision": "f6def50d87376b566390e5d0890e8987e5da63ac"
+  },
+  "environment": {
+    "pixi_version": "0.76.1",
+    "manifest_sha256": "a2391b24432f0d12b1a9b3fce937ab3a861d88973d75c7d1cf970be7a8661f46",
+    "lock_sha256": "3ace86c419e3ae3c010ee1af1c4f69ce208c3b54cf5b949e6ce9219ff3454e08",
+    "mem3_version_output": "0.15.0\nCompiler: clang 19.1.7\nSIMD floor: avx2 (x86-64-v3, Haswell 2013+); kernels: sse41 sse42 avx avx2 avx512bw\nSIMD runtime: avx2 (BWAMEM3_FORCE_TIER unset)\nmimalloc 3.3.0 (active)",
+    "mem3_compiler": "clang 19.1.7",
+    "mem2_version": "2.2.1"
+  },
+  "inputs": {
+    "observations": {
+      "path": "tests/data/benchmarks/oligogym_four_species_release116/assay_observations.csv.gz",
+      "sha256": "05a16b6a2ae4e025fcbd408ebbc5d547f85c72daf3764b7baef4f96ca32293ed",
+      "rows": 4113
+    },
+    "guide_fasta": {
+      "derivation": "scripts/performance/prepare_oligogym_panel.py; stable first-occurrence deduplication of full_guide_sequence, U-to-T",
+      "sha256": "e80d5cae150fd38526f4eb41cc1225c7d91fc43fed54484a97d24d608cbd0a2b",
+      "distinct_guides": 3395,
+      "lengths": [
+        20,
+        21
+      ]
+    },
+    "references": {
+      "rat": {
+        "species": "rat",
+        "assembly": "GRCr8",
+        "release": "116",
+        "sha256": "14ad668039a84a3ffaf787944dd09194488392848574b20c484d50df56b07477",
+        "source_url": "https://ftp.ensembl.org/pub/release-116/fasta/rattus_norvegicus/cdna/Rattus_norvegicus.GRCr8.cdna.all.fa.gz",
+        "download_sha256": "4f83911b79031aada477d5b6f1d820777c5f0402c594cc1dbb52ac5d0b0fb3c7",
+        "upstream_unix_sum": [
+          "27575",
+          "34912"
+        ]
+      },
+      "macaque": {
+        "species": "macaque",
+        "assembly": "Mmul_10",
+        "release": "116",
+        "sha256": "c702162e3053fb7bf4b0851f30b8b538d9885acfc737863bf2cc6e09d78db48d",
+        "source_url": "https://ftp.ensembl.org/pub/release-116/fasta/macaca_mulatta/cdna/Macaca_mulatta.Mmul_10.cdna.all.fa.gz",
+        "download_sha256": "709798ae23301eb35d20fbac88287891ca5587b61b00c1f44069ffaa80a0f15e",
+        "upstream_unix_sum": [
+          "48520",
+          "30495"
+        ]
+      }
+    }
+  },
+  "benchmark": {
+    "mode": "plain",
+    "flags": [
+      "-a",
+      "-k",
+      "12",
+      "-T",
+      "15",
+      "-w",
+      "100"
+    ],
+    "threads": 1,
+    "independent_fresh_index_trials_per_species_backend": 3,
+    "alignment_repetitions_per_index": 3,
+    "os_page_cache_evicted": false,
+    "measurement": "Index build is separately timed for every fresh index. Each alignment process reloads the built index; throughput is distinct guide count divided by alignment wall time.",
+    "sam_differences_allowed": true,
+    "result": "All six invocations completed with equal SAM multisets and matching reference headers; each run passed query-membership checks."
+  },
+  "species": {
+    "rat": {
+      "reference": {
+        "species": "rat",
+        "assembly": "GRCr8",
+        "release": "116",
+        "sha256": "14ad668039a84a3ffaf787944dd09194488392848574b20c484d50df56b07477",
+        "source_url": "https://ftp.ensembl.org/pub/release-116/fasta/rattus_norvegicus/cdna/Rattus_norvegicus.GRCr8.cdna.all.fa.gz",
+        "download_sha256": "4f83911b79031aada477d5b6f1d820777c5f0402c594cc1dbb52ac5d0b0fb3c7",
+        "upstream_unix_sum": [
+          "27575",
+          "34912"
+        ]
+      },
+      "query_count": 3395,
+      "query_length_counts": {
+        "20": 356,
+        "21": 3039
+      },
+      "sam_records_per_backend": 17025,
+      "sam_multiset_equal_across_backends": true,
+      "exact_match_oracle": {
+        "expected_placements": 2451,
+        "observed_placements_per_backend": 2451,
+        "missing_exact_placements": [],
+        "matches_identically_across_backends_and_trials": true
+      },
+      "backends": {
+        "mem2": {
+          "version": "2.2.1",
+          "binary_sha256": "b853ef5cc427046b1b58726e7e75ed45876f93bfd93fe5471126246b4024a28a",
+          "index_member_size_sha256": {
+            "reference.fasta.0123": {
+              "bytes": 332165796,
+              "sha256": "2069502e579799395fe0bbbc606d6838be9f5c988c92815c67b13ed7c999ff14"
+            },
+            "reference.fasta.amb": {
+              "bytes": 18,
+              "sha256": "cbe8d4b27451cc7ef0344fa78b614a216f57c3459b81ab20fd0419ee4a20a170"
+            },
+            "reference.fasta.ann": {
+              "bytes": 14026717,
+              "sha256": "6e07991b913599515a8ce82bfd8f445fcb6c43d33352ca9f903d25201b8d84e0"
+            },
+            "reference.fasta.bwt.2bit.64": {
+              "bytes": 539769505,
+              "sha256": "d416e755fb7483d98cea29b2093a70f09ed950eb212f63cab892950e938919c5"
+            },
+            "reference.fasta.pac": {
+              "bytes": 41520726,
+              "sha256": "7a42f943793caf14ecc9682224309146d855ef2efb79aa2e4ef6830bf9cad035"
+            }
+          },
+          "index_size_bytes": 927482762,
+          "index_build_wall_seconds": {
+            "trials": [
+              66.94195741100702,
+              60.552193365001585,
+              59.06111629999941
+            ],
+            "median": 60.552193365001585
+          },
+          "index_build_cpu_user_seconds": [
+            52.28,
+            50.89,
+            50.73
+          ],
+          "index_build_cpu_system_seconds": [
+            18.98,
+            13.37,
+            12.03
+          ],
+          "index_build_peak_rss_kib": {
+            "trials": [
+              3910564,
+              3910736,
+              3910780
+            ],
+            "median": 3910736
+          },
+          "alignments_per_index": 3,
+          "alignment_median_wall_seconds_by_index_trial": [
+            2.084202013007598,
+            2.0210072939953534,
+            2.0876550050015794
+          ],
+          "alignment_median_wall_seconds_across_index_trials": 2.084202013007598,
+          "median_query_throughput_per_second_across_index_trials": 1628.9207950149041,
+          "trials": [
+            {
+              "index_build_wall_seconds": 66.94195741100702,
+              "index_build_cpu_user_seconds": 52.28,
+              "index_build_cpu_system_seconds": 18.98,
+              "index_build_peak_rss_kib": 3910564,
+              "alignment_wall_seconds": [
+                2.202506172005087,
+                2.075643162999768,
+                2.084202013007598
+              ],
+              "alignment_median_wall_seconds": 2.084202013007598,
+              "alignment_cpu_user_seconds": [
+                0.24,
+                0.23,
+                0.24
+              ],
+              "alignment_cpu_system_seconds": [
+                1.07,
+                0.89,
+                0.9
+              ],
+              "alignment_peak_rss_kib": [
+                930688,
+                930816,
+                930816
+              ],
+              "median_query_throughput_per_second": 1628.9207950149041,
+              "exact_match_oracle": {
+                "equal": true,
+                "expected_count": 2451,
+                "observed_count": 2451,
+                "missing": [],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            },
+            {
+              "index_build_wall_seconds": 60.552193365001585,
+              "index_build_cpu_user_seconds": 50.89,
+              "index_build_cpu_system_seconds": 13.37,
+              "index_build_peak_rss_kib": 3910736,
+              "alignment_wall_seconds": [
+                2.3077840610058047,
+                2.0210072939953534,
+                2.0135832829982974
+              ],
+              "alignment_median_wall_seconds": 2.0210072939953534,
+              "alignment_cpu_user_seconds": [
+                0.24,
+                0.21,
+                0.23
+              ],
+              "alignment_cpu_system_seconds": [
+                1.15,
+                0.9,
+                0.88
+              ],
+              "alignment_peak_rss_kib": [
+                930560,
+                930688,
+                930560
+              ],
+              "median_query_throughput_per_second": 1679.855391955753,
+              "exact_match_oracle": {
+                "equal": true,
+                "expected_count": 2451,
+                "observed_count": 2451,
+                "missing": [],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            },
+            {
+              "index_build_wall_seconds": 59.06111629999941,
+              "index_build_cpu_user_seconds": 50.73,
+              "index_build_cpu_system_seconds": 12.03,
+              "index_build_peak_rss_kib": 3910780,
+              "alignment_wall_seconds": [
+                2.2407150350045413,
+                2.0876550050015794,
+                2.038533512997674
+              ],
+              "alignment_median_wall_seconds": 2.0876550050015794,
+              "alignment_cpu_user_seconds": [
+                0.25,
+                0.21,
+                0.23
+              ],
+              "alignment_cpu_system_seconds": [
+                1.06,
+                0.94,
+                0.87
+              ],
+              "alignment_peak_rss_kib": [
+                930688,
+                930688,
+                930688
+              ],
+              "median_query_throughput_per_second": 1626.2265517369003,
+              "exact_match_oracle": {
+                "equal": true,
+                "expected_count": 2451,
+                "observed_count": 2451,
+                "missing": [],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            }
+          ]
+        },
+        "mem3": {
+          "version": "0.15.0\nCompiler: clang 19.1.7\nSIMD floor: avx2 (x86-64-v3, Haswell 2013+); kernels: sse41 sse42 avx avx2 avx512bw\nSIMD runtime: avx2 (BWAMEM3_FORCE_TIER unset)\nmimalloc 3.3.0 (active)",
+          "binary_sha256": "e55a2dd02406aea385b1adf89c62fa0020baef4a975459f577b4caf1531a7a1f",
+          "index_member_size_sha256": {
+            "reference.fasta.amb": {
+              "bytes": 18,
+              "sha256": "cbe8d4b27451cc7ef0344fa78b614a216f57c3459b81ab20fd0419ee4a20a170"
+            },
+            "reference.fasta.ann": {
+              "bytes": 14026717,
+              "sha256": "6e07991b913599515a8ce82bfd8f445fcb6c43d33352ca9f903d25201b8d84e0"
+            },
+            "reference.fasta.bwt.2bit.64": {
+              "bytes": 539769513,
+              "sha256": "ff8395ee85945e73d2dbce09efc05f9297f88e26da19d578f8f9fe2292a7db1d"
+            },
+            "reference.fasta.pac": {
+              "bytes": 41520726,
+              "sha256": "7a42f943793caf14ecc9682224309146d855ef2efb79aa2e4ef6830bf9cad035"
+            }
+          },
+          "index_size_bytes": 595316974,
+          "index_build_wall_seconds": {
+            "trials": [
+              29.706600876001175,
+              29.175725399996736,
+              29.321021835989086
+            ],
+            "median": 29.321021835989086
+          },
+          "index_build_cpu_user_seconds": [
+            28.92,
+            29.09,
+            28.97
+          ],
+          "index_build_cpu_system_seconds": [
+            3.06,
+            2.36,
+            2.57
+          ],
+          "index_build_peak_rss_kib": {
+            "trials": [
+              1723320,
+              1723372,
+              1723340
+            ],
+            "median": 1723340
+          },
+          "alignments_per_index": 3,
+          "alignment_median_wall_seconds_by_index_trial": [
+            0.2830271709972294,
+            0.2766858020040672,
+            0.26949844900809694
+          ],
+          "alignment_median_wall_seconds_across_index_trials": 0.2766858020040672,
+          "median_query_throughput_per_second_across_index_trials": 12270.235680362428,
+          "trials": [
+            {
+              "index_build_wall_seconds": 29.706600876001175,
+              "index_build_cpu_user_seconds": 28.92,
+              "index_build_cpu_system_seconds": 3.06,
+              "index_build_peak_rss_kib": 1723320,
+              "alignment_wall_seconds": [
+                0.37415209400933236,
+                0.27229462600371335,
+                0.2830271709972294
+              ],
+              "alignment_median_wall_seconds": 0.2830271709972294,
+              "alignment_cpu_user_seconds": [
+                0.14,
+                0.12,
+                0.14
+              ],
+              "alignment_cpu_system_seconds": [
+                0.24,
+                0.15,
+                0.15
+              ],
+              "alignment_peak_rss_kib": [
+                682944,
+                683076,
+                682948
+              ],
+              "median_query_throughput_per_second": 11995.31475383766,
+              "exact_match_oracle": {
+                "equal": true,
+                "expected_count": 2451,
+                "observed_count": 2451,
+                "missing": [],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            },
+            {
+              "index_build_wall_seconds": 29.175725399996736,
+              "index_build_cpu_user_seconds": 29.09,
+              "index_build_cpu_system_seconds": 2.36,
+              "index_build_peak_rss_kib": 1723372,
+              "alignment_wall_seconds": [
+                0.36230555099609774,
+                0.26704824798798654,
+                0.2766858020040672
+              ],
+              "alignment_median_wall_seconds": 0.2766858020040672,
+              "alignment_cpu_user_seconds": [
+                0.14,
+                0.13,
+                0.13
+              ],
+              "alignment_cpu_system_seconds": [
+                0.23,
+                0.14,
+                0.14
+              ],
+              "alignment_peak_rss_kib": [
+                682824,
+                682824,
+                683076
+              ],
+              "median_query_throughput_per_second": 12270.235680362428,
+              "exact_match_oracle": {
+                "equal": true,
+                "expected_count": 2451,
+                "observed_count": 2451,
+                "missing": [],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            },
+            {
+              "index_build_wall_seconds": 29.321021835989086,
+              "index_build_cpu_user_seconds": 28.97,
+              "index_build_cpu_system_seconds": 2.57,
+              "index_build_peak_rss_kib": 1723340,
+              "alignment_wall_seconds": [
+                0.37900546099990606,
+                0.2584937979991082,
+                0.26949844900809694
+              ],
+              "alignment_median_wall_seconds": 0.26949844900809694,
+              "alignment_cpu_user_seconds": [
+                0.17,
+                0.13,
+                0.14
+              ],
+              "alignment_cpu_system_seconds": [
+                0.22,
+                0.13,
+                0.13
+              ],
+              "alignment_peak_rss_kib": [
+                683080,
+                682948,
+                682944
+              ],
+              "median_query_throughput_per_second": 12597.475096778753,
+              "exact_match_oracle": {
+                "equal": true,
+                "expected_count": 2451,
+                "observed_count": 2451,
+                "missing": [],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            }
+          ]
+        }
+      }
+    },
+    "macaque": {
+      "reference": {
+        "species": "macaque",
+        "assembly": "Mmul_10",
+        "release": "116",
+        "sha256": "c702162e3053fb7bf4b0851f30b8b538d9885acfc737863bf2cc6e09d78db48d",
+        "source_url": "https://ftp.ensembl.org/pub/release-116/fasta/macaca_mulatta/cdna/Macaca_mulatta.Mmul_10.cdna.all.fa.gz",
+        "download_sha256": "709798ae23301eb35d20fbac88287891ca5587b61b00c1f44069ffaa80a0f15e",
+        "upstream_unix_sum": [
+          "48520",
+          "30495"
+        ]
+      },
+      "query_count": 3395,
+      "query_length_counts": {
+        "20": 356,
+        "21": 3039
+      },
+      "sam_records_per_backend": 17086,
+      "sam_multiset_equal_across_backends": true,
+      "exact_match_oracle": {
+        "expected_placements": 4701,
+        "observed_placements_per_backend": 4697,
+        "missing_exact_placements": [
+          [
+            "og_02839",
+            "ENSMMUT00000079828.1",
+            385,
+            "-"
+          ],
+          [
+            "og_02839",
+            "ENSMMUT00000079828.1",
+            487,
+            "-"
+          ],
+          [
+            "og_02839",
+            "ENSMMUT00000079828.1",
+            1037,
+            "-"
+          ],
+          [
+            "og_02839",
+            "ENSMMUT00000095037.1",
+            695,
+            "-"
+          ]
+        ],
+        "matches_identically_across_backends_and_trials": true
+      },
+      "backends": {
+        "mem2": {
+          "version": "2.2.1",
+          "binary_sha256": "b853ef5cc427046b1b58726e7e75ed45876f93bfd93fe5471126246b4024a28a",
+          "index_member_size_sha256": {
+            "reference.fasta.0123": {
+              "bytes": 278995634,
+              "sha256": "2e48397c48c98fa8d2699e8d00a4a98b054b5af70ba4884e3b0c69ae365bb579"
+            },
+            "reference.fasta.amb": {
+              "bytes": 49,
+              "sha256": "4a783afc4f3f30b7795b58dac1aa3e96ec190bf21057c82675321dbc81f7f3b1"
+            },
+            "reference.fasta.ann": {
+              "bytes": 13219609,
+              "sha256": "fc612635c46af74311b62c72c969234c71c5dc2facbbee2a121efe2b9005bcfe"
+            },
+            "reference.fasta.bwt.2bit.64": {
+              "bytes": 453367979,
+              "sha256": "47a67f89c284bd5540a8d5d17577976e94980dc16c090b34d4f48900ca67021d"
+            },
+            "reference.fasta.pac": {
+              "bytes": 34874456,
+              "sha256": "b290237a73b0550e5a2d962aeadde96a5e40e8085a15a7927c5a8653de7f4130"
+            }
+          },
+          "index_size_bytes": 780457727,
+          "index_build_wall_seconds": {
+            "trials": [
+              46.02279716699559,
+              49.71416586100531,
+              50.56491240800824
+            ],
+            "median": 49.71416586100531
+          },
+          "index_build_cpu_user_seconds": [
+            40.35,
+            43.2,
+            44.05
+          ],
+          "index_build_cpu_system_seconds": [
+            8.21,
+            9.4,
+            9.51
+          ],
+          "index_build_peak_rss_kib": {
+            "trials": [
+              3286720,
+              3286768,
+              3286840
+            ],
+            "median": 3286768
+          },
+          "alignments_per_index": 3,
+          "alignment_median_wall_seconds_by_index_trial": [
+            2.020036337999045,
+            1.976224440993974,
+            1.9645386420015711
+          ],
+          "alignment_median_wall_seconds_across_index_trials": 1.976224440993974,
+          "median_query_throughput_per_second_across_index_trials": 1717.922281283208,
+          "trials": [
+            {
+              "index_build_wall_seconds": 46.02279716699559,
+              "index_build_cpu_user_seconds": 40.35,
+              "index_build_cpu_system_seconds": 8.21,
+              "index_build_peak_rss_kib": 3286720,
+              "alignment_wall_seconds": [
+                2.3233617579971906,
+                2.020036337999045,
+                1.9540526639902964
+              ],
+              "alignment_median_wall_seconds": 2.020036337999045,
+              "alignment_cpu_user_seconds": [
+                0.29,
+                0.21,
+                0.21
+              ],
+              "alignment_cpu_system_seconds": [
+                1.16,
+                0.88,
+                0.8
+              ],
+              "alignment_peak_rss_kib": [
+                786816,
+                786560,
+                786688
+              ],
+              "median_query_throughput_per_second": 1680.6628356809317,
+              "exact_match_oracle": {
+                "equal": false,
+                "expected_count": 4701,
+                "observed_count": 4697,
+                "missing": [
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    385,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    487,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    1037,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000095037.1",
+                    695,
+                    "-"
+                  ]
+                ],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            },
+            {
+              "index_build_wall_seconds": 49.71416586100531,
+              "index_build_cpu_user_seconds": 43.2,
+              "index_build_cpu_system_seconds": 9.4,
+              "index_build_peak_rss_kib": 3286768,
+              "alignment_wall_seconds": [
+                2.1203722350037424,
+                1.976224440993974,
+                1.908682070003124
+              ],
+              "alignment_median_wall_seconds": 1.976224440993974,
+              "alignment_cpu_user_seconds": [
+                0.23,
+                0.22,
+                0.19
+              ],
+              "alignment_cpu_system_seconds": [
+                0.96,
+                0.8,
+                0.75
+              ],
+              "alignment_peak_rss_kib": [
+                786816,
+                786688,
+                786560
+              ],
+              "median_query_throughput_per_second": 1717.922281283208,
+              "exact_match_oracle": {
+                "equal": false,
+                "expected_count": 4701,
+                "observed_count": 4697,
+                "missing": [
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    385,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    487,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    1037,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000095037.1",
+                    695,
+                    "-"
+                  ]
+                ],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            },
+            {
+              "index_build_wall_seconds": 50.56491240800824,
+              "index_build_cpu_user_seconds": 44.05,
+              "index_build_cpu_system_seconds": 9.51,
+              "index_build_peak_rss_kib": 3286840,
+              "alignment_wall_seconds": [
+                2.233210014994256,
+                1.9645386420015711,
+                1.9505046700069215
+              ],
+              "alignment_median_wall_seconds": 1.9645386420015711,
+              "alignment_cpu_user_seconds": [
+                0.33,
+                0.21,
+                0.21
+              ],
+              "alignment_cpu_system_seconds": [
+                0.97,
+                0.8,
+                0.78
+              ],
+              "alignment_peak_rss_kib": [
+                786688,
+                786560,
+                786688
+              ],
+              "median_query_throughput_per_second": 1728.141115382186,
+              "exact_match_oracle": {
+                "equal": false,
+                "expected_count": 4701,
+                "observed_count": 4697,
+                "missing": [
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    385,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    487,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    1037,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000095037.1",
+                    695,
+                    "-"
+                  ]
+                ],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            }
+          ]
+        },
+        "mem3": {
+          "version": "0.15.0\nCompiler: clang 19.1.7\nSIMD floor: avx2 (x86-64-v3, Haswell 2013+); kernels: sse41 sse42 avx avx2 avx512bw\nSIMD runtime: avx2 (BWAMEM3_FORCE_TIER unset)\nmimalloc 3.3.0 (active)",
+          "binary_sha256": "e55a2dd02406aea385b1adf89c62fa0020baef4a975459f577b4caf1531a7a1f",
+          "index_member_size_sha256": {
+            "reference.fasta.amb": {
+              "bytes": 49,
+              "sha256": "4a783afc4f3f30b7795b58dac1aa3e96ec190bf21057c82675321dbc81f7f3b1"
+            },
+            "reference.fasta.ann": {
+              "bytes": 13219609,
+              "sha256": "fc612635c46af74311b62c72c969234c71c5dc2facbbee2a121efe2b9005bcfe"
+            },
+            "reference.fasta.bwt.2bit.64": {
+              "bytes": 453367987,
+              "sha256": "973b5e9e164ee0e815004d5de03db2d3d8274b0ffcb577486a982cd06b880bef"
+            },
+            "reference.fasta.pac": {
+              "bytes": 34874456,
+              "sha256": "b290237a73b0550e5a2d962aeadde96a5e40e8085a15a7927c5a8653de7f4130"
+            }
+          },
+          "index_size_bytes": 501462101,
+          "index_build_wall_seconds": {
+            "trials": [
+              25.774996388994623,
+              24.95148981300008,
+              26.62216207300662
+            ],
+            "median": 25.774996388994623
+          },
+          "index_build_cpu_user_seconds": [
+            24.49,
+            23.58,
+            24.7
+          ],
+          "index_build_cpu_system_seconds": [
+            3.26,
+            3.4,
+            4.03
+          ],
+          "index_build_peak_rss_kib": {
+            "trials": [
+              1452180,
+              1452308,
+              1457812
+            ],
+            "median": 1452308
+          },
+          "alignments_per_index": 3,
+          "alignment_median_wall_seconds_by_index_trial": [
+            0.2590867149992846,
+            0.25208928000938613,
+            0.3255156950035598
+          ],
+          "alignment_median_wall_seconds_across_index_trials": 0.2590867149992846,
+          "median_query_throughput_per_second_across_index_trials": 13103.720891321558,
+          "trials": [
+            {
+              "index_build_wall_seconds": 25.774996388994623,
+              "index_build_cpu_user_seconds": 24.49,
+              "index_build_cpu_system_seconds": 3.26,
+              "index_build_peak_rss_kib": 1452180,
+              "alignment_wall_seconds": [
+                0.42058801199891604,
+                0.2590867149992846,
+                0.23944146600842942
+              ],
+              "alignment_median_wall_seconds": 0.2590867149992846,
+              "alignment_cpu_user_seconds": [
+                0.17,
+                0.14,
+                0.14
+              ],
+              "alignment_cpu_system_seconds": [
+                0.26,
+                0.11,
+                0.1
+              ],
+              "alignment_peak_rss_kib": [
+                592840,
+                592836,
+                592832
+              ],
+              "median_query_throughput_per_second": 13103.720891321558,
+              "exact_match_oracle": {
+                "equal": false,
+                "expected_count": 4701,
+                "observed_count": 4697,
+                "missing": [
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    385,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    487,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    1037,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000095037.1",
+                    695,
+                    "-"
+                  ]
+                ],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            },
+            {
+              "index_build_wall_seconds": 24.95148981300008,
+              "index_build_cpu_user_seconds": 23.58,
+              "index_build_cpu_system_seconds": 3.4,
+              "index_build_peak_rss_kib": 1452308,
+              "alignment_wall_seconds": [
+                0.3393148140021367,
+                0.25208928000938613,
+                0.24839401700592134
+              ],
+              "alignment_median_wall_seconds": 0.25208928000938613,
+              "alignment_cpu_user_seconds": [
+                0.13,
+                0.12,
+                0.14
+              ],
+              "alignment_cpu_system_seconds": [
+                0.21,
+                0.12,
+                0.1
+              ],
+              "alignment_peak_rss_kib": [
+                592832,
+                592840,
+                592840
+              ],
+              "median_query_throughput_per_second": 13467.450896260218,
+              "exact_match_oracle": {
+                "equal": false,
+                "expected_count": 4701,
+                "observed_count": 4697,
+                "missing": [
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    385,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    487,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    1037,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000095037.1",
+                    695,
+                    "-"
+                  ]
+                ],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            },
+            {
+              "index_build_wall_seconds": 26.62216207300662,
+              "index_build_cpu_user_seconds": 24.7,
+              "index_build_cpu_system_seconds": 4.03,
+              "index_build_peak_rss_kib": 1457812,
+              "alignment_wall_seconds": [
+                0.38548052599071525,
+                0.3255156950035598,
+                0.2781632179976441
+              ],
+              "alignment_median_wall_seconds": 0.3255156950035598,
+              "alignment_cpu_user_seconds": [
+                0.15,
+                0.14,
+                0.15
+              ],
+              "alignment_cpu_system_seconds": [
+                0.25,
+                0.19,
+                0.13
+              ],
+              "alignment_peak_rss_kib": [
+                592964,
+                592964,
+                592832
+              ],
+              "median_query_throughput_per_second": 10429.604630777858,
+              "exact_match_oracle": {
+                "equal": false,
+                "expected_count": 4701,
+                "observed_count": 4697,
+                "missing": [
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    385,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    487,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000079828.1",
+                    1037,
+                    "-"
+                  ],
+                  [
+                    "og_02839",
+                    "ENSMMUT00000095037.1",
+                    695,
+                    "-"
+                  ]
+                ],
+                "unexpected": [],
+                "scope": "Full-length ungapped exact matches only; other mismatch/gap placements need reviewed truth."
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "limitations": [
+    "One Linux x86_64 WSL2 host and one locked Bioconda package set; no cross-platform claim.",
+    "OS page cache was not evicted, so these are repeatable fresh-index builds, not guaranteed cold-storage measurements.",
+    "Exact-match oracle covers full-length ungapped placements; it does not validate mismatch/gap sensitivity or biological efficacy.",
+    "The macaque aligners both omit the same four oracle placements; downstream biological interpretation is still required.",
+    "The earlier full human cDNA MEM3 build exceeded this host memory limit; rat/macaque timings do not establish human-scale feasibility.",
+    "End-to-end Nextflow evidence reconciliation and the small Docker/Nextflow smoke are recorded separately; these timing trials measure aligner commands."
+  ]
+}

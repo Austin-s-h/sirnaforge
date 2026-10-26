@@ -114,7 +114,8 @@ def test_clipped_minus_strand_partial_hits_leave_the_perfect_match_stratum(tmp_p
     landed in ``transcriptome_hits_0mm``, failing the candidate as TRANSCRIPTOME_PERFECT_MATCH on
     the strength of a partial hit whose entire seed never paired. They now carry the guide-level
     distance (6), so they fall outside the nm<=2 strata -- but they are still counted in full by
-    ``transcriptome_hits_total`` / ``off_target_count``, which ``max_off_target_count`` gates.
+    ``transcriptome_hits_total`` / ``off_target_count``. The optional ``max_off_target_count`` gate
+    only includes query-species liabilities with ``nm<=2``.
     """
     candidate, _ = _strata_and_verdict(tmp_path, _sam(cigar="15M6S", md="15", nm=0, rnames=("ENST_A", "ENST_B")))
 
@@ -161,9 +162,8 @@ def test_seed_perfect_partial_hit_is_counted_but_lands_in_no_mismatch_stratum(tm
     """Pin the documented gap: seed-perfect partials are invisible to the mismatch gates.
 
     This is the contract ``docs/models_and_scoring.md`` §1.4 and the CHANGELOG now describe. It is
-    not a bug to fix here -- picking a default ceiling is a product decision -- but it must not
-    change silently, because on stock defaults ``max_off_target_count`` (15) is the only thing
-    standing between a run of these hits and a PASS.
+    not a bug to fix here. These partial hits are outside both the mismatch gates and the optional
+    query-species ``max_off_target_count`` ceiling.
     """
     candidate, _ = _strata_and_verdict(tmp_path, _sam(rnames=("ENST_A", "ENST_B"), **_SEED_PERFECT_PARTIAL))
 

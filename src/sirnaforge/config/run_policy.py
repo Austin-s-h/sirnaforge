@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -137,10 +138,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec("min_empirical_score", "filters", "min_empirical_score"),
     SettingSpec("min_isoform_coverage", "filters", "min_isoform_coverage"),
     SettingSpec("max_off_target_count", "offtarget_filters", "max_off_target_count"),
+    SettingSpec("species_liability_limits", "offtarget_filters", "species_liability_limits"),
     SettingSpec("max_transcriptome_hits_0mm", "offtarget_filters", "max_transcriptome_hits_0mm"),
     SettingSpec("max_transcriptome_hits_1mm", "offtarget_filters", "max_transcriptome_hits_1mm"),
     SettingSpec("max_transcriptome_hits_2mm", "offtarget_filters", "max_transcriptome_hits_2mm"),
     SettingSpec("max_transcriptome_seed_perfect", "offtarget_filters", "max_transcriptome_seed_perfect"),
+    SettingSpec("max_transcript_seed_sites", "offtarget_filters", "max_transcript_seed_sites"),
     SettingSpec("max_mirna_perfect_seed", "offtarget_filters", "max_mirna_perfect_seed"),
     SettingSpec("max_mirna_1mm_seed", "offtarget_filters", "max_mirna_1mm_seed"),
     SettingSpec("fail_on_high_risk_mirna", "offtarget_filters", "fail_on_high_risk_mirna"),
@@ -203,7 +206,20 @@ def _switch_off_value(spec: SettingSpec, filter_id: str) -> Any:
 
 def _model_default(spec: SettingSpec) -> Any:
     """The declared default of the field a setting lands on, so a profile cannot restate a number."""
-    return _MODEL_FOR_TARGET[spec.model].model_fields[spec.field].get_default(call_default_factory=False)
+    return _MODEL_FOR_TARGET[spec.model].model_fields[spec.field].get_default(call_default_factory=True)
+
+
+def _json_compatible(value: Any) -> Any:
+    """Convert typed Python settings to the JSON values recorded in policy provenance."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Mapping):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -360,6 +376,7 @@ class _FilterSpec:
     #: any non-human query the gate silently measured zero on real hits.
     scope_query_species: bool = False
     scope_max_mismatches: int | None = None
+    scope_exact_mismatches: int | None = None
     scope_hit_classes: tuple[str, ...] = ()
     transform: str | None = None
     evidence_exported: bool = True
@@ -490,15 +507,17 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
     _FilterSpec(
         filter_id="max_off_target_count",
         setting_key="max_off_target_count",
-        column="off_target_count",
+        column="transcriptome_hits_query_le2",
         comparator=FilterComparator.LE,
         stage=FilterStage.POST_SCREEN,
         definition=(
-            "Genuine off-target sites over every screened species and every mismatch count, with "
-            "on-target, ortholog and repeat hits classified out and undecidable hits counted in; "
-            "fails EXCESS_OFF_TARGETS."
+            "Query-species genuine transcriptome liabilities with 0–2 mismatches, with on-target, "
+            "ortholog and repeat hits classified out and undecidable hits counted in; disabled by "
+            "default pending calibration of a scoped ceiling."
         ),
         default_action=FilterAction.FAIL,
+        scope_query_species=True,
+        scope_max_mismatches=2,
         scope_hit_classes=_LIABILITY_CLASSES,
     ),
     _FilterSpec(
@@ -510,7 +529,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition=f"Perfect-match genuine off-target transcriptome hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
         scope_query_species=True,
-        scope_max_mismatches=0,
+        scope_exact_mismatches=0,
         scope_hit_classes=_LIABILITY_CLASSES,
     ),
     _FilterSpec(
@@ -522,7 +541,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition=f"1-mismatch genuine off-target hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
         scope_query_species=True,
-        scope_max_mismatches=1,
+        scope_exact_mismatches=1,
         scope_hit_classes=_LIABILITY_CLASSES,
     ),
     _FilterSpec(
@@ -534,7 +553,7 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
         definition=f"2-mismatch genuine off-target hits: {_HUMAN_OR_UNLABELLED_NOTE}.",
         default_action=FilterAction.FAIL,
         scope_query_species=True,
-        scope_max_mismatches=2,
+        scope_exact_mismatches=2,
         scope_hit_classes=_LIABILITY_CLASSES,
     ),
     _FilterSpec(
@@ -548,6 +567,18 @@ FILTER_SPECS: tuple[_FilterSpec, ...] = (
             "species. The only targeted gate on a clipped or gapped hit with an intact seed, which "
             "carries a guide-level nm > 2 and so lands in no mismatch stratum; fails "
             "TRANSCRIPTOME_SEED_PERFECT."
+        ),
+        default_action=FilterAction.FAIL,
+    ),
+    _FilterSpec(
+        filter_id="max_transcript_seed_sites",
+        setting_key="max_transcript_seed_sites",
+        column="max_transcript_seed_sites_observed",
+        comparator=FilterComparator.LE,
+        stage=FilterStage.POST_SCREEN,
+        definition=(
+            "Canonical 6mer, 7mer-A1, 7mer-m8 and 8mer siRNA seed-complementary sites in the full cDNA or "
+            "explicit 3′UTR references for required transcript-seed species."
         ),
         default_action=FilterAction.FAIL,
     ),
@@ -1066,7 +1097,7 @@ def _check_finite_weights(scoring: ScoringWeights) -> None:
                 raise RunPolicyError(f"weight vector '{vector.name}' has a non-finite weight for term '{term}'")
 
 
-def _resolve_filters(
+def _resolve_filters(  # noqa: PLR0912
     *,
     parameters: DesignParameters,
     run_mode: RunMode,
@@ -1127,6 +1158,7 @@ def _resolve_filters(
                         if spec.scope_query_species
                         else frozenset(spec.scope_species),
                         max_mismatches=spec.scope_max_mismatches,
+                        exact_mismatches=spec.scope_exact_mismatches,
                         hit_classes=frozenset(spec.scope_hit_classes),
                     ),
                     action=action,
@@ -1138,6 +1170,49 @@ def _resolve_filters(
                 evidence_exported=spec.evidence_exported,
             )
         )
+
+    species_limit_axes = {
+        "transcriptome_hits_0mm": (None, 0, _LIABILITY_CLASSES),
+        "transcriptome_hits_1mm": (None, 1, _LIABILITY_CLASSES),
+        "transcriptome_hits_2mm": (None, 2, _LIABILITY_CLASSES),
+        "transcript_seed_sites": (None, None, ()),
+        "transcript_seed_transcripts": (None, None, ()),
+        "transcript_seed_genes": (None, None, ()),
+    }
+    for species, limits in sorted(parameters.offtarget_filters.species_liability_limits.items()):
+        slug = re.sub(r"[^a-z0-9]+", "_", species.casefold()).strip("_")
+        if not slug:
+            raise RunPolicyError("species liability limit keys must contain a letter or digit")
+        for metric, (max_mismatches, exact_mismatches, hit_classes) in species_limit_axes.items():
+            threshold = getattr(limits, metric)
+            if threshold is None:
+                continue
+            filter_id = f"species_liability_{slug}_{metric}"
+            action = limits.action if screening_ran else FilterAction.OFF
+            resolved.append(
+                ResolvedFilter(
+                    descriptor=FilterDescriptor(
+                        filter_id=filter_id,
+                        column=f"{filter_id}_observed",
+                        comparator=FilterComparator.LE,
+                        threshold=threshold,
+                        scope=FilterScope(
+                            species=frozenset({species}),
+                            max_mismatches=max_mismatches,
+                            exact_mismatches=exact_mismatches,
+                            hit_classes=frozenset(hit_classes),
+                        ),
+                        action=action,
+                        stage=FilterStage.POST_SCREEN,
+                    ),
+                    setting_key=f"species_liability_limits.{species}.{metric}",
+                    definition=(
+                        f"User-configured {metric.replace('_', ' ')} ceiling for {species}; "
+                        "this limit is not assigned a biological default."
+                    ),
+                    evidence_exported=True,
+                )
+            )
     return tuple(resolved)
 
 
@@ -1272,7 +1347,9 @@ def resolve_run_policy(
     )
 
     requested: list[SettingProvenance] = [
-        SettingProvenance(key=key, value=value, source=SettingSource.CONFIG_FILE, detail=str(config_file))
+        SettingProvenance(
+            key=key, value=_json_compatible(value), source=SettingSource.CONFIG_FILE, detail=str(config_file)
+        )
         for key, value in config_settings.items()
     ]
     # A run mode or design mode the file supplied is an override the file requested. Leaving both out
@@ -1286,7 +1363,7 @@ def resolve_run_policy(
         if source is SettingSource.CONFIG_FILE
     ]
     requested += [
-        SettingProvenance(key=key, value=value, source=SettingSource.EXPLICIT, detail=None)
+        SettingProvenance(key=key, value=_json_compatible(value), source=SettingSource.EXPLICIT, detail=None)
         for key, value in stated.items()
     ]
     requested += [
@@ -1314,7 +1391,9 @@ def resolve_run_policy(
         if layer.source is SettingSource.BUILTIN_PROFILE and spec.key in profile.exceptions:
             detail = f"{detail}; declared exception to the model field default ({profile.exceptions[spec.key]})"
         resolved_records.append(
-            SettingProvenance(key=spec.key, value=values[spec.key], source=layer.source, detail=detail)
+            SettingProvenance(
+                key=spec.key, value=_json_compatible(values[spec.key]), source=layer.source, detail=detail
+            )
         )
     for resolved_filter in filters:
         resolved_records.append(
@@ -1327,6 +1406,8 @@ def resolve_run_policy(
                     else SettingSource.RUN_MODE_RULE
                     if resolved_filter.descriptor.stage is FilterStage.POST_SCREEN
                     and resolved_run_mode is RunMode.DESIGN_ONLY
+                    else winners["species_liability_limits"].source
+                    if resolved_filter.setting_key.startswith("species_liability_limits.")
                     else SettingSource.BUILTIN_PROFILE
                 ),
                 detail=(

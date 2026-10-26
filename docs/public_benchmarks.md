@@ -150,6 +150,11 @@ no modifications, no top-N cap. It uses checkout scoring defaults; record commit
 Outputs go to ignored `workflow_results/oligogym_native_design_preproduction_v1/`.
 Verify a final workflow summary for every panel before claiming completion.
 
+These multi-gene panel FASTAs define a pooled intended target set: the workflow considers all
+input genes on-target. Post-screen associations from this runner are therefore panel-level;
+gene-specific specificity requires separate per-gene runs. Check every requested species/channel's
+evidence envelope, including its submitted/processed guide counts, rather than relying on exit zero.
+
 ## Historical scoring findings
 
 The [historical analysis JSON](_data/oligogym_scoring_analysis_historical.json) preserves the
@@ -201,6 +206,8 @@ uv run python scripts/analyze_oligogym_scoring.py \
 ```
 
 The analysis records normalization weights. Do not apply historical normalization to newer profiles.
+Published missing `composite_score` values remain missing; available components do not substitute
+for a score the workflow did not publish. The `current` comparison uses `--component-weights`.
 The exploratory weight search may take time. The renderer was written for historical comparison
 labels; review captions against source profiles for new experiments.
 

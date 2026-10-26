@@ -119,6 +119,28 @@ def quilt_summarize_entries(
     out_dir = Path(summarize_dir) if summarize_dir is not None else Path(report_path).parent
     run_dir = Path(run_dir)
     gene = str(payload.run.get("gene_query") or "run")
+    return _entries(run_dir, report_path, out_dir, gene, _description(payload))
+
+
+def quilt_summarize_entries_from_run(
+    report_path: Path | str,
+    run_dir: Path | str,
+    summary: dict[str, Any],
+    facts: dict[str, Any],
+    summarize_dir: Path | str | None = None,
+) -> list[Any]:
+    """Build Quilt rows from lightweight report summary metadata, without building a full payload."""
+    out_dir = Path(summarize_dir) if summarize_dir is not None else Path(report_path).parent
+    root = Path(run_dir)
+    counts = summary.get("status_counts", {})
+    guides = summary.get("guides", facts.get("distinct_guides", 0))
+    tally = ", ".join(f"{counts.get(key, 0)} {key}" for key in ("pass", "warn", "unknown", "fail"))
+    return _entries(
+        root, report_path, out_dir, root.name, f"{guides:,} guides: {tally}. See report for evidence and detail."
+    )
+
+
+def _entries(run_dir: Path, report_path: Path | str, out_dir: Path, gene: str, description: str) -> list[Any]:
     sirnaforge_dir = run_dir / "sirnaforge"
     aggregated = run_dir / "off_target" / "results" / "aggregated"
 
@@ -127,7 +149,7 @@ def quilt_summarize_entries(
             os.path.relpath(Path(report_path), out_dir),
             title=f"siRNAforge report — {gene}",
             types=["html"],
-            description=_description(payload),
+            description=description,
             expand=True,
         )
     ]
@@ -197,6 +219,21 @@ def write_quilt_summarize(
     """
     out = Path(out_path) if out_path is not None else Path(report_path).parent / "quilt_summarize.json"
     entries = quilt_summarize_entries(payload, report_path, run_dir, summarize_dir=out.parent)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+    return out
+
+
+def write_quilt_summarize_from_run(
+    report_path: Path | str,
+    run_dir: Path | str,
+    summary: dict[str, Any],
+    facts: dict[str, Any],
+    out_path: Path | str | None = None,
+) -> Path:
+    """Write Quilt rows from report summaries without materializing candidate guide details."""
+    out = Path(out_path) if out_path is not None else Path(report_path).parent / "quilt_summarize.json"
+    entries = quilt_summarize_entries_from_run(report_path, run_dir, summary, facts, summarize_dir=out.parent)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
     return out

@@ -1,0 +1,369 @@
+{
+  "kind": "pixi_runtime_startup_comparison",
+  "date": "2026-10-26",
+  "commit": "1fd1c2e6a47dd0273ffca46c5cf1c64339ac18db",
+  "machine": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "cpu_count": 12,
+    "python": "3.11.13",
+    "git_revision": "1fd1c2e6a47dd0273ffca46c5cf1c64339ac18db"
+  },
+  "runtime_versions": {
+    "pixi_application": {
+      "python": "3.12.15",
+      "nextflow": "25.10.2",
+      "bwa_mem2": "2.2.1",
+      "pysam": "0.24.1",
+      "viennarna": "2.7.2"
+    },
+    "micromamba_image": {
+      "image": "sirnaforge:latest",
+      "image_id": "sha256:b3d94fad7d533674251c3abd81671067fdcdaf315c7f300cb098d87713958191",
+      "image_size_bytes": 2253426750,
+      "python": "3.12.15",
+      "nextflow": "26.10.3",
+      "bwa_mem2": "2.2.1"
+    }
+  },
+  "pixi_storage": {
+    "application_environment_du": "1.4 GiB",
+    "application_environment_apparent_bytes": 2107751371,
+    "external_pixi_cache_du": "312 MiB",
+    "note": "Hardlinks and shared cache layers make apparent bytes differ from allocated disk use; this is an installed host environment, not a Pixi Docker image size."
+  },
+  "measurements": {
+    "pixi_cli": {
+      "command": "pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment application sirnaforge --help",
+      "cache_state": "locked application environment installed; fresh processes; host OS cache not evicted",
+      "trials": [
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 3.341656589997001
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.3130805079999845
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.286586141999578
+        }
+      ],
+      "wall_median_seconds": 1.3130805079999845,
+      "wall_min_seconds": 1.286586141999578,
+      "wall_max_seconds": 3.341656589997001
+    },
+    "pixi_nextflow": {
+      "command": "pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment application nextflow -version",
+      "cache_state": "locked application environment installed; fresh processes; framework JAR bundled; host OS cache not evicted",
+      "trials": [
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.0602989280014299
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.0420910679968074
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.0818692150060087
+        }
+      ],
+      "wall_median_seconds": 1.0602989280014299,
+      "wall_min_seconds": 1.0420910679968074,
+      "wall_max_seconds": 1.0818692150060087
+    },
+    "container_cli": {
+      "command": "docker run --rm --entrypoint sirnaforge sirnaforge:latest --help",
+      "cache_state": "sirnaforge:latest image; fresh containers; Docker daemon cache present; host OS cache not evicted",
+      "trials": [
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.6497960629931185
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.7180284280038904
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.6648583539936226
+        }
+      ],
+      "wall_median_seconds": 1.6648583539936226,
+      "wall_min_seconds": 1.6497960629931185,
+      "wall_max_seconds": 1.7180284280038904
+    },
+    "container_nextflow": {
+      "command": "docker run --rm --entrypoint nextflow sirnaforge:latest -version",
+      "cache_state": "sirnaforge:latest image; fresh containers; bundled framework; Docker daemon cache present; host OS cache not evicted",
+      "trials": [
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.4596123560040724
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.4433123399940087
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.4129751229920657
+        }
+      ],
+      "wall_median_seconds": 1.4433123399940087,
+      "wall_min_seconds": 1.4129751229920657,
+      "wall_max_seconds": 1.4596123560040724
+    }
+  },
+  "limitations": [
+    "Three fresh-process launches per command; no OS cache eviction and the Pixi environment was already installed.",
+    "Docker timings include starting a fresh Docker container; Pixi timings include the pixi run launcher. These are end-user command observations, not an isolated manager-overhead comparison.",
+    "Nextflow versions differ (25.10.2 Pixi vs 26.10.3 image), so their startup timings are not a matched-version comparison.",
+    "This startup comparison used the original mixed-owner Pixi application environment. The editable install then overwrote Conda files for Nextflow, pysam, and ViennaRNA. A revised single-owner locked environment now passes CLI, native import, and Nextflow smokes; startup trials have not yet been repeated against it.",
+    "Historical host-launch trials do not measure the later matched-direct-version Pixi and micromamba container comparison; the container comparison is separately recorded below."
+  ],
+  "decision": "defer Pixi adoption",
+  "dependency_ownership_followup": {
+    "date": "2026-10-26",
+    "manifest": "scripts/performance/pixi/pixi.toml",
+    "pixi_version": "0.76.1",
+    "environment": "tests",
+    "resolution": {
+      "conda": {
+        "nextflow": "25.10.2",
+        "pysam": "0.24.1",
+        "viennarna": "2.7.0"
+      },
+      "pypi": {
+        "fm-index": "4.0.0"
+      },
+      "pypi_only_reason": "No fm-index candidate exists on the declared conda-forge/bioconda channels."
+    },
+    "editable_install": "pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests install-app",
+    "editable_install_behavior": "pip --no-deps --no-build-isolation; runtime dependencies are managed by the locked environment.",
+    "smokes": {
+      "sirnaforge_help": {
+        "status": "ok",
+        "returncode": 0
+      },
+      "native_imports": {
+        "status": "ok",
+        "pysam": "0.24.1",
+        "ViennaRNA": "2.7.0",
+        "fm_index": "4.0.0"
+      },
+      "nextflow_version": {
+        "status": "ok",
+        "version": "25.10.2"
+      }
+    },
+    "installed_test_environment": {
+      "apparent_bytes": 1482639404,
+      "du": "1.5G",
+      "cache": "fresh PIXI_CACHE_DIR under /tmp"
+    },
+    "limits": [
+      "Linux x86_64 only; no other declared platform was validated.",
+      "Historical host `pixi run` launch timings were not repeated against this revised dependency ownership; the later matched-direct-version container startup comparison is recorded below.",
+      "The container comparison is a Linux x86_64 prototype and does not validate other platforms or production adoption."
+    ]
+  },
+  "pixi_container_comparison": {
+    "date": "2026-10-26",
+    "platform": "Linux x86_64 / WSL2",
+    "builder_base": "ghcr.io/prefix-dev/pixi:0.76.1@sha256:540414f50b96439a6ba1475b79b2e2dd2208e86ebef33e2fbf2a176a8f037d31",
+    "runtime_base": "debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8",
+    "pixi_image_id": "sha256:df8449f6925fef826e70aaff67dd2a341478dcef34419c48b057aadc37659402",
+    "pixi_image_size_bytes": 1735350992,
+    "micromamba_image_id": "sha256:b4ea7404f6afeca84b4d370feb9879985761a82e0e4409a0d1729818646dc53a",
+    "micromamba_image_size_bytes": 2252135962,
+    "size_reduction_fraction": 0.23,
+    "direct_versions_matched": [
+      "Python 3.12.15",
+      "Nextflow 26.10.3",
+      "OpenJDK 24.0.2",
+      "AWS CLI 2.38.1",
+      "PyArrow 26.0.0",
+      "pysam 0.24.1",
+      "ViennaRNA 2.7.2",
+      "BWA-MEM2 2.2.1",
+      "BWA-MEM3 0.15.0",
+      "samtools 1.24"
+    ],
+    "build_trials": {
+      "clean_build_seconds": 61.0,
+      "clean_build_baseline_seconds": 139.204,
+      "pixi_cached_seconds": [
+        0.55,
+        0.49,
+        0.46
+      ],
+      "micromamba_cached_seconds": [
+        1.6,
+        0.71,
+        0.73
+      ]
+    },
+    "startup_trials": {
+      "pixi_cli_seconds": [
+        2.41,
+        2.44,
+        2.46
+      ],
+      "micromamba_cli_seconds": [
+        1.9,
+        1.69,
+        1.73
+      ],
+      "pixi_nextflow_seconds": [
+        1.44,
+        1.44,
+        1.48
+      ],
+      "micromamba_nextflow_seconds": [
+        1.51,
+        1.49,
+        1.66
+      ]
+    },
+    "smokes": {
+      "uid": "12345:12345",
+      "cli_help": "passed",
+      "imports": "pyarrow 26.0.0; pysam 0.24.1; ViennaRNA 2.7.2; fm_index import-ok",
+      "tools": "Java 24.0.2; AWS CLI 2.38.1; Nextflow 26.10.3; BWA-MEM2 2.2.1; BWA-MEM3 0.15.0; samtools 1.24; RNAfold 2.7.2; procps 4.0.2",
+      "nextflow_conda": "passed; conda-forge::python=3.12; Python 3.12.15"
+    },
+    "limitations": [
+      "One Linux x86_64 host; no OS cache eviction.",
+      "One clean build and three cached builds per image.",
+      "Pixi and micromamba transitive closures differ; listed direct versions match.",
+      "Startup includes fresh Docker-container launch overhead.",
+      "The update trial is a small Python/pytest environment, not a whole-application update test.",
+      "No cross-platform behavior is established."
+    ],
+    "clean_build_image_id": "sha256:800099ae23a96626788df896f2e7fab23c916c6d5d21aff89b1752452242ec96",
+    "input_sha256": {
+      "manifest": "a2391b24432f0d12b1a9b3fce937ab3a861d88973d75c7d1cf970be7a8661f46",
+      "lock": "3ace86c419e3ae3c010ee1af1c4f69ce208c3b54cf5b949e6ce9219ff3454e08"
+    }
+  },
+  "current_application_validation": {
+    "date": "2026-10-26",
+    "manifest": "scripts/performance/pixi/pixi.toml",
+    "environment": "application",
+    "pixi_version": "0.76.1",
+    "input_sha256": {
+      "manifest": "a2391b24432f0d12b1a9b3fce937ab3a861d88973d75c7d1cf970be7a8661f46",
+      "lock": "3ace86c419e3ae3c010ee1af1c4f69ce208c3b54cf5b949e6ce9219ff3454e08"
+    },
+    "resolution": {
+      "conda": {
+        "python": "3.12.15",
+        "nextflow": "26.10.3",
+        "openjdk": "24.0.2",
+        "awscli": "2.38.1",
+        "bwa-mem2": "2.2.1",
+        "bwa-mem3": "0.15.0",
+        "samtools": "1.24",
+        "viennarna": "2.7.2",
+        "pysam": "0.24.1"
+      },
+      "pypi": {
+        "fm-index": "4.0.0",
+        "pyarrow": "26.0.0"
+      },
+      "ownership_note": "fm-index has no declared Conda candidate; PyArrow stays with the production PyPI/uv owner and avoids a Conda solver conflict with AWS CLI."
+    },
+    "editable_install": "pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment application install-app",
+    "editable_install_behavior": "pip --no-deps --no-build-isolation",
+    "smokes": {
+      "sirnaforge_help": {
+        "status": "ok",
+        "uid": "12345:12345"
+      },
+      "native_imports": {
+        "status": "ok",
+        "pyarrow": "26.0.0",
+        "pysam": "0.24.1",
+        "ViennaRNA": "2.7.2",
+        "fm_index": "import-ok"
+      },
+      "tools": {
+        "status": "ok",
+        "java": "24.0.2",
+        "awscli": "2.38.1",
+        "nextflow": "26.10.3",
+        "bwa-mem2": "2.2.1",
+        "bwa-mem3": "0.15.0",
+        "samtools": "1.24",
+        "RNAfold": "2.7.2",
+        "procps": "4.0.2"
+      },
+      "nextflow_conda_provider": {
+        "status": "ok",
+        "uid": "12345:12345",
+        "process": "local",
+        "conda_spec": "conda-forge::python=3.12",
+        "result": "Python 3.12.15"
+      }
+    },
+    "limits": [
+      "Linux x86_64 only.",
+      "Host test-suite CI for this revised lock passed in run 40302585774.",
+      "The separate update trial is a minimal Python/pytest environment, not a full application update test.",
+      "No other platform behavior is established."
+    ]
+  },
+  "update_behavior_comparison": {
+    "date": "2026-10-26",
+    "platform": "Linux x86_64 / WSL2",
+    "pixi_version": "0.76.1",
+    "micromamba_version": "2.3.2",
+    "scenario": "Minimal Conda environment with Python 3.12.15 and pytest initially 8.0.0; update pytest to latest compatible 8.x (8.4.2). Three fresh per-trial manager caches/roots and prefixes; update command timing excludes initial environment creation.",
+    "pixi": {
+      "initial_spec": "pytest ==8.0.0",
+      "updated_spec": "pytest >=8.0,<9",
+      "command": "pixi update pytest --manifest-path <trial>/pixi.toml",
+      "update_seconds": [
+        0.28,
+        0.29,
+        0.3
+      ],
+      "median_seconds": 0.29,
+      "result": "pytest 8.0.0 -> 8.4.2"
+    },
+    "micromamba": {
+      "initial_spec": "pytest=8.0.0",
+      "updated_spec": "pytest>=8,<9",
+      "command": "micromamba update -y -n review -c conda-forge --override-channels pytest>=8,<9",
+      "update_seconds": [
+        5.94,
+        5.88,
+        5.88
+      ],
+      "median_seconds": 5.88,
+      "result": "pytest 8.0.0 -> 8.4.2"
+    },
+    "limitations": [
+      "Small isolated Conda environment, not the full sirnaforge runtime stack.",
+      "Single Linux x86_64 host; no OS cache eviction, so network and host cache effects remain.",
+      "Pixi broadens the manifest constraint and updates its lock plus environment; micromamba applies an update spec to an installed environment. These represent each manager\u2019s update workflow, not equivalent lockfile semantics.",
+      "This does not establish whole-application update safety or cross-platform behavior."
+    ]
+  }
+}

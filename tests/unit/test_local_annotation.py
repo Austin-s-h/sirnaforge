@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import hashlib
 import json
@@ -36,7 +37,11 @@ def gencode_files(tmp_path: Path) -> tuple[Path, Path]:
         'transcript_name "TP53-201"; transcript_type "protein_coding"; '
         'tag "basic"; tag "Ensembl_canonical";'
     )
-    lines = ['chr17\tHAVANA\tgene\t100\t400\t.\t-\t.\tgene_id "ENSG1.3"; gene_name "TP53"; gene_type "protein_coding";']
+    lines = [
+        "#!genome-build GRCh38",
+        "#!annotation-version 49",
+        'chr17\tHAVANA\tgene\t100\t400\t.\t-\t.\tgene_id "ENSG1.3"; gene_name "TP53"; gene_type "protein_coding";',
+    ]
     for feature, start, end in [
         ("transcript", 100, 400),
         ("exon", 100, 149),
@@ -86,6 +91,8 @@ async def test_gencode_structure_versions_and_gzip(gencode_files: tuple[Path, Pa
     assert model.transcript_name == "TP53-201"
     assert [interval.start for interval in model.exons] == [300, 100]
     assert [(interval.start, interval.end) for interval in model.cds] == [(310, 340), (110, 140)]
+    assert client.annotation_version == "49"
+    assert client.source_metadata()["annotation_version"] == "49"
     assert client.source_metadata()["sha256"] == hashlib.sha256(compressed.read_bytes()).hexdigest()
 
 
@@ -141,6 +148,48 @@ async def test_gencode_gene_and_sequence_lookup(gencode_files: tuple[Path, Path]
     assert await client.get_sequence("ENST1.2") == "A" * 100
     with pytest.raises(ValueError, match="cDNA only"):
         await client.get_sequence("ENST1.2", SequenceType.PROTEIN)
+
+
+@pytest.mark.asyncio
+async def test_gencode_canonical_provenance_is_isoform_specific_and_versioned(
+    gencode_files: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A canonical tag belongs to its transcript and its annotation release is retained."""
+    annotation, fasta = gencode_files
+    source_metadata = LocalTranscriptModelClient(
+        annotation, provider="gencode", assembly="GRCh38", species="human"
+    ).source_metadata()
+    assert source_metadata["annotation_version"] == "49"
+    attributes = (
+        'gene_id "ENSG1.3"; transcript_id "ENST2.1"; gene_name "TP53"; '
+        'transcript_name "TP53-202"; transcript_type "protein_coding"; tag "basic";'
+    )
+    with annotation.open("a") as handle:
+        handle.write(
+            "chr17\tHAVANA\ttranscript\t100\t400\t.\t-\t.\t"
+            + attributes
+            + "\n"
+            + "chr17\tHAVANA\texon\t100\t149\t.\t-\t.\t"
+            + attributes
+            + "\n"
+        )
+    with gzip.open(fasta, "at") as handle:
+        handle.write(">ENST2.1|ENSG1.3|TP53-202|100|\n" + "C" * 50 + "\n")
+
+    async def inline_to_thread(function, /, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", inline_to_thread)
+    client = GencodeClient(gtf_path=annotation, fasta_path=fasta, assembly="GRCh38")
+    _, transcripts = await client.search_gene("TP53")
+    by_id = {transcript.transcript_id: transcript for transcript in transcripts}
+
+    assert by_id["ENST1.2"].is_canonical
+    assert by_id["ENST1.2"].canonical_release == "49"
+    assert by_id["ENST1.2"].canonical_source == "GENCODE explicit canonical/MANE tags (annotation 49)"
+    assert not by_id["ENST2.1"].is_canonical
+    assert by_id["ENST2.1"].canonical_source is None
+    assert by_id["ENST2.1"].canonical_release is None
 
 
 @pytest.mark.asyncio

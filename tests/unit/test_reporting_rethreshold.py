@@ -41,6 +41,7 @@ from sirnaforge.reporting.payload import (
     reevaluate_gates,
 )
 from sirnaforge.reporting.render import _GAPS_KEY, _NOT_EMBEDDED
+from tests.unit.test_reporting_resources import assert_offline_report
 
 GUIDE_A = "ACGUACGUACGUACGUACGUA"
 #: One nucleotide off GUIDE_A's position on the same transcript, so the two form a register cluster.
@@ -517,11 +518,10 @@ def test_the_per_guide_scope_note_is_reserved_for_a_guide_the_report_is_not_reje
 def test_the_liability_column_and_its_bound_can_be_narrowed_to_one_species(tmp_path: Path) -> None:
     """One all-species count cannot tell a human liability from a non-human-index artefact.
 
-    ``max_off_target_count`` compares the total over every screened species, and on one internal run
-    about half of that total is non-human -- so a guide it rejected may carry no human liability at all.
+    The descriptive liability total covers every screened species, while ``max_off_target_count`` uses
+    a separate query-species nm<=2 counter. On one internal run about half of the total was non-human.
     The decomposition is on the guide (``liability_by_species``, which sums to ``liability_count``), the
-    index cell shows it, and one selector re-scopes the column, its sort and the liability bound
-    together rather than adding a second control over the same number.
+    index cell shows it, and one selector re-scopes only the descriptive column and its sort.
     """
     payload = build_payload(_graded_run(tmp_path))
     html = render_html(payload)
@@ -601,11 +601,7 @@ def test_the_phase_two_markup_still_reaches_nothing_outside_itself(tmp_path: Pat
     """
     html = render_html(build_payload(_graded_run(tmp_path)))
 
-    assert not re.findall(r"https?://", html), "the report contains an external URL"
-    external = [m for m in re.findall(r"""(?:src|href)\s*=\s*["']([^"']+)""", html) if not m.startswith("#")]
-    assert external == [], f"the report links a non-inline resource: {external}"
-    for forbidden in ("fetch(", "XMLHttpRequest", "localStorage", "sessionStorage", "document.cookie"):
-        assert forbidden not in html, f"{forbidden} cannot work in Quilt's default sandbox"
+    assert_offline_report(html)
 
 
 # ---------------------------------------------------------------------------
@@ -674,7 +670,7 @@ def test_a_refusal_opens_the_container_that_was_swallowing_it(tmp_path: Path) ->
     # bare-guide form an earlier report wrote.
     parse = _js_body(html, "function applyHashFragment(")
     assert "refused, controls:false}" in parse, "a bare guide sequence sets no control"
-    assert parse.count("controls=true;") == 8, "every control-bearing key must say so"
+    assert parse.count("controls=true;") == 9, "every control-bearing key, including target gene, must say so"
 
 
 @pytest.mark.unit
@@ -771,7 +767,7 @@ def test_every_control_a_reader_can_see_travels_in_the_url(tmp_path: Path) -> No
     encode = _js_body(html, "function encodeHash()")
     parse = _js_body(html, "function applyHashFragment(")
 
-    for key in ("g=", "t=", "r=", "sp=", "preset=", "q=", "s=", "c=", "k="):
+    for key in ("g=", "t=", "r=", "sp=", "preset=", "q=", "s=", "c=", "k=", "gene="):
         assert f"'{key}'" in encode, f"{key} is not written into the fragment"
         assert f"k==='{key[:-1]}'" in parse, f"{key} is written but never read back"
 
@@ -793,7 +789,7 @@ def test_every_control_a_reader_can_see_travels_in_the_url(tmp_path: Path) -> No
     # And every control that changes any of them writes the URL.
     assert "F.q = e.target.value; applyFilters(); syncHash();" in _js_body(html, "function wireUI()")
     build = _js_body(html, "function buildFilterUI()")
-    assert build.count("syncHash();") == 3, "the status set, the conservation species and the seed toggle"
+    assert build.count("syncHash();") == 5, "status, conservation, seed tolerance, and both target gene controls"
     assert "syncHash();" in _js_body(html, "function togglePick(")
 
 
@@ -1231,8 +1227,4 @@ def test_the_phase_four_markup_still_reaches_nothing_outside_itself(tmp_path: Pa
     """
     html = render_html(build_payload(_graded_run(tmp_path)))
 
-    assert not re.findall(r"https?://", html), "the report contains an external URL"
-    external = [m for m in re.findall(r"""(?:src|href)\s*=\s*["']([^"']+)""", html) if not m.startswith("#")]
-    assert external == [], f"the report links a non-inline resource: {external}"
-    for forbidden in ("fetch(", "XMLHttpRequest", "localStorage", "sessionStorage", "document.cookie", "@import"):
-        assert forbidden not in html, f"{forbidden} cannot work in Quilt's default sandbox"
+    assert_offline_report(html)

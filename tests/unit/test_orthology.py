@@ -108,6 +108,8 @@ async def test_persistent_error_body_on_a_200_is_a_failure_not_an_empty_result(
     assert mapping.unresolved_species == frozenset({"mouse"})
     assert mapping.resolved_species == frozenset()
     assert calls == orthology.ENSEMBL_MAX_ATTEMPTS, "the transient error body is retried, not surrendered to"
+    assert mapping.reasons_by_species == {"mouse": "error_response"}
+    assert mapping.summary()["reasons_by_species"] == {"mouse": "error_response"}
 
 
 @pytest.mark.unit
@@ -130,6 +132,7 @@ async def test_transient_error_body_is_retried_then_succeeds(monkeypatch: pytest
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53})
     assert mapping.unresolved_species == frozenset()
     assert calls == 2
+    assert mapping.reasons_by_species == {"mouse": "orthologues_found"}
 
 
 @pytest.mark.unit
@@ -193,6 +196,7 @@ async def test_request_failure_degrades_rather_than_raising(monkeypatch: pytest.
     assert mapping.all_gene_ids == frozenset()
     assert mapping.unresolved_species == frozenset({"mouse"})
     assert mapping.resolved_species == frozenset()
+    assert mapping.reasons_by_species == {"mouse": "http_error"}
 
 
 @pytest.mark.unit
@@ -209,6 +213,7 @@ async def test_resolved_but_empty_is_not_unresolved(monkeypatch: pytest.MonkeyPa
     assert mapping.all_gene_ids == frozenset()
     assert mapping.resolved_species == frozenset({"mouse"})
     assert mapping.unresolved_species == frozenset()
+    assert mapping.reasons_by_species == {"mouse": "no_orthologue"}
 
 
 @pytest.mark.unit
@@ -218,13 +223,24 @@ async def test_unregistered_target_species_is_unresolved(captured_urls: list[str
     mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"nonesuch"})
 
     assert mapping.unresolved_species == frozenset({"nonesuch"})
+    assert mapping.reasons_by_species == {"nonesuch": "unsupported_target_species"}
     assert captured_urls == []
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_malformed_payload_yields_no_orthologues(monkeypatch: pytest.MonkeyPatch):
-    """A shape change should weaken evidence, not crash a screen."""
+async def test_unregistered_query_species_is_reported_without_a_request():
+    """An unsupported source species cannot form an Ensembl homology request."""
+    mapping = await resolve_orthologues({HUMAN_TP53}, "nonesuch", {"mouse"})
+
+    assert mapping.unresolved_species == frozenset({"mouse"})
+    assert mapping.reasons_by_species == {"mouse": "unsupported_query_species"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_malformed_payload_is_unresolved_not_a_confident_absence(monkeypatch: pytest.MonkeyPatch):
+    """A shape change weakens evidence and cannot claim that no orthologue exists."""
 
     async def junk(_session: Any, _method: str, _url: str, **_kwargs: Any) -> Any:
         return {"unexpected": "shape"}
@@ -233,7 +249,25 @@ async def test_malformed_payload_yields_no_orthologues(monkeypatch: pytest.Monke
     mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
 
     assert mapping.all_gene_ids == frozenset()
-    assert mapping.resolved_species == frozenset({"mouse"})
+    assert mapping.resolved_species == frozenset()
+    assert mapping.unresolved_species == frozenset({"mouse"})
+    assert mapping.reasons_by_species == {"mouse": "invalid_response"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [None, {"data": []}])
+async def test_unrecognized_identifier_is_not_no_orthologue(monkeypatch: pytest.MonkeyPatch, response: Any):
+    """An empty data array means Compara recognized no query record, not a negative result."""
+
+    async def unrecognized(_session: Any, _method: str, _url: str, **_kwargs: Any) -> Any:
+        return response
+
+    monkeypatch.setattr(orthology, "ensembl_request_json", unrecognized)
+    mapping = await resolve_orthologues({HUMAN_TP53}, "human", {"mouse"})
+
+    assert mapping.unresolved_species == frozenset({"mouse"})
+    assert mapping.reasons_by_species == {"mouse": "unrecognized_identifier"}
 
 
 @pytest.mark.unit
@@ -246,6 +280,7 @@ async def test_summary_records_provenance(captured_urls: list[str]):
     assert summary["source"] == "ensembl_compara"
     assert summary["gene_ids_by_species"] == {"mouse": [MOUSE_TRP53]}
     assert summary["resolved_species"] == ["mouse"]
+    assert summary["reasons_by_species"] == {"mouse": "orthologues_found"}
     assert "within_species_paralog" not in summary["orthologue_types"]
 
 
@@ -337,6 +372,7 @@ async def test_symbol_route_rescues_a_transcript_id_query(monkeypatch: pytest.Mo
     # Provenance must show what was asked, so a zero result is diagnosable.
     assert mapping.summary()["queried_gene_ids"] == ["ENST00000413465"]
     assert mapping.summary()["queried_symbols"] == ["TP53"]
+    assert mapping.reasons_by_species == {"mouse": "orthologues_found"}
 
 
 @pytest.mark.unit
@@ -367,6 +403,7 @@ def test_mapping_file_resolves_without_the_network(tmp_path: Path):
     assert mapping.all_gene_ids == frozenset({MOUSE_TRP53}), "versions are stripped on both sides"
     assert mapping.resolved_species == frozenset({"mouse"}), "the query species is never a target"
     assert mapping.summary()["source"] == "ortholog_mapping_file", "an offline run must not claim a REST call"
+    assert mapping.reasons_by_species == {"mouse": "orthologues_found"}
 
 
 @pytest.mark.unit
@@ -380,6 +417,11 @@ def test_mapping_file_silence_about_a_species_is_unresolved_not_empty(tmp_path: 
     # "rhesus" is canonicalised to "macaque", so a file may spell a species any registered way.
     assert mapping.resolved_species == frozenset({"mouse", "macaque"}), "an empty list is a checked absence"
     assert mapping.gene_ids_by_species == {"mouse": frozenset({MOUSE_TRP53})}
+    assert mapping.reasons_by_species == {
+        "macaque": "no_orthologue",
+        "mouse": "orthologues_found",
+        "rat": "mapping_not_supplied",
+    }
 
 
 @pytest.mark.unit
@@ -440,6 +482,7 @@ async def test_an_unreachable_host_is_not_retried(monkeypatch: pytest.MonkeyPatc
     assert attempts == 1, "a transport-level failure is not retried"
     assert slept == [], "and costs no backoff"
     assert mapping.unresolved_species == frozenset({"mouse"}), "still degrades rather than raising"
+    assert mapping.reasons_by_species == {"mouse": "transport_error"}
 
 
 @pytest.mark.unit
@@ -465,6 +508,7 @@ async def test_the_budget_bounds_a_whole_resolution(monkeypatch: pytest.MonkeyPa
     assert len(seen) == 1, "the second species is abandoned rather than paying the same ladder"
     assert mapping.unresolved_species == frozenset({"mouse", "rat"})
     assert mapping.resolved_species == frozenset(), "an abandoned species is never reported clean"
+    assert mapping.reasons_by_species == {"mouse": "budget_exhausted", "rat": "budget_exhausted"}
 
 
 @pytest.mark.unit

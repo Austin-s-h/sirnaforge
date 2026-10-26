@@ -5,9 +5,12 @@ Local providers work without Ensembl access and keep their original transcript/g
 1-based inclusive coordinates, exon/CDS structure, and source identity.
 
 Gene/sequence retrieval and structural enrichment are separate interfaces. RefSeq gene/sequence
-search already uses NCBI E-utilities. GENCODE gene search now reads a local annotation plus its
+search uses NCBI E-utilities and the specific gene-to-RefSeq-RNA links, excluding genomic records.
+Requests are paced per client and retry bounded HTTP 429 responses; see the
+[NCBI usage guidelines](https://www.ncbi.nlm.nih.gov/books/NBK25497/). GENCODE gene search now reads a local annotation plus its
 matching transcript FASTA. Neither provider changes an Ensembl accession into a RefSeq accession.
 
+(obtain-a-pinned-release)=
 ## Obtain a pinned release
 
 For GENCODE, obtain the annotation GTF and transcript FASTA from the same release and assembly

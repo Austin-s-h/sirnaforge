@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import pickle
+import re
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -261,15 +262,18 @@ def _reverse_complement_seq(seq: str) -> str:
 
 
 def _seed_positions_for(kind: str, seq_len: int, seed_len: int | None) -> set[int]:
-    """Return seed positions nearest FokI according to half-site side."""
+    """Return query-frame positions nearest FokI, the 3′ end on either half-site.
+
+    Both queries are written 5′→3′ on their respective strands. For an inward
+    facing right monomer the query is reverse-complemented on the genome, so
+    its last query bases lie at the *lowest* genomic coordinates, by the spacer.
+    """
+    del kind  # Physical side changes genomic direction, not the query frame.
     if seed_len is None or seed_len <= 0:
         return set()
     effective = min(seed_len, seq_len)
 
-    if kind == "L":
-        return set(range(seq_len - effective, seq_len))
-
-    return set(range(0, effective))
+    return set(range(seq_len - effective, seq_len))
 
 
 def _base_match_for(query_base: str, observed_base: str, mode: IUPACMode) -> bool:
@@ -336,7 +340,10 @@ class _BaseHalfSiteScanEngine:
     """Shared helpers for concrete half-site scan backends."""
 
     backend: ZFNSearchBackend
-    _OBSERVED_ALPHABET = tuple(IUPAC_MAP.keys())
+    # Query ambiguity is handled through IUPAC_MAP. Enumerating ambiguous
+    # *observed* symbols inflates 12bp/mm4 from 46,666 to 5.5 million patterns.
+    # Reference windows containing ambiguity are verified separately below.
+    _OBSERVED_ALPHABET = tuple("ACGT")
     _MAX_CANDIDATE_PATTERNS = 1_000_000
 
     def __init__(self, owner: ExhaustiveZFNOffTargetSearcher) -> None:
@@ -421,7 +428,7 @@ class _BaseHalfSiteScanEngine:
 
         for idx, base in enumerate(query):
             allowed = {base} if mode == IUPACMode.NONE else IUPAC_MAP.get(base, {base})
-            match_choices = len(allowed)
+            match_choices = len(allowed.intersection(self._OBSERVED_ALPHABET))
             mismatch_choices = alphabet_size - match_choices
             in_seed = idx in seed_positions
             next_states: dict[tuple[int, int], int] = {}
@@ -491,6 +498,62 @@ class _BaseHalfSiteScanEngine:
             mismatch_positions=match["mismatch_positions"],
             aligned=match["aligned"],
         )
+
+    def _scan_ambiguous_windows(
+        self,
+        kind: str,
+        query: str,
+        chrom_sequences: dict[str, str],
+        params: ZFNDesignParameters,
+        target_chrom: str | None,
+        region_start0: int | None,
+        region_end0: int | None,
+    ) -> list[_HalfSiteHit]:
+        """Verify only windows containing non-ACGT reference symbols.
+
+        This preserves exhaustive mismatch semantics around masked/ambiguous
+        bases without enumerating fifteen observed letters per query position.
+        Overlapping windows are visited once, including runs of N bases.
+        """
+        hits: list[_HalfSiteHit] = []
+        qlen = len(query)
+        for chrom, sequence in chrom_sequences.items():
+            if target_chrom is not None and chrom != target_chrom:
+                continue
+            start = max(0, region_start0 or 0)
+            end = min(len(sequence), region_end0 if region_end0 is not None else len(sequence))
+            last_visited = start - 1
+            for ambiguous in re.compile("[^ACGT]+").finditer(sequence, start, end):
+                lower = max(start, ambiguous.start() - qlen + 1, last_visited + 1)
+                upper = min(ambiguous.end() - 1, end - qlen)
+                constraints = params.half_site_constraints
+                ambiguity_is_mismatch = constraints.iupac_mode != IUPACMode.NONE or set(query) <= set("ACGT")
+                ranges = [(lower, upper)]
+                budget = constraints.max_mismatches
+                if ambiguity_is_mismatch and ambiguous.end() - ambiguous.start() > budget and budget < qlen:
+                    # Interior windows of long N runs necessarily exceed the
+                    # budget. Only the two flanks can possibly match; avoid a
+                    # Python scan of every masked base in a whole genome.
+                    ranges = [
+                        (lower, min(upper, ambiguous.start() + budget - qlen)),
+                        (max(lower, ambiguous.end() - budget), upper),
+                    ]
+                for offset in (value for first, last in ranges for value in range(first, last + 1)):
+                    window = sequence[offset : offset + qlen]
+                    for strand, oriented in ((Strand.PLUS, window), (Strand.MINUS, _reverse_complement_seq(window))):
+                        hit = self._build_verified_hit(
+                            kind=kind,
+                            chrom=chrom,
+                            start0=offset,
+                            strand=strand,
+                            query=query,
+                            observed_oriented=oriented,
+                            params=params,
+                        )
+                        if hit is not None:
+                            hits.append(hit)
+                last_visited = max(last_visited, upper)
+        return hits
 
 
 class _ExhaustivePythonHalfSiteScanEngine(_BaseHalfSiteScanEngine):
@@ -680,6 +743,10 @@ class _PyAhoCorasickHalfSiteScanEngine(_BaseHalfSiteScanEngine):
         pattern_count = self._candidate_pattern_count(kind, query, params)
         if pattern_count > self._MAX_CANDIDATE_PATTERNS:
             self._raise_pattern_complexity_error(kind=kind, pattern_count=pattern_count)
+        if pattern_count == 0:
+            return self._scan_ambiguous_windows(
+                kind, query, chrom_sequences, params, target_chrom, region_start0, region_end0
+            )
         automaton = self._automaton(kind, query, params)
         hits: list[_HalfSiteHit] = []
 
@@ -709,6 +776,9 @@ class _PyAhoCorasickHalfSiteScanEngine(_BaseHalfSiteScanEngine):
                     if hit is not None:
                         hits.append(hit)
 
+        hits.extend(
+            self._scan_ambiguous_windows(kind, query, chrom_sequences, params, target_chrom, region_start0, region_end0)
+        )
         return hits
 
 
@@ -739,7 +809,10 @@ class _FMIndexHalfSiteScanEngine(_BaseHalfSiteScanEngine):
 
     def _live_multi_index(self, chrom_sequences: dict[str, str]) -> _MultiFMIndexState:
         """Return a cached live MultiFMIndex for one loaded FASTA snapshot."""
-        key = ("live", tuple((chrom, id(seq)) for chrom, seq in chrom_sequences.items()))
+        # Immutable sequence values provide content equality and retain the
+        # original strings, preventing address reuse without copying a genome
+        # into an encoded byte buffer. Python caches each string's hash.
+        key = ("live", tuple(chrom_sequences.items()))
         cached = self._multi_index_cache.get(key)
         if cached is not None:
             return cached
@@ -910,19 +983,21 @@ class _FMIndexHalfSiteScanEngine(_BaseHalfSiteScanEngine):
             region_start0=region_start0,
             region_end0=region_end0,
         )
-        if prebuilt_hits is not None:
-            return prebuilt_hits
-
-        state = self._live_multi_index(chrom_sequences)
-        return self._scan_with_multi_index_state(
-            state=state,
-            kind=kind,
-            query=query,
-            params=params,
-            target_chrom=target_chrom,
-            region_start0=region_start0,
-            region_end0=region_end0,
+        if prebuilt_hits is None:
+            state = self._live_multi_index(chrom_sequences)
+            prebuilt_hits = self._scan_with_multi_index_state(
+                state=state,
+                kind=kind,
+                query=query,
+                params=params,
+                target_chrom=target_chrom,
+                region_start0=region_start0,
+                region_end0=region_end0,
+            )
+        prebuilt_hits.extend(
+            self._scan_ambiguous_windows(kind, query, chrom_sequences, params, target_chrom, region_start0, region_end0)
         )
+        return prebuilt_hits
 
 
 def _normalize_chrom_token(chrom: str) -> str:
@@ -1477,13 +1552,12 @@ class ExhaustiveZFNOffTargetSearcher:
         core_start0: int,
         core_end0: int,
     ) -> list[ZFNOffTargetSite]:
-        """Keep only sites fully contained in the shard core window."""
-        core_start_1 = core_start0 + 1
-        return [
-            site
-            for site in sites
-            if site.chrom == chrom and site.start_1based >= core_start_1 and site.end_1based <= core_end0
-        ]
+        """Assign each site to the unique half-open core containing its start.
+
+        Scan windows include overlap to recover the full pair; requiring the
+        end to lie in the same core would lose every pair crossing a boundary.
+        """
+        return [site for site in sites if site.chrom == chrom and core_start0 <= site.start_1based - 1 < core_end0]
 
     def _truncate_sites(self, sites: list[ZFNOffTargetSite], top_n_sites: int | None) -> list[ZFNOffTargetSite]:
         """Optionally truncate a ranked site list."""
@@ -1928,7 +2002,11 @@ class ExhaustiveZFNOffTargetSearcher:
         """Build one site model from two half-site hits if all pairing constraints pass."""
         leftmost, rightmost = (first, second) if first.start0 <= second.start0 else (second, first)
 
-        if params.spacer_constraints.require_opposite_strands and first.strand == second.strand:
+        # Query 3′ ends carry FokI: both must point into the intervening
+        # spacer. Opposite strands alone also admit outward -...+ pairs.
+        if params.spacer_constraints.require_opposite_strands and (
+            leftmost.strand != Strand.PLUS or rightmost.strand != Strand.MINUS
+        ):
             return None
 
         spacer_len = rightmost.start0 - leftmost.end0
@@ -2074,6 +2152,7 @@ class ExhaustiveZFNOffTargetSearcher:
 
     def _half_site_v2_penalty(self, hit: _HalfSiteHit, is_left: bool) -> float:
         """Compute one half-site penalty with finger and polarity weighting."""
+        del is_left  # Mismatch positions are in 5′→3′ query coordinates on both sides.
         if not hit.mismatch_positions:
             return 0.0
 
@@ -2082,7 +2161,7 @@ class ExhaustiveZFNOffTargetSearcher:
         penalties: list[float] = []
 
         for pos in hit.mismatch_positions:
-            dist_from_foki = (seq_len - 1) - pos if is_left else pos
+            dist_from_foki = (seq_len - 1) - pos
 
             polarity_weight = 1.0 + (0.08 * max(0, 5 - dist_from_foki))
             finger_idx = pos // finger_len

@@ -9,7 +9,9 @@ import json
 import os
 import subprocess
 
+import pandas as pd
 import pytest
+from Bio import SeqIO
 
 from sirnaforge.data.variant_resolver import VariantResolver
 from sirnaforge.models.variant import ClinVarSignificance, VariantRecord, VariantSource
@@ -30,7 +32,21 @@ def test_cached_variant_workflow(tmp_path, realistic_transcripts_fasta, mode, mu
         min_af=min_af,
         clinvar_filters=[ClinVarSignificance.PATHOGENIC, ClinVarSignificance.LIKELY_PATHOGENIC],
     )
-    coordinates = ["chr1:100:C:T", "chr1:200:G:A"] if multiple else ["chr1:100:C:T"]
+    # A synthetic genomic exon maps this actual transcript sequence explicitly.
+    # Keep one transcript so unrelated, unannotated input cannot mask mapping failures.
+    record = next(SeqIO.parse(realistic_transcripts_fasta, "fasta"))
+    fasta = tmp_path / "transcript.fa"
+    SeqIO.write([record], fasta, "fasta")
+    annotation = tmp_path / "annotation.gtf"
+    attributes = f'gene_id "SYNTHETIC_GENE"; transcript_id "{record.id}";'
+    annotation.write_text(
+        f"1\tfixture\ttranscript\t1001\t{1000 + len(record)}\t.\t+\t.\t{attributes}\n"
+        f"1\tfixture\texon\t1001\t{1000 + len(record)}\t.\t+\t.\t{attributes}\n"
+    )
+    offsets = [100, 200] if multiple else [100]
+    coordinates = [
+        f"chr1:{1001 + offset}:{record.seq[offset]}:{'A' if record.seq[offset] != 'A' else 'G'}" for offset in offsets
+    ]
     for coordinate in coordinates:
         query = resolver.parse_identifier(coordinate)
         variant = VariantRecord(
@@ -49,7 +65,7 @@ def test_cached_variant_workflow(tmp_path, realistic_transcripts_fasta, mode, mu
         "workflow",
         "SYNTHETIC_VARIANT_TEST",
         "--input-fasta",
-        str(realistic_transcripts_fasta),
+        str(fasta),
         "--output-dir",
         str(output),
         "--variant-mode",
@@ -70,7 +86,13 @@ def test_cached_variant_workflow(tmp_path, realistic_transcripts_fasta, mode, mu
         text=True,
         timeout=180,
         check=False,
-        env={**os.environ, "SIRNAFORGE_CACHE_DIR": str(cache)},
+        env={
+            **os.environ,
+            "SIRNAFORGE_CACHE_DIR": str(cache),
+            "SIRNAFORGE_ANNOTATION_PROVIDER": "gencode",
+            "SIRNAFORGE_GENCODE_GTF": str(annotation),
+            "SIRNAFORGE_GENCODE_ASSEMBLY": "GRCh38",
+        },
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     report = json.loads((output / "logs/resolved_variants.json").read_text())
@@ -82,3 +104,14 @@ def test_cached_variant_workflow(tmp_path, realistic_transcripts_fasta, mode, mu
     assert {variant["vcf_style"] for variant in report["variants"]} == set(coordinates)
     assert (output / "sirnaforge/candidates_all.csv").is_file()
     assert (output / "sirnaforge/report.html").is_file()
+
+    candidates = pd.read_csv(output / "sirnaforge/candidates_all.csv")
+    assert not candidates.empty
+    if mode == "target":
+        assert candidates["targeted_alleles"].map(json.loads).map(lambda alleles: alleles == ["alt"]).all()
+    elif mode == "both":
+        alleles = candidates["targeted_alleles"].map(json.loads)
+        assert any("alt" in value for value in alleles)
+        assert any("ref" in value for value in alleles)
+    else:
+        assert candidates["overlapped_variants"].map(json.loads).map(len).eq(0).all()

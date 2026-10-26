@@ -9,7 +9,7 @@ VERSION = $(shell uv run python -c "from sirnaforge import __version__; print(__
 # Digest of everything the image bakes in. VERSION cannot answer "is this image current?" -- it stays
 # 0.7.1 across every commit of an unreleased version, so a version-only check passes an image built
 # before the code it is meant to validate. Reads the working tree, not git, so uncommitted edits count.
-SRC_FINGERPRINT = $(shell find src pyproject.toml uv.lock docker/Dockerfile -type f \
+SRC_FINGERPRINT = $(shell find src pyproject.toml uv.lock README.md LICENSE docker .dockerignore -type f \
 	! -name '*.pyc' ! -path '*/__pycache__/*' -print0 2>/dev/null \
 	| sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -c1-16)
 NEXTFLOW_IMAGE ?= $(DOCKER_IMAGE):$(VERSION)
@@ -48,6 +48,7 @@ DOCKER_RUN = docker run --rm $(DOCKER_HOST_USER) $(DOCKER_MOUNT_FLAGS) $(DOCKER_
 DOCKER_TEST_USER = $(DOCKER_HOST_USER)
 # Optional Docker resource constraints for reproducible small-runner validation.
 DOCKER_TEST_MARKERS ?= runs_in_container and not requires_network
+DOCKER_TEST_PYTEST_ARGS ?=
 DOCKER_TEST_RESOURCE_FLAGS ?=
 
 # Pytest command shortcuts
@@ -116,7 +117,7 @@ test-dev: ## Development tier - fast unit tests (1,788 tests, ~36s)
 	$(PYTEST_V) -m "dev"
 
 test-ci: ## CI tier - smoke tests for CI/CD (host-only, skip Docker/Nextflow suites)
-	$(PYTEST_V) -m "ci and not runs_in_container and not requires_docker and not requires_tools" -n 0 --junitxml=pytest-report.xml \
+	$(PYTEST_V) -m "ci and not runs_in_container and not requires_docker and not requires_tools and not requires_network" -n 0 --junitxml=pytest-report.xml \
 		--cov=sirnaforge --cov-report=xml:coverage.xml --cov-report=term-missing
 
 test-release: docs test-release-host test-release-container test-release-report ## Release tier - comprehensive validation (host + container tests with combined coverage)
@@ -129,7 +130,7 @@ test-release: docs test-release-host test-release-container test-release-report 
 test-release-host: ## Host-only release suite, serial (1,822 tests, ~83s, produces base coverage database)
 	@echo "Step 1/3: Running host-based tests with coverage..."
 	@rm -f .coverage coverage*.xml pytest-*.xml 2>/dev/null || true
-	$(PYTEST_V) -m "(dev or ci or release) and not runs_in_container" \
+	$(PYTEST_V) -m "(dev or ci or release) and not runs_in_container and not requires_network" \
 		-n 0 \
 		--cov=sirnaforge --cov-report= \
 		--junitxml=pytest-host-report.xml
@@ -150,7 +151,7 @@ test-release-container: cache-ensure docker-ensure ## Container release suite, ~
 		"shopt -s nullglob; \
 		pip install --quiet pytest pytest-cov --target /workspace/.pip; \
 		set +e; \
-		PYTHONPATH=/workspace/.pip:\$$PYTHONPATH /opt/conda/bin/python -m pytest tests/container/ -v -m 'runs_in_container' \
+		PYTHONPATH=/workspace/.pip:\$$PYTHONPATH /opt/conda/bin/python -m pytest tests/container/ -v -m 'runs_in_container and not requires_network' \
 		--cov=sirnaforge --cov-append --cov-report= \
 		--junitxml=/workspace/pytest-container-report.xml \
 		--override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
@@ -187,8 +188,8 @@ test: ## Run all tests (shows what passes/skips/fails)
 # marker itself stays declared in pyproject.toml and filtered out of `test-ci`, so the day a
 # host-side Docker test is written it lands in a tier that already excludes it from CI.
 
-test-requires-network: ## Tests requiring network access (15 tests; all skip without a verified TLS route)
-	$(PYTEST_V) -m "requires_network"
+test-requires-network: ## Explicit local-only live service checks (requires working remote APIs)
+	$(PYTEST_V) --run-network -m "requires_network"
 
 test-requires-nextflow: ## Tests requiring Nextflow (2 tests, both container-tier)
 	$(PYTEST_V) -m "requires_nextflow"
@@ -243,7 +244,7 @@ docker-test: cache-ensure docker-ensure ## Run tests INSIDE Docker container (va
 		"shopt -s nullglob; \
 		pip install --quiet pytest --target /workspace/.pip; \
 		set +e; \
-		PYTHONPATH=/workspace/.pip:\$$PYTHONPATH /opt/conda/bin/python -m pytest tests/container/ -v -m '$(DOCKER_TEST_MARKERS)' --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
+		PYTHONPATH=/workspace/.pip:\$$PYTHONPATH /opt/conda/bin/python -m pytest tests/container/ -v -m '$(DOCKER_TEST_MARKERS)' $(DOCKER_TEST_PYTEST_ARGS) --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
 		status=\$$?; \
 		set -e; \
 		chown -R \$$HOST_UID:\$$HOST_GID /workspace/.pytest_tmp /workspace/tp53_workflow_debug /workspace/workflow_output /workspace/workflow_test_debug_* /workspace/docker_results 2>/dev/null || true; \

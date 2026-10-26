@@ -489,6 +489,9 @@ class SiRNACandidateSchema(DataFrameModel):
     max_transcriptome_seed_perfect_observed: Optional[Series[float]] = Field(  # noqa: UP045
         description="Observed value max_transcriptome_seed_perfect was compared against", nullable=True, coerce=True
     )
+    max_transcript_seed_sites_observed: Optional[Series[float]] = Field(  # noqa: UP045
+        description="Observed complementary transcript-seed site count", nullable=True, coerce=True
+    )
     max_mirna_perfect_seed_observed: Optional[Series[float]] = Field(  # noqa: UP045
         description="Observed value max_mirna_perfect_seed was compared against", nullable=True, coerce=True
     )
@@ -552,8 +555,11 @@ class SiRNACandidateSchema(DataFrameModel):
         run's CSV never had, so only columns actually present in the frame are checked here.
         """
         allowed = {v.value for v in FilterEvaluation}
+        declared_columns = {f"{filter_id}_verdict" for filter_id in DECLARED_FILTER_IDS}
         verdict_columns = [
-            column for filter_id in DECLARED_FILTER_IDS if (column := f"{filter_id}_verdict") in df.columns
+            column
+            for column in df.columns
+            if column in declared_columns or (column.startswith("species_liability_") and column.endswith("_verdict"))
         ]
         return all(bool(df[column].map(lambda v: v in allowed).all()) for column in verdict_columns)
 

@@ -189,6 +189,8 @@ class TranscriptInfo(BaseModel):
     length: int | None = None
     database: DatabaseType
     is_canonical: bool = False
+    canonical_source: str | None = None
+    canonical_release: str | None = None
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -594,6 +596,8 @@ class EnsemblClient(AbstractDatabaseClient):
                         length=len(sequence) if sequence else None,
                         database=DatabaseType.ENSEMBL,
                         is_canonical=transcript.get("is_canonical", False),
+                        canonical_source="Ensembl REST lookup" if "is_canonical" in transcript else None,
+                        canonical_release=str(data["ensembl_release"]) if data.get("ensembl_release") else None,
                     )
                 )
 
@@ -641,6 +645,34 @@ class RefSeqClient(AbstractDatabaseClient):
         self.base_url = base_url
         self.email = "sirnaforge@example.com"  # Required by NCBI
         self.tool = "sirnaforge"
+        self._request_lock = asyncio.Lock()
+        self._next_request_at = 0.0
+
+    async def _throttle(self) -> None:
+        """Stay below NCBI's three requests per second without an API key."""
+        async with self._request_lock:
+            loop = asyncio.get_running_loop()
+            delay = self._next_request_at - loop.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._next_request_at = loop.time() + 0.35
+
+    @asynccontextmanager
+    async def _request(self, url: str, params: dict[str, str]) -> AsyncIterator[aiohttp.ClientResponse]:
+        """Pace E-utilities requests and retry bounded HTTP 429 responses."""
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session:
+            for attempt in range(3):
+                await self._throttle()
+                async with session.get(url, params=params) as response:
+                    if response.status != 429 or attempt == 2:
+                        yield response
+                        return
+                    try:
+                        delay = float(response.headers.get("Retry-After", str(2**attempt)))
+                    except ValueError:
+                        delay = float(2**attempt)
+                    delay = min(30.0, max(0.35, delay))
+                await asyncio.sleep(delay)
 
     @property
     def database_type(self) -> DatabaseType:
@@ -675,10 +707,7 @@ class RefSeqClient(AbstractDatabaseClient):
         }
 
         try:
-            async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
-                session.get(url, params=params) as response,
-            ):
+            async with self._request(url, params) as response:
                 if response.status == 200:
                     fasta_text = await response.text()
                     # Remove FASTA header and extract sequence
@@ -711,10 +740,7 @@ class RefSeqClient(AbstractDatabaseClient):
         }
 
         try:
-            async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
-                session.get(url, params=params) as response,
-            ):
+            async with self._request(url, params) as response:
                 if response.status == 200:
                     data = await response.json()
                     id_list = data.get("esearchresult", {}).get("idlist", [])
@@ -743,10 +769,7 @@ class RefSeqClient(AbstractDatabaseClient):
         }
 
         try:
-            async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
-                session.get(url, params=params) as response,
-            ):
+            async with self._request(url, params) as response:
                 if response.status == 200:
                     data = await response.json()
                     gene_data = data.get("result", {}).get(gene_id, {})
@@ -847,7 +870,8 @@ class RefSeqClient(AbstractDatabaseClient):
         url = f"{self.base_url}/elink.fcgi"
         params = {
             "dbfrom": "gene",
-            "db": "nucleotide",
+            "db": "nuccore",
+            "linkname": "gene_nuccore_refseqrna",
             "id": gene_id,
             "retmode": "json",
             "email": self.email,
@@ -855,22 +879,23 @@ class RefSeqClient(AbstractDatabaseClient):
         }
 
         try:
-            async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
-                session.get(url, params=params) as response,
-            ):
+            async with self._request(url, params) as response:
                 if response.status == 200:
                     data = await response.json()
                     linksets = data.get("linksets", [])
 
-                    transcript_ids = []
+                    # ELink puts dbto on each linksetdb, not on the outer linkset.
+                    # Select RefSeq RNA links explicitly so genomic records never
+                    # become candidate-design transcripts.
+                    transcript_ids: list[str] = []
                     for linkset in linksets:
-                        if linkset.get("dbto") == "nucleotide":
-                            for link in linkset.get("linksetdbs", []):
-                                if link.get("dbto") == "nucleotide":
-                                    transcript_ids.extend(link.get("links", []))
+                        for link in linkset.get("linksetdbs", []):
+                            if link.get("dbto") in {"nuccore", "nucleotide"} and link.get("linkname") == (
+                                "gene_nuccore_refseqrna"
+                            ):
+                                transcript_ids.extend(str(identifier) for identifier in link.get("links", []))
 
-                    return transcript_ids
+                    return list(dict.fromkeys(transcript_ids))
                 raise DatabaseAccessError(f"HTTP {response.status}", "RefSeq")
         except aiohttp.ClientConnectorError as e:
             raise DatabaseAccessError(f"Connection failed: {e}", "RefSeq") from e
@@ -909,10 +934,7 @@ class RefSeqClient(AbstractDatabaseClient):
         }
 
         try:
-            async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout), trust_env=True) as session,
-                session.get(url, params=params) as response,
-            ):
+            async with self._request(url, params) as response:
                 if response.status == 200:
                     data = await response.json()
                     result = data.get("result", {})
@@ -1000,23 +1022,44 @@ class GencodeClient(AbstractDatabaseClient):
         include_sequence: bool = True,
     ) -> tuple[GeneInfo | None, list[TranscriptInfo]]:
         """Find a human gene, symbol, or transcript in a local GENCODE release."""
+        # Fail before dispatching to a worker: missing configuration is a deterministic caller
+        # error, not blocking local file work. Keep an unconfigured provider from leaving an async
+        # request waiting on a worker.
+        if not self.gtf_path or not self.assembly:
+            raise DatabaseAccessError(
+                "GENCODE requires SIRNAFORGE_GENCODE_GTF and SIRNAFORGE_GENCODE_ASSEMBLY "
+                "(or explicit gtf_path and assembly arguments)",
+                "GENCODE",
+            )
+        return await asyncio.to_thread(self._search_gene, query, include_sequence)
+
+    def _search_gene(self, query: str, include_sequence: bool) -> tuple[GeneInfo, list[TranscriptInfo]]:
+        """Resolve annotation and sequences in one worker to avoid repeated file/thread passes."""
         from sirnaforge.config.reference_policy import ReferenceChoice  # noqa: PLC0415 - lazy data models
 
         client = self.annotation_client()
-        bundle = await client.fetch_by_ids(
-            [query], species="human", reference=ReferenceChoice.explicit(client.assembly)
-        )
+        reference = ReferenceChoice.explicit(client.assembly)
+        client._validate_reference("human", reference)
+        bundle = client._bundle([query], [], reference)
         if not bundle.transcripts:
             raise GeneNotFoundError(query, "GENCODE")
         models = list(bundle.transcripts.values())
         if len({model.gene_id for model in models}) != 1:
             raise DatabaseAccessError(f"Ambiguous GENCODE gene query: {query}; use a versioned gene ID", "GENCODE")
-        sequences = await asyncio.to_thread(self._read_sequences, set(bundle.transcripts)) if include_sequence else {}
+        sequences = self._read_sequences(set(bundle.transcripts)) if include_sequence else {}
         transcripts = [
             TranscriptInfo(
                 transcript_id=model.transcript_id,
                 transcript_name=model.transcript_name,
                 is_canonical=model.is_canonical,
+                canonical_source=(
+                    f"GENCODE explicit canonical/MANE tags (annotation {client.annotation_version})"
+                    if model.is_canonical and client.annotation_version
+                    else "GENCODE explicit canonical/MANE tags"
+                    if model.is_canonical
+                    else None
+                ),
+                canonical_release=client.annotation_version if model.is_canonical else None,
                 gene_id=model.gene_id,
                 gene_name=model.symbol,
                 transcript_type=model.biotype,

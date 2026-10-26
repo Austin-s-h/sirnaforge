@@ -533,7 +533,7 @@ def test_every_filter_with_a_clearable_threshold_can_be_disabled_independently()
     """
     baseline = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
     switchable = switchable_filter_ids()
-    assert len(switchable) == 10, switchable
+    assert len(switchable) == 11, switchable
 
     for filter_id in switchable:
         policy = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={filter_id: "off"})
@@ -638,6 +638,7 @@ def test_a_post_screen_gate_cannot_be_switched_on_when_the_run_screens_nothing()
             entry_point=EntryPoint.SCREENING_WORKFLOW,
             run_mode="exploratory",
             legacy_skip_screening=True,
+            stated={"max_off_target_count": 0},
             filter_actions={"max_off_target_count": "fail"},
         )
 
@@ -656,6 +657,31 @@ def test_an_undeclared_threshold_resolves_to_off_not_to_a_silent_pass():
         entry_point=EntryPoint.SCREENING_WORKFLOW, stated={"max_transcriptome_seed_perfect": 2}
     )
     assert opted_in.descriptor("max_transcriptome_seed_perfect").action is FilterAction.FAIL
+
+
+@pytest.mark.unit
+def test_transcript_seed_site_ceiling_is_an_optional_registry_gate():
+    """The public threshold resolves through policy, and no threshold keeps the new gate off."""
+    default = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW)
+    descriptor = default.descriptor("max_transcript_seed_sites")
+    assert descriptor.threshold is None
+    assert descriptor.action is FilterAction.OFF
+
+    opted_in = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={"max_transcript_seed_sites": 8},
+    )
+    descriptor = opted_in.descriptor("max_transcript_seed_sites")
+    assert descriptor.threshold == 8
+    assert descriptor.action is FilterAction.FAIL
+    assert opted_in.source_of("max_transcript_seed_sites") is SettingSource.EXPLICIT
+
+    warned = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={"max_transcript_seed_sites": 8},
+        filter_actions={"max_transcript_seed_sites": "warn"},
+    )
+    assert warned.descriptor("max_transcript_seed_sites").action is FilterAction.WARN
 
 
 @pytest.mark.unit
@@ -697,7 +723,9 @@ def test_warn_is_selectable_now_that_candidates_carry_per_filter_verdicts():
     the manifest and the candidate row agree.
     """
     policy = resolve_run_policy(
-        entry_point=EntryPoint.SCREENING_WORKFLOW, filter_actions={"max_off_target_count": "warn"}
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={"max_off_target_count": 0},
+        filter_actions={"max_off_target_count": "warn"},
     )
 
     assert policy.descriptor("max_off_target_count").action is FilterAction.WARN
@@ -757,12 +785,20 @@ def test_the_query_stratified_gates_declare_their_scope_and_export_their_counter
         "max_mirna_perfect_seed",
         "fail_on_high_risk_mirna",
         "max_total_offtarget_hits",
+        "max_off_target_count",
     }
     assert all(resolved.evidence_exported is True for resolved in stratified)
     # Each still says its counter is not the same number as the identically named all-species column.
-    assert all("all-species number" in resolved.definition for resolved in stratified)
+    assert all(
+        "all-species number" in resolved.definition
+        for resolved in stratified
+        if resolved.filter_id != "max_off_target_count"
+    )
     # And the column it names is the stratified one, not the all-species counter.
-    assert all(resolved.descriptor.column.endswith("_query") for resolved in stratified)
+    assert all(
+        resolved.descriptor.column.endswith("_query") or resolved.filter_id == "max_off_target_count"
+        for resolved in stratified
+    )
 
 
 @pytest.mark.unit
@@ -821,9 +857,85 @@ def test_a_query_stratified_gate_declares_the_run_s_own_query_species():
         )
         for filter_id in ("max_transcriptome_hits_0mm", "max_mirna_perfect_seed", "fail_on_high_risk_mirna"):
             assert policy.descriptor(filter_id).scope.species == frozenset({query}), (filter_id, query)
-    # A gate counting every screened species keeps an unrestricted scope.
+    # The aggregate liability ceiling is scoped to the query species and nm<=2.
     unrestricted = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW, query_species="mouse")
-    assert unrestricted.descriptor("max_off_target_count").scope.species == frozenset()
+    assert unrestricted.descriptor("max_off_target_count").scope.species == frozenset({"mouse"})
+    assert unrestricted.descriptor("max_off_target_count").scope.max_mismatches == 2
+
+
+@pytest.mark.unit
+def test_species_liability_limits_are_resolved_as_explicit_species_scoped_filters():
+    """Configured species thresholds become scoped, exported filters with the chosen action."""
+    policy = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={
+            "species_liability_limits": {
+                "Homo sapiens": {
+                    "transcriptome_hits_0mm": 0,
+                    "transcript_seed_genes": 5,
+                    "action": "warn",
+                }
+            }
+        },
+    )
+
+    perfect = policy.filter("species_liability_human_transcriptome_hits_0mm")
+    one_mismatch = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW,
+        stated={"species_liability_limits": {"human": {"transcriptome_hits_1mm": 2}}},
+    ).filter("species_liability_human_transcriptome_hits_1mm")
+    genes = policy.filter("species_liability_human_transcript_seed_genes")
+    assert perfect.descriptor.scope.species == frozenset({"human"})
+    assert perfect.descriptor.scope.exact_mismatches == 0
+    assert one_mismatch.descriptor.scope.max_mismatches is None
+    assert one_mismatch.descriptor.scope.exact_mismatches == 1
+    assert perfect.descriptor.threshold == 0
+    assert perfect.descriptor.action is FilterAction.WARN
+    assert genes.descriptor.scope.species == frozenset({"human"})
+    assert genes.descriptor.threshold == 5
+    assert genes.descriptor.action is FilterAction.WARN
+    assert perfect.evidence_exported is True
+    assert genes.evidence_exported is True
+    gene_action = next(record for record in policy.resolved if record.key == f"action.{genes.filter_id}")
+    assert gene_action.source.value == "explicit"
+
+    with pytest.raises(ValidationError, match="duplicate species liability limits"):
+        OffTargetFilterCriteria(
+            species_liability_limits={
+                "human": {"transcriptome_hits_0mm": 0},
+                "Homo sapiens": {"transcriptome_hits_1mm": 0},
+            }
+        )
+    with pytest.raises(ValidationError, match="collide in exported filter ids"):
+        OffTargetFilterCriteria(
+            species_liability_limits={
+                "cow-species": {"transcriptome_hits_0mm": 0},
+                "cow species": {"transcriptome_hits_1mm": 0},
+            }
+        )
+    typed_parameters = DesignParameters(
+        offtarget_filters=OffTargetFilterCriteria(
+            species_liability_limits={"human": {"transcriptome_hits_0mm": 0, "action": "warn"}}
+        )
+    )
+    typed_policy = describe_parameters(typed_parameters, entry_point=EntryPoint.SCREENING_WORKFLOW)
+    assert typed_policy.filter("species_liability_human_transcriptome_hits_0mm").descriptor.threshold == 0
+    assert typed_policy.as_manifest()["resolved_settings"]
+
+
+@pytest.mark.unit
+def test_cli_accepts_species_liability_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The public workflow option resolves the same per-species descriptors as the API."""
+    policy = _cli_policy(
+        tmp_path,
+        monkeypatch,
+        "--species-liability-limits",
+        '{"human":{"transcriptome_hits_0mm":0,"action":"warn"}}',
+    )
+
+    resolved = policy.filter("species_liability_human_transcriptome_hits_0mm")
+    assert resolved.descriptor.threshold == 0
+    assert resolved.descriptor.action is FilterAction.WARN
 
 
 @pytest.mark.unit
@@ -846,7 +958,9 @@ def test_a_boolean_flag_is_expressed_as_a_ceiling_of_zero():
 @pytest.mark.unit
 def test_a_resolved_descriptor_reproduces_the_verdict_it_reports():
     """#103 re-thresholds client-side, so the descriptor a run publishes must decide as the run did."""
-    descriptor = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW).descriptor("max_off_target_count")
+    descriptor = resolve_run_policy(
+        entry_point=EntryPoint.SCREENING_WORKFLOW, stated={"max_off_target_count": 15}
+    ).descriptor("max_off_target_count")
 
     assert FilterVerdict(descriptor=descriptor, observed=15, evaluation=FilterEvaluation.PASS)
     assert FilterVerdict(descriptor=descriptor, observed=16, evaluation=FilterEvaluation.FAIL)
@@ -994,7 +1108,7 @@ def test_new_runs_use_the_experimental_policy_name_and_legacy_is_only_an_alias()
 @pytest.mark.unit
 def test_the_legacy_profile_carries_the_shipped_off_target_cap_and_design_weights():
     """The two documented-versus-actual drifts found at 8dce4ae, pinned on the code's side."""
-    assert default_for("max_off_target_count") == 15
+    assert default_for("max_off_target_count") is None
     weights = resolve_run_policy(entry_point=EntryPoint.SCREENING_WORKFLOW).design_parameters.scoring.design
     assert (weights.asymmetry, weights.target_accessibility) == (0.40, 0.35)
 

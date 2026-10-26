@@ -1,15 +1,15 @@
 # ZFN Hg38 Primary Validation Commands
 
-> ## ⚠️ EXPERIMENTAL — these commands do not validate correctness
+> ## ⚠️ EXPERIMENTAL — software checks do not establish biological validity
 >
-> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any decision without independent
-> validation.**
+> The implementation defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82) have regression coverage, including real-reference target recovery and the public Nextflow route. These checks do not establish nuclease activity, genome-wide biological specificity, or agreement with an independent experimental panel. **Require independent validation before using ZFN output for decisions.**
 >
-> The commands below pass the published CCR5 right half-site (`AAACTGCAAAAG`) as written. Both
-> published half-sites occur on the hg38 plus strand, so under the default
-> `require_opposite_strands=True` the pair cannot match its own on-target site and the recorded
-> results are not a correctness signal. To reproduce a run that finds the CCR5 site today, pass the
-> reverse complement (`CTTTTGCAGTTT`) as `--zfn-right-half-site`.
+> The PROGNOS on-target table coordinate `chr3:46414544` is hg19. The exact published 29 bp site
+> occurs at GRCh38 chr3:46,373,053–46,373,081. With the default
+> `require_opposite_strands=True`, the CLI expects the right query in model orientation, the reverse
+> complement (`CTTTTGCAGTTT`) of the publication's right-half-site text (`AAACTGCAAAAG`). Passing
+> the table text directly returns no inward-facing on-target. See the small, exact-reference fixture
+> at `tests/unit/data/zfn/ccr5_grch38_on_target.fa` and its provenance README.
 
 These commands are the manual validation reference for real hg38 primary ZFN runs. They are the heavyweight reruns behind the backend conclusions summarized in [zfn_backend_tuning.md](zfn_backend_tuning.md).
 
@@ -54,7 +54,7 @@ export HG38_ANNOTATION_URL="https://ftp.ensembl.org/pub/current_gtf/homo_sapiens
 uv run sirnaforge workflow CCR5_ZFN_HG38_PRIMARY_PYAHO \
   --design-mode zfn \
   --zfn-left-half-site GTCATCCTCATC \
-  --zfn-right-half-site AAACTGCAAAAG \
+  --zfn-right-half-site CTTTTGCAGTTT \
   --zfn-search-space ensembl_human_hg38_primary \
   --zfn-search-backend pyahocorasick \
   --zfn-spacer-lengths 5,6 \
@@ -72,7 +72,7 @@ uv run sirnaforge workflow CCR5_ZFN_HG38_PRIMARY_PYAHO \
 uv run sirnaforge workflow CCR5_ZFN_HG38_PRIMARY_EXHAUSTIVE \
   --design-mode zfn \
   --zfn-left-half-site GTCATCCTCATC \
-  --zfn-right-half-site AAACTGCAAAAG \
+  --zfn-right-half-site CTTTTGCAGTTT \
   --zfn-search-space ensembl_human_hg38_primary \
   --zfn-search-backend exhaustive_python \
   --zfn-spacer-lengths 5,6 \
@@ -91,6 +91,11 @@ Each run writes these files under its output directory:
 - `sirnaforge/offtarget_sites.csv`
 - `logs/workflow_summary.json`
 - `logs/sirnaforge.log`
+
+On the GRCh38 primary assembly, the exact CCR5 on-target is expected at
+chr3:46,373,053–46,373,081 with sequence
+`GTCATCCTCATCCTGATAAACTGCAAAAG`. The PROGNOS hg19 coordinate is not directly
+comparable; do not use it as a GRCh38 expected coordinate.
 
 ## Quick Checks
 

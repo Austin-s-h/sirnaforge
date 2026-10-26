@@ -6,6 +6,7 @@
 
 include { BUILD_BWA_INDEX     } from '../../modules/local/build_bwa_index'
 include { MIRNA_SEED_ANALYSIS } from '../../modules/local/mirna_seed_analysis'
+include { TRANSCRIPT_SEED_ANALYSIS } from '../../modules/local/transcript_seed_analysis'
 include { OFFTARGET_ANALYSIS  } from '../../modules/local/offtarget_analysis'
 include { AGGREGATE_RESULTS   } from '../../modules/local/aggregate_results'
 
@@ -40,22 +41,54 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
         .collect { it.trim() }
         .findAll { it }
 
+    def ch_transcript_seed_species_list = (params.transcript_seed_species ?: '')
+        .split(',')
+        .collect { it.trim() }
+        .findAll { it }
+
     ch_mirna_analysis = channel.empty()
     ch_mirna_summary = channel.empty()
     // MIRNA_SEED_ANALYSIS.out.evidence is a glob ("mirna_seed_*_evidence.json") emitted as one
     // List<Path> per batch invocation; flatten() so it mixes with OFFTARGET_ANALYSIS's one-file-
     // per-species evidence emission as individual paths, not a list nested inside a list.
     ch_mirna_evidence = channel.empty()
+    ch_transcript_seed_evidence = channel.empty()
+
+    if (ch_transcript_seed_species_list) {
+        def transcript_seed_fastas = params.transcript_seed_fastas ?: ''
+        ch_seed_references = transcript_seed_fastas
+            ? channel.from(transcript_seed_fastas.split(',').collect { entry ->
+                def (species, fasta_path) = entry.split(':', 2)
+                [species.trim(), file(fasta_path.trim(), checkIfExists: true)]
+            }).filter { species, _fasta -> ch_transcript_seed_species_list.contains(species) }
+            : channel.empty()
+        ch_transcript_seed_input = ch_seed_references
+            .combine(candidates_fasta)
+            .map { species, transcriptome_fasta, fasta_file ->
+                tuple(species, transcriptome_fasta, fasta_file)
+            }
+        TRANSCRIPT_SEED_ANALYSIS(
+            ch_transcript_seed_input,
+            params.transcript_seed_scope ?: 'full_cdna',
+            params.transcript_seed_site_identity ?: 'guide-transcript-scope-shared-seed-2-7.v1'
+        )
+        ch_versions = ch_versions.mix(TRANSCRIPT_SEED_ANALYSIS.out.versions)
+        ch_transcript_seed_evidence = TRANSCRIPT_SEED_ANALYSIS.out.evidence
+    }
 
     if (ch_mirna_species_list) {
         //
         // MODULE: miRNA seed match analysis (lightweight, <4GB RAM), only when species were
         // actually requested. Efficient batch mode: one process for all candidates.
         //
+        pinned_manifest = params.mirna_reference_manifest ? file(params.mirna_reference_manifest, checkIfExists: true) : []
+        pinned_fastas = pinned_manifest ? new groovy.json.JsonSlurper().parseText(pinned_manifest.text).references.collect { file(it.path, checkIfExists: true) } : []
         MIRNA_SEED_ANALYSIS(
             candidates_fasta,
             params.mirna_db ?: 'mirgenedb',
-            ch_mirna_species_list.join(',')
+            ch_mirna_species_list.join(','),
+            pinned_manifest,
+            pinned_fastas
         )
         ch_versions = ch_versions.mix(MIRNA_SEED_ANALYSIS.out.versions)
         ch_mirna_analysis = MIRNA_SEED_ANALYSIS.out.analysis
@@ -137,7 +170,7 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // Reassigned rather than forked off `references`, so the check adds no second consumer of an
     // existing channel: this is the one channel whose emptiness means "not one unit will align".
     //
-    if (!ch_mirna_species_list) {
+    if (!ch_mirna_species_list && !ch_transcript_seed_species_list) {
         ch_reference_analysis_input = ch_reference_analysis_input.ifEmpty {
             error(
                 "Nothing to screen: --mirna_species resolved to zero species and no usable transcriptome " +
@@ -151,15 +184,23 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     //
     // MODULE: Run off-target analysis once per reference (all candidates in batch)
     //
-    OFFTARGET_ANALYSIS(
-        ch_reference_analysis_input,
-        max_hits,
-        bwa_k,
-        bwa_T,
-        seed_start,
-        seed_end
-    )
-    ch_versions = ch_versions.mix(OFFTARGET_ANALYSIS.out.versions)
+    ch_transcriptome_analysis = channel.empty()
+    ch_transcriptome_summary = channel.empty()
+    ch_transcriptome_evidence = channel.empty()
+    if (!(params.skip_transcriptome_alignment ?: false)) {
+        OFFTARGET_ANALYSIS(
+            ch_reference_analysis_input,
+            max_hits,
+            bwa_k,
+            bwa_T,
+            seed_start,
+            seed_end
+        )
+        ch_versions = ch_versions.mix(OFFTARGET_ANALYSIS.out.versions)
+        ch_transcriptome_analysis = OFFTARGET_ANALYSIS.out.analysis
+        ch_transcriptome_summary = OFFTARGET_ANALYSIS.out.summary
+        ch_transcriptome_evidence = OFFTARGET_ANALYSIS.out.evidence
+    }
 
     //
     // Collect all analysis results for aggregation
@@ -169,12 +210,12 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // ifEmpty([]) is the #100 floor described above: an empty collect() emits nothing, which
     // silently withheld AGGREGATE_RESULTS altogether; an empty list runs it on nothing, which is
     // what publishes "these units were expected and none of them produced anything".
-    ch_all_analysis = OFFTARGET_ANALYSIS.out.analysis
+    ch_all_analysis = ch_transcriptome_analysis
         .mix(ch_mirna_analysis)
         .collect()
         .ifEmpty([])
 
-    ch_all_summary = OFFTARGET_ANALYSIS.out.summary
+    ch_all_summary = ch_transcriptome_summary
         .mix(ch_mirna_summary)
         .collect()
         .ifEmpty([])
@@ -183,8 +224,9 @@ workflow SIRNA_OFFTARGET_ANALYSIS {
     // `val`, unlike analysis/summary above) so AGGREGATE_RESULTS's own reconciliation -- which
     // globs its OWN task working directory -- actually finds them, rather than reconciling
     // against an empty local directory and marking every species failed regardless of outcome.
-    ch_all_evidence = OFFTARGET_ANALYSIS.out.evidence
+    ch_all_evidence = ch_transcriptome_evidence
         .mix(ch_mirna_evidence)
+        .mix(ch_transcript_seed_evidence)
         .collect()
         .ifEmpty([])
 
