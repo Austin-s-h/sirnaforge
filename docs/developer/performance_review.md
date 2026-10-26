@@ -120,20 +120,23 @@ Dependency ownership requiring resolution before adoption:
 - Native ViennaRNA/pysam packages overlap PyPI distributions. Resolve explicit
   ownership and ABI compatibility; installation success alone is insufficient.
 - The prototype test feature installs pytest dependencies, but the full host
-  test suite has not completed: the process stalled around
+  test suite has not exited cleanly around
   `test_gencode_structure_versions_and_gzip`, which uses `asyncio.to_thread`.
-  Minimal probes across the Pixi Python 3.12 environment, the existing uv Python
-  3.11.13 environment, and system Python 3.12.3 returned the thread result but
-  then hung while `asyncio.run` shut down its executor. This points to a host
-  runtime shutdown issue. A focused pytest run of that test in the existing
-  Python 3.11.13 `.venv` also remained in the test body for more than 35 seconds;
-  faulthandler showed the event loop waiting in `select` while its executor
-  worker was idle on the work queue. A standalone invocation returned the
-  expected transcript bundle, then remained alive during `asyncio.run` shutdown.
-  This does not prove Pixi host-suite compatibility. The green Python 3.10/3.11/
-  3.12 CI runs and Docker suite validate their configured environments, not the
-  Pixi environment; run the full suite in a functioning Pixi runtime before
-  adoption.
+  Minimal probes across the Pixi Python 3.12 environment, existing uv Python
+  3.11.13, and system Python 3.12.3 all returned the worker result and then
+  hung during `asyncio.run` executor shutdown. In the current `.venv`, an
+  asyncio-only probe prints `42` from `await asyncio.to_thread(lambda: 42)`;
+  `asyncio.run` then exceeds an 8-second timeout. Running the same await with
+  an explicitly managed event loop returns `42`, and closing that loop without
+  joining its default executor exits immediately. This isolates the observed
+  failure to waiting for the default executor during runner shutdown; it does
+  not demonstrate that the Pixi host suite completes. A focused pytest run of
+  the GENCODE test also failed to exit; faulthandler showed the event loop
+  waiting in `select` while its executor worker was idle. The local annotation
+  call itself returned the expected transcript bundle before process shutdown.
+  The green Python 3.10/3.11/3.12 CI runs and Docker suite validate their
+  configured environments, not the Pixi environment; run the full suite in a
+  functioning Pixi runtime before adoption.
 - Pixi managing the parent environment is separate from Nextflow creating
   process environments. Preserve the current micromamba process-environment
   mechanism until a supported replacement is demonstrated.
