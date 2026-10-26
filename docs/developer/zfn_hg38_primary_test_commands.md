@@ -2,7 +2,7 @@
 
 > ## ⚠️ EXPERIMENTAL — software checks do not establish biological validity
 >
-> The implementation defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82) have regression coverage, including real-reference target recovery and the public Nextflow route. These checks do not establish nuclease activity, genome-wide biological specificity, or agreement with an independent experimental panel. **Do not use ZFN output for decisions without independent biological validation.**
+> The implementation defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82) have regression coverage, including real-reference target recovery and the public Nextflow route. These checks do not establish nuclease activity, genome-wide biological specificity, or agreement with an independent experimental panel. **Require independent validation before using ZFN output for decisions.**
 >
 > The PROGNOS on-target table coordinate `chr3:46414544` is hg19. The exact published 29 bp site
 > occurs at GRCh38 chr3:46,373,053–46,373,081. With the default

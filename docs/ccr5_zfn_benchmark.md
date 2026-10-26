@@ -5,7 +5,7 @@
 > The implementation defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82)
 > have regression coverage. ZFN remains experimental because these software checks do not establish
 > nuclease activity, biological specificity, or ranking performance against an independent panel.
-> **Do not use ZFN output for decisions without independent biological validation.**
+> **Require independent validation before using ZFN output for decisions.**
 >
 > This page preserves the PROGNOS visible rows and their hg19 coordinates. The published CCR5
 > on-target row is chr3:46,414,544 on hg19; do not use that coordinate as GRCh38. The exact target
