@@ -32,7 +32,7 @@ PYEOF
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":
     python: \$(python --version | sed 's/Python //g')
-    ${params.aligner ?: 'bwa-mem2'}: \$(${params.aligner ?: 'bwa-mem2'} version 2>&1 | tail -n1)
+    ${params.aligner ?: 'bwa-mem2'}: \$(${params.aligner == 'bwa-mem3' ? 'bwa-mem3 version 2>/dev/null | head -n1' : 'bwa-mem2 version 2>&1 | tail -n1'})
 END_VERSIONS
     """
 
@@ -46,7 +46,7 @@ END_VERSIONS
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":
     python: \$(python --version | sed 's/Python //g')
-    ${params.aligner ?: 'bwa-mem2'}: \$(${params.aligner ?: 'bwa-mem2'} version 2>&1 | tail -n1)
+    ${params.aligner ?: 'bwa-mem2'}: \$(${params.aligner == 'bwa-mem3' ? 'bwa-mem3 version 2>/dev/null | head -n1' : 'bwa-mem2 version 2>&1 | tail -n1'})
 END_VERSIONS
     """
 }
