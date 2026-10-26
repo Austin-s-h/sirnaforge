@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """Run a fixed, exploratory feature check on Wang et al.'s validation panel.
 
-This reports associations only. The panel has no unintended-repression endpoint and this script
-does not fit or promote scoring weights. Repeated doses are reported separately; the descriptive
-target/algorithm-adjusted correlations are OLS residual correlations, not held-out estimates.
+This reports exploratory feature associations and target-held-out ranking. The panel has no
+unintended-repression endpoint. Fold-local coefficients are not fitted scoring-profile weights and
+are never promoted. Repeated doses are reported separately; the pooled target/algorithm-adjusted
+correlations are OLS residual correlations.
 
 Run with the project environment:
 
@@ -141,6 +142,127 @@ def report_dose(rows: list[dict[str, object]], dose: str) -> None:
         )
 
 
+def unique_guide_rows(rows: list[dict[str, object]], dose: str) -> list[dict[str, object]]:
+    """Collapse repeated design-group entries to one target/guide at the selected dose."""
+    by_guide: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for row in rows:
+        if row["dose"] == dose:
+            key = (str(row["target"]), str(row["guide"]))
+            by_guide.setdefault(key, []).append(row)
+
+    collapsed: list[dict[str, object]] = []
+    for (target, guide), matches in sorted(by_guide.items()):
+        first = matches[0]
+        collapsed.append(
+            {
+                "target": target,
+                "guide": guide,
+                "residual_expression": float(np.mean([float(str(row["residual_expression"])) for row in matches])),
+                "au_1_5": float(str(first["au_1_5"])),
+                "asymmetry": float(str(first["asymmetry"])),
+                "gc_feature": float(str(first["gc_feature"])),
+                # If a guide was selected by multiple algorithms, retain its fractional group mix.
+                "algorithm_mix": {
+                    algorithm: sum(str(row["algorithm"]) == algorithm for row in matches) / len(matches)
+                    for algorithm in ("New algorithm", "Previous algorithm", "Random")
+                },
+            }
+        )
+    return collapsed
+
+
+def bootstrap_mean(values: np.ndarray, seed: int = 97) -> tuple[float, float, float]:
+    """Mean and percentile interval from a paired, target-cluster bootstrap."""
+    rng = np.random.default_rng(seed)
+    draws = rng.integers(0, len(values), size=(10_000, len(values)))
+    means = values[draws].mean(axis=1)
+    low, high = np.quantile(means, [0.025, 0.975])
+    return float(values.mean()), float(low), float(high)
+
+
+def report_leave_one_target_out(rows: list[dict[str, object]], dose: str) -> None:
+    """Compare A/U and asymmetry in target-held-out ranking with target-cluster uncertainty."""
+    panel = unique_guide_rows(rows, dose)
+    targets = sorted({str(row["target"]) for row in panel})
+    sequence_targets: dict[str, set[str]] = {}
+    for row in panel:
+        sequence_targets.setdefault(str(row["guide"]), set()).add(str(row["target"]))
+    leaked = {sequence: groups for sequence, groups in sequence_targets.items() if len(groups) > 1}
+    if leaked:
+        raise ValueError(f"Guide sequences occur across target folds: {sorted(leaked)[:5]}")
+
+    models = {
+        "AU only": ("au_1_5",),
+        "asymmetry only": ("asymmetry",),
+        "AU + asymmetry": ("au_1_5", "asymmetry"),
+    }
+    observed_by_target: dict[str, np.ndarray] = {}
+    feature_by_target: dict[str, dict[str, np.ndarray]] = {}
+    mix_by_target: dict[str, np.ndarray] = {}
+    for target in targets:
+        group = [row for row in panel if row["target"] == target]
+        observed_by_target[target] = np.asarray([row["residual_expression"] for row in group], dtype=float)
+        feature_by_target[target] = {
+            feature: np.asarray([row[feature] for row in group], dtype=float) for feature in ("au_1_5", "asymmetry")
+        }
+        mix_by_target[target] = np.asarray(
+            [
+                [
+                    cast(dict[str, float], row["algorithm_mix"])[algorithm]
+                    for algorithm in ("New algorithm", "Previous algorithm")
+                ]
+                for row in group
+            ],
+            dtype=float,
+        )
+
+    per_target_rho: dict[str, dict[str, float]] = {name: {} for name in models}
+    for held_out in targets:
+        train_targets = [target for target in targets if target != held_out]
+        for model_name, selected_features in models.items():
+            train_x: list[np.ndarray] = []
+            train_y: list[np.ndarray] = []
+            for target in train_targets:
+                x = np.column_stack(
+                    [feature_by_target[target][feature] for feature in selected_features] + [mix_by_target[target]]
+                )
+                train_x.append(x - x.mean(axis=0))
+                y = observed_by_target[target]
+                train_y.append(y - y.mean())
+            x_fit = np.vstack(train_x)
+            y_fit = np.concatenate(train_y)
+            coefficients = np.linalg.lstsq(x_fit, y_fit, rcond=None)[0]
+
+            test_x = np.column_stack(
+                [feature_by_target[held_out][feature] for feature in selected_features] + [mix_by_target[held_out]]
+            )
+            test_prediction = (test_x - test_x.mean(axis=0)) @ coefficients
+            per_target_rho[model_name][held_out] = spearman(test_prediction, observed_by_target[held_out])
+
+    print(f"\n{dose}: leave-one-target-out validation on {len(targets)} targets")
+    print(
+        f"  one row per target/guide ({len(panel)} guides); repeated doses kept separate; "
+        "algorithm selection mix used as a nuisance covariate"
+    )
+    print("  per-target held-out Spearman: target | n guides | AU | asymmetry | both")
+    for target in targets:
+        n_guides = len(observed_by_target[target])
+        target_values = [per_target_rho[name][target] for name in models]
+        print(f"    {target} | {n_guides} | " + " | ".join(f"{value:+.3f}" for value in target_values))
+    for name in models:
+        metric_values = np.asarray([per_target_rho[name][target] for target in targets])
+        mean, low, high = bootstrap_mean(metric_values)
+        print(f"  {name}: mean target Spearman rho={mean:+.3f} (95% target-bootstrap CI {low:+.3f}, {high:+.3f})")
+    for comparator in ("AU only", "asymmetry only"):
+        diff = np.asarray(
+            [per_target_rho["AU + asymmetry"][target] - per_target_rho[comparator][target] for target in targets]
+        )
+        mean, low, high = bootstrap_mean(diff)
+        print(
+            f"  AU + asymmetry minus {comparator}: Δrho={mean:+.3f} (95% paired target-bootstrap CI {low:+.3f}, {high:+.3f})"
+        )
+
+
 def main() -> None:
     """Validate source shape and print reproducible exploratory statistics."""
     source_rows = read_jsonl(PANEL)
@@ -184,10 +306,11 @@ def main() -> None:
     print("Features: frozen guide A/U(1–5), shipped asymmetry, and shipped GC transform.")
     for dose in ("3nM", "30nM"):
         report_dose(features, dose)
+        report_leave_one_target_out(features, dose)
     print(
-        "\nLimits: repeated-dose observations are correlated; these are point associations without "
-        "clustered uncertainty or held-out prediction. The panel has no unintended-repression "
-        "endpoint and cannot validate the complete default score or justify weight promotion."
+        "\nLimits: leave-one-target-out prediction and intervals remain exploratory, with only "
+        "14 target clusters and this one assay. The panel has no unintended-repression endpoint "
+        "and cannot validate the complete default score or justify weight promotion."
     )
 
 

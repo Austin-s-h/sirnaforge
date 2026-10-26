@@ -74,15 +74,28 @@ in the Wang paper or with all external collections.
 
 Run `uv run python scripts/validate_wang2009_independent.py` to reproduce a
 fixed, exploratory comparison of guide A/U(1–5), shipped duplex asymmetry, and
-the shipped GC feature on the 19-nt cores. At both doses all three features
-associate with lower residual expression; target-gene and algorithm-adjusted
-point correlations are also printed. Those residual correlations are
-descriptive OLS adjustments, not held-out prediction or cluster-robust
-inference. The repeated dose measurements are correlated. This extract contains
-efficacy outcomes only; it does not contain the paper's separate cellular
-phenotype specificity experiment, so it cannot satisfy the unintended-repression
-endpoint or promote the complete default score. Script output records exact
-extract hashes and explicitly reports these limits.
+the shipped GC feature on the 19-nt cores. The script reports pooled associations
+and a leave-one-target-out comparison of A/U alone, asymmetry alone, and both
+together, with design-algorithm group as a nuisance covariate. Guide sequences
+are grouped by target and dose before evaluation; the folds hold out all guides
+from one target, and an explicit check rejects guide sequences shared across
+target folds. At both doses, A/U plus asymmetry does not improve mean held-out
+target ranking over either alone. Target-level bootstrap intervals and each
+target's score are printed. This is an exploratory analysis of one assay and 14
+target clusters; it is not a multi-study development/validation design. Repeated
+dose observations are handled separately. This extract contains efficacy
+outcomes only; it does not contain the paper's separate cellular phenotype
+specificity experiment, so it cannot satisfy the unintended-repression endpoint
+or promote the complete default score. Script output records exact extract,
+profile/term, and feature-code hashes and states these limits.
+
+The leave-one-target-out mean Spearman ρ values for A/U alone, asymmetry alone,
+and both were 0.670, 0.678, and 0.677 at 3 nM, and 0.608, 0.621, and 0.608 at
+30 nM. Paired target-bootstrap 95% intervals for the combined-minus-asymmetry
+difference were [−0.015, 0.012] and [−0.032, 0.001], respectively; the
+combined-minus-A/U intervals were [−0.075, 0.075] and [−0.070, 0.058]. The
+combined model did not show a held-out gain over either individual feature in
+this panel. This does not determine a universal replacement or validate weights.
 
 ## Interpretation boundaries
 
