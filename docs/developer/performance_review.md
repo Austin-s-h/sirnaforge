@@ -412,8 +412,10 @@ done
 ```
 
 Each run rebuilds both indices, records member sizes/hashes and three alignment
-trials per backend, including wall/CPU time and peak RSS. Keep the worktree
-clean: references, indices, SAM and measurement outputs belong in `/tmp`.
+trials per backend, including wall/CPU time, peak RSS, and query throughput
+(guide count divided by median alignment wall time, including index loading).
+Keep the worktree clean: references, indices, SAM and measurement outputs belong
+in `/tmp`.
 
 | Reference | Exact placements (oracle) | SAM records | MEM2 / MEM3 alignment | Peak RSS, MEM2 / MEM3 |
 | --- | ---: | ---: | ---: | ---: |

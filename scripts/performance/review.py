@@ -242,6 +242,7 @@ def differences(left: Counter, right: Counter) -> dict:
 
 def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-specific acquisition and parity stages
     args.work_dir.mkdir(parents=True, exist_ok=True)
+    query_records = fasta_records(args.queries)
     # Prevent stale outputs or a prior backend's index from contaminating a run.
     session = Path(tempfile.mkdtemp(prefix="bwa-review-", dir=args.work_dir))
     result = {
@@ -251,6 +252,8 @@ def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-s
         "threads": args.threads,
         "mem3_mode": args.mem3_mode,
         "repetitions": args.repetitions,
+        "query_count": len(query_records),
+        "query_length_counts": dict(sorted(Counter(map(len, query_records.values())).items())),
         "cache_state": "fresh per-backend index unless MEM2 reuse is requested; OS page cache uncontrolled; alignment repeats reuse index",
         "inputs": {str(path): digest(path) for path in (args.reference, args.queries)},
         "backends": {},
@@ -258,7 +261,8 @@ def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-s
         "parity": None,
         "limitations": [
             "SAM parity alone does not prove exhaustive biological correctness or downstream gate parity.",
-            "Synthetic runtime is startup dominated; representative transcriptome panels remain required.",
+            "Alignment repetitions reuse the index built during this invocation; run separate invocations for index-build repetitions.",
+            "Throughput is query count divided by alignment wall time and includes index loading; OS page cache is uncontrolled.",
             "No cross-backend index reuse is attempted; format compatibility remains unproven.",
         ],
     }
@@ -308,6 +312,7 @@ def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-s
             for path in sorted(index_folder.iterdir())
             if path.name in {f"{reference.name}{suffix}" for suffix in index_suffixes}
         }
+        backend["index_size_bytes"] = sum(member["bytes"] for member in backend["index_members"].values())
         trials = []
         baseline = None
         for repetition in range(args.repetitions):
@@ -340,7 +345,7 @@ def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-s
                     trial["status"] = "nondeterministic_output"
         backend["alignments"] = trials
         if label in sams:
-            expected_queries = set(fasta_records(args.queries))
+            expected_queries = set(query_records)
             observed_queries = {record[0] for record in sam_records(sams[label])}
             backend["query_membership"] = {
                 "complete": expected_queries == observed_queries,
@@ -359,6 +364,7 @@ def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-s
                 "max": max(successful),
                 "samples": len(successful),
             }
+            backend["median_query_throughput_per_second"] = len(query_records) / backend["wall_summary"]["median"]
     if len(sams) == 2 and all(backend["status"] == "ok" for backend in result["backends"].values()):
         result["parity"] = differences(sam_records(sams["mem2"]), sam_records(sams["mem3"]))
         result["parity"]["reference_headers_equal"] = sam_headers(sams["mem2"]) == sam_headers(sams["mem3"])
