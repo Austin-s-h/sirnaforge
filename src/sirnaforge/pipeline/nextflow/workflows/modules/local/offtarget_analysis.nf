@@ -56,8 +56,7 @@ PYEOF
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":
     python: \$(python --version | sed 's/Python //g')
-    aligner_version=\$(if [ "${params.aligner}" = "bwa-mem3" ]; then bwa-mem3 version 2>/dev/null | head -n1; else bwa-mem2 version 2>&1 | tail -n1 || echo 'not available'; fi)
-    ${params.aligner ?: 'bwa-mem2'}: \$aligner_version
+    ${params.aligner ?: 'bwa-mem2'}: \$(if [ "${params.aligner ?: 'bwa-mem2'}" = "bwa-mem3" ]; then bwa-mem3 version 2>/dev/null | head -n1; else bwa-mem2 version 2>&1 | tail -n1 || echo 'not available'; fi)
 END_VERSIONS
     """
 
@@ -99,8 +98,7 @@ EVIDENCE
     cat <<-END_VERSIONS > versions.yml
 "${task.process}":
     python: \$(python --version | sed 's/Python //g')
-    aligner_version=\$(if [ "${params.aligner}" = "bwa-mem3" ]; then bwa-mem3 version 2>/dev/null | head -n1; else bwa-mem2 version 2>&1 | tail -n1 || echo 'not available'; fi)
-    ${params.aligner ?: 'bwa-mem2'}: \$aligner_version
+    ${params.aligner ?: 'bwa-mem2'}: \$(if [ "${params.aligner ?: 'bwa-mem2'}" = "bwa-mem3" ]; then bwa-mem3 version 2>/dev/null | head -n1; else bwa-mem2 version 2>&1 | tail -n1 || echo 'not available'; fi)
 END_VERSIONS
     """
 }

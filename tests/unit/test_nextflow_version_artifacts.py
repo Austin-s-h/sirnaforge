@@ -44,6 +44,7 @@ def render(text: str, aligner: str = "bwa-mem2") -> str:
         text.replace("${task.process}", "TEST_PROCESS")
         .replace("${species}", "human")
         .replace("${params.aligner ?: 'bwa-mem2'}", aligner)
+        .replace("${params.aligner}", aligner)
         .replace(r"\$", "$")
     )
 
