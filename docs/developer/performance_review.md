@@ -255,9 +255,9 @@ Dependency ownership in the revised Pixi prototype:
   locally against the Pixi environment's BWA-MEM2 2.2.1 executable. The local
   sandbox could not fetch packages from conda.anaconda.org; the application
   environment was recreated outside the sandbox.
-- Other supported-platform checks and whole-application update safety remain
-  outstanding. The refreshed lock and expanded tool checks passed Pixi CI. Docker
-  feasibility and matched direct-version startup measurements are recorded above.
+- The refreshed lock and expanded tool checks passed Pixi CI. Docker feasibility,
+  the minimal update trial, and matched direct-version startup measurements are
+  recorded above. Whole-stack updates and other platforms were not validated.
 
 **Decision: defer Pixi adoption.** Keep uv/pip as the host Python owner and
 micromamba/Conda as the existing Nextflow process-environment provider. Do not
@@ -267,11 +267,13 @@ production environment, cache, or user command needs migration because no
 Pixi-managed environment was adopted. The earlier host suite passed, and the refreshed lock passed Pixi CI. The current
 application image passed CLI, native dependency, tool, and Nextflow provider
 smokes as UID 12345. The single-owner split and comparison image are validated
-on Linux x86_64. Reconsider adoption only after whole-application update safety
-and other supported-platform evidence justify the additional owner.
+on Linux x86_64. The evaluation closes with Pixi adoption deferred: the minimal
+package-update trial does not establish whole-stack update safety, and other
+platforms remain unvalidated. These limits block adoption, while the measured
+Linux prototype and its rollback path are complete.
 
-#121 remains open until whole-application update safety and supported-platform
-gaps are addressed and the final migration/rollback recommendation is recorded.
+#121 is ready to close with the defer recommendation. Reopen the manager review
+if supported platforms expand or an adoption proposal needs broader update tests.
 
 Official references checked for this investigation:
 [Pixi manifest](https://pixi.prefix.dev/latest/reference/pixi_manifest/) and
