@@ -212,6 +212,54 @@ path and output completeness for that fixture; it does not establish biological
 eligibility, gate behavior across representative workloads, or a general speedup.
 Exact SAM/tag equality is not a blocker.
 
+### Release-116 cDNA panel results
+
+To exercise representative references beyond the chr21 fixture, the same 3,395
+unique full-length guides (20–21 nt; derived from 4,113 OligoGym observations)
+were aligned once with one thread against Ensembl release-116 rat and macaque
+cDNA. MEM2 2.2.1 and MEM3 0.15.0 plain mode each built their own index. Inputs
+were hashed; the guide FASTA SHA-256 is
+`5236565907d4940fa95b94fe0e1aae95122e7180775871c089a3dd36cea2884b`, rat
+reference `14ad668039a84a3ffaf787944dd09194488392848574b20c484d50df56b07477`,
+and macaque reference
+`c702162e3053fb7bf4b0851f30b8b538d9885acfc737863bf2cc6e09d78db48d`.
+There was one measurement per backend; wall-clock values include index load and
+are not a multi-run performance claim.
+
+| Reference | Exact placements (oracle) | SAM records | MEM2 / MEM3 alignment | Peak RSS, MEM2 / MEM3 |
+| --- | ---: | ---: | ---: | ---: |
+| Rat | 2,451 / 2,451 each | 17,025 each; SAM parity equal | 2.249 / 0.393 s | 909 / 666 MiB |
+| Macaque | 4,701 expected; 4,697 observed each | 17,086 each; SAM parity equal | 2.062 / 0.324 s | 768 / 578 MiB |
+
+The four macaque exact placements missed by both aligners and no unexpected
+exact placements were reported. This shared omission needs interpretation in
+the workload's biological context; equality between backends does not establish
+completeness. For both species, the actual Python SAM parser produced identical
+parsed hits across backends (16,323 rat; 16,573 macaque). A real local-profile
+Nextflow run with MEM3 then completed the transcriptome tasks and evidence
+reconciliation: 3,395/3,395 guides processed for each species, 16,323 rat sites
+and 16,573 macaque sites, with both evidence statuses `complete`, no truncation,
+and no unplanned evidence. The run disabled miRNA seed screening; that separate
+database channel could not be validated offline.
+
+The full Ensembl release-116 human cDNA contains 1.28 Gbp (FASTA SHA-256
+`bd85494fb64766200ec18bae873f3196b451c6eecbcfbedadd72684f19692ff8`). MEM2
+completed the full-reference alignment, but the exact-match oracle found 64,405
+placements versus 62,247 reported (2,158 missing, all in two repetitive guides).
+MEM3 0.15.0 refused to build its index: its suffix-array builder estimated a
+28.5 GiB requirement, above this host's 24.8 GiB available-memory limit. This
+is a concrete human-scale indexing constraint for this version and host; do not
+infer that MEM3 is suitable for full human cDNA based on the smaller species.
+
+Taken together, these results establish a working optional MEM3 host and
+Nextflow path on these rat and macaque inputs, with matching SAM and parser
+outputs, and expose an important large-reference limitation. They do not
+establish exact-guide biological validation, gate-verdict equivalence, a
+general speedup, or human-scale feasibility. MEM2 remains the default. The
+temporary full-reference FASTAs, indices, SAM files, reports, and raw result
+JSON were kept outside the repository and removed after this summary was
+recorded.
+
 Outstanding before #122 can close:
 
 1. Run both profiles against pinned binaries, synthetic truth and representative

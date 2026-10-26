@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import time
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 
 import ahocorasick
@@ -167,11 +168,11 @@ def fasta_records(path: Path) -> dict[str, str]:
     return records
 
 
-def iter_fasta_records(path: Path):
+def iter_fasta_records(path: Path) -> Iterator[tuple[str, str]]:
     """Yield FASTA records without retaining the complete reference in memory."""
     name = None
-    chunks = []
-    seen = set()
+    chunks: list[str] = []
+    seen: set[str] = set()
     with path.open() as handle:
         for line in handle:
             if line.startswith(">"):
@@ -204,7 +205,7 @@ def exact_oracle(reference: Path, queries: Path, sam: Path) -> dict:
     for pattern, targets in patterns.items():
         automaton.add_word(pattern, (pattern, targets))
     automaton.make_automaton()
-    expected = set()
+    expected: set[tuple[str, str, int, str]] = set()
     for rname, sequence in iter_fasta_records(reference):
         for end, (pattern, targets) in automaton.iter(sequence):
             position = end - len(pattern) + 2
