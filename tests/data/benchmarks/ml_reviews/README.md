@@ -79,10 +79,12 @@ and a leave-one-target-out comparison of A/U alone, asymmetry alone, and both
 together, with design-algorithm group as a nuisance covariate. Guide sequences
 are grouped by target and dose before evaluation; the folds hold out all guides
 from one target, and an explicit check rejects guide sequences shared across
-target folds. At both doses, A/U plus asymmetry does not improve mean held-out
-target ranking over either alone. Target-level bootstrap intervals and each
-target's score are printed. This is an exploratory analysis of one assay and 14
-target clusters; it is not a multi-study development/validation design. Repeated
+target folds. The point estimates show no clear held-out improvement from
+combining A/U and asymmetry: paired target-bootstrap intervals for the combined
+score's difference from either feature alone include zero at both doses.
+Target-level bootstrap intervals and each target's score are printed. This is
+an exploratory analysis of one assay and 14 target clusters; it is not a
+multi-study development/validation design. Repeated
 dose observations are handled separately. This extract contains efficacy
 outcomes only; it does not contain the paper's separate cellular phenotype
 specificity experiment, so it cannot satisfy the unintended-repression endpoint
