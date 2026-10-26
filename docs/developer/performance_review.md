@@ -119,24 +119,20 @@ Dependency ownership requiring resolution before adoption:
   remain only as historical evidence.
 - Native ViennaRNA/pysam packages overlap PyPI distributions. Resolve explicit
   ownership and ABI compatibility; installation success alone is insufficient.
-- The prototype test feature installs pytest dependencies, but the full host
-  test suite has not exited cleanly around
-  `test_gencode_structure_versions_and_gzip`, which uses `asyncio.to_thread`.
-  Minimal probes across the Pixi Python 3.12 environment, existing uv Python
-  3.11.13, and system Python 3.12.3 all returned the worker result and then
-  hung during `asyncio.run` executor shutdown. In the current `.venv`, an
-  asyncio-only probe prints `42` from `await asyncio.to_thread(lambda: 42)`;
-  `asyncio.run` then exceeds an 8-second timeout. Running the same await with
-  an explicitly managed event loop returns `42`, and closing that loop without
-  joining its default executor exits immediately. This isolates the observed
-  failure to waiting for the default executor during runner shutdown; it does
-  not demonstrate that the Pixi host suite completes. A focused pytest run of
-  the GENCODE test also failed to exit; faulthandler showed the event loop
-  waiting in `select` while its executor worker was idle. The local annotation
-  call itself returned the expected transcript bundle before process shutdown.
-  The green Python 3.10/3.11/3.12 CI runs and Docker suite validate their
-  configured environments, not the Pixi environment; run the full suite in a
-  functioning Pixi runtime before adoption.
+- The prototype test feature installs pytest dependencies, but the focused host
+  test `test_gencode_structure_versions_and_gzip` does not complete in the Pixi
+  Python 3.12.15 environment (pytest 9.1.1, pytest-asyncio 1.4.1). An isolated
+  pytest async test awaiting `asyncio.to_thread(lambda: 42)` passes, and the
+  standalone Pixi `asyncio.run` probe also exits normally. The hang is specific
+  to awaiting the local annotation provider's `_bundle` result: the worker
+  becomes idle after running the call, while the event loop remains blocked in
+  `selectors.select`; the test never resumes from `await`. `--asyncio-mode=auto`
+  and disabling xdist do not change the result. This points to an interaction
+  in this concrete provider/test execution path, not a general failure of
+  Python's default executor or pytest-asyncio. No production workaround has
+  been identified. The green Python 3.10/3.11/3.12 CI runs and Docker suite
+  validate their configured environments, not the Pixi environment; run the
+  full suite in a functioning Pixi runtime before adoption.
 - Pixi managing the parent environment is separate from Nextflow creating
   process environments. Preserve the current micromamba process-environment
   mechanism until a supported replacement is demonstrated.
