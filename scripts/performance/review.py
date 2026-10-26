@@ -23,6 +23,8 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import ahocorasick
+
 try:
     import tomllib
 except ImportError:
@@ -165,20 +167,48 @@ def fasta_records(path: Path) -> dict[str, str]:
     return records
 
 
+def iter_fasta_records(path: Path):
+    """Yield FASTA records without retaining the complete reference in memory."""
+    name = None
+    chunks = []
+    seen = set()
+    with path.open() as handle:
+        for line in handle:
+            if line.startswith(">"):
+                if name is not None:
+                    yield name, "".join(chunks).upper()
+                name = line[1:].split()[0]
+                if name in seen:
+                    raise ValueError(f"Duplicate FASTA ID: {name}")
+                seen.add(name)
+                chunks = []
+            elif line.strip():
+                if name is None:
+                    raise ValueError("FASTA sequence before header")
+                chunks.append(line.strip())
+    if name is not None:
+        yield name, "".join(chunks).upper()
+
+
 def exact_oracle(reference: Path, queries: Path, sam: Path) -> dict:
     """Independently enumerate full-length exact matches, including reverse/repeated loci."""
-    references, guides = fasta_records(reference), fasta_records(queries)
-    expected = set()
+    guides = fasta_records(queries)
+    patterns: dict[str, list[tuple[str, str]]] = {}
+    complement = str.maketrans("ACGT", "TGCA")
     for qname, query in guides.items():
         if not set(query) <= set("ACGT"):
             continue
-        reverse = query.translate(str.maketrans("ACGT", "TGCA"))[::-1]
-        for rname, sequence in references.items():
-            for strand, oriented in (("+", query), ("-", reverse)):
-                offset = sequence.find(oriented)
-                while offset >= 0:
-                    expected.add((qname, rname, offset + 1, strand))
-                    offset = sequence.find(oriented, offset + 1)
+        patterns.setdefault(query, []).append((qname, "+"))
+        patterns.setdefault(query.translate(complement)[::-1], []).append((qname, "-"))
+    automaton = ahocorasick.Automaton()
+    for pattern, targets in patterns.items():
+        automaton.add_word(pattern, (pattern, targets))
+    automaton.make_automaton()
+    expected = set()
+    for rname, sequence in iter_fasta_records(reference):
+        for end, (pattern, targets) in automaton.iter(sequence):
+            position = end - len(pattern) + 2
+            expected.update((qname, rname, position, strand) for qname, strand in targets)
     observed = set()
     for record in sam_records(sam):
         qname, flag, rname, position, _, cigar = record[:6]
@@ -220,7 +250,7 @@ def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-s
         "threads": args.threads,
         "mem3_mode": args.mem3_mode,
         "repetitions": args.repetitions,
-        "cache_state": "fresh per-backend index; OS page cache uncontrolled; alignment repeats reuse index",
+        "cache_state": "fresh per-backend index unless MEM2 reuse is requested; OS page cache uncontrolled; alignment repeats reuse index",
         "inputs": {str(path): digest(path) for path in (args.reference, args.queries)},
         "backends": {},
         "decision": "defer",
@@ -231,6 +261,14 @@ def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-s
             "No cross-backend index reuse is attempted; format compatibility remains unproven.",
         ],
     }
+    if args.mem2_index:
+        if not args.mem2_index.is_file() or digest(args.mem2_index) != digest(args.reference):
+            raise ValueError("--mem2-index must be a reference FASTA with bytes identical to --reference")
+        for suffix in (".0123", ".bwt.2bit.64", ".amb", ".ann", ".pac"):
+            member = Path(f"{args.mem2_index}{suffix}")
+            if not member.is_file() or member.stat().st_size == 0:
+                raise ValueError(f"--mem2-index lacks a nonempty BWA-MEM2 index member: {member}")
+        result["mem2_reused_index"] = str(args.mem2_index.resolve())
     sams = {}
     for label, requested in (("mem2", args.mem2), ("mem3", args.mem3)):
         executable = shutil.which(requested)
@@ -240,8 +278,10 @@ def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-s
         executable = str(Path(executable).resolve())
         folder = session / label
         folder.mkdir()
-        reference = folder / "reference.fasta"
-        shutil.copyfile(args.reference, reference)
+        reuse_mem2 = label == "mem2" and args.mem2_index is not None
+        reference = args.mem2_index.resolve() if reuse_mem2 else folder / "reference.fasta"
+        if not reuse_mem2:
+            shutil.copyfile(args.reference, reference)
         backend: dict = {
             "path": executable,
             "binary_sha256": digest(Path(executable)),
@@ -252,14 +292,20 @@ def bwa(args: argparse.Namespace) -> dict:  # noqa: PLR0912 - explicit backend-s
         if label == "mem3":
             index_command += ["-t", str(args.threads)]
         index_command.append(str(reference))
-        backend["index"] = run(["env", f"OMP_NUM_THREADS={args.threads}", *index_command], args.timeout)
+        backend["index"] = (
+            {"status": "ok", "reused": True, "reference_sha256": digest(reference)}
+            if reuse_mem2
+            else run(["env", f"OMP_NUM_THREADS={args.threads}", *index_command], args.timeout)
+        )
         if backend["index"]["status"] != "ok":
             backend["status"] = "index_failed"
             continue
+        index_folder = reference.parent if reuse_mem2 else folder
+        index_suffixes = {".0123", ".bwt.2bit.64", ".amb", ".ann", ".pac"}
         backend["index_members"] = {
             path.name: {"bytes": path.stat().st_size, "sha256": digest(path)}
-            for path in sorted(folder.iterdir())
-            if path != reference
+            for path in sorted(index_folder.iterdir())
+            if path.name in {f"{reference.name}{suffix}" for suffix in index_suffixes}
         }
         trials = []
         baseline = None
@@ -337,6 +383,9 @@ def main() -> int:
     align.add_argument("--mem3-mode", choices=["plain", "compat"], default="plain")
     align.add_argument("--reference", type=Path, default=FIXTURES / "reference.fasta")
     align.add_argument("--queries", type=Path, default=FIXTURES / "guides.fasta")
+    align.add_argument(
+        "--mem2-index", type=Path, help="Reuse a previously built MEM2 index whose FASTA matches --reference"
+    )
     align.add_argument("--work-dir", type=Path, required=True)
     align.add_argument("--threads", type=int, default=1)
     align.add_argument("--repetitions", type=int, default=3)

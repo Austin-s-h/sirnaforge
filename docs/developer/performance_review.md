@@ -171,7 +171,12 @@ multiple exact loci, one/two mismatches, an ambiguous no-hit query, and potentia
 clipping/insertion/deletion cases. The latter names describe construction, not
 asserted alignment truth. An independent exhaustive exact-match oracle checks
 full-length ungapped matches on both strands, so identical backend omissions
-can be detected. It does not establish mismatch/gap sensitivity or all biological
+can be detected. The oracle uses a multi-pattern automaton over a streaming
+reference scan; it does not need to load a full transcriptome into memory or run
+one reference search per query. `--mem2-index` can resume a comparison with a
+previously built MEM2 index after checking the exact FASTA checksum and required
+index members; report that reuse because it does not measure a cold MEM2 index
+build. The oracle does not establish mismatch/gap sensitivity or all biological
 eligibility criteria. Oracle results are reported separately from SAM parity.
 
 Official upstream [mode documentation](https://bwa-mem3.readthedocs.io/en/latest/whats-different/modes.html)

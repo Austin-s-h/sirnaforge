@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from review import differences, exact_oracle, run, sam_headers, sam_records
+from review import differences, exact_oracle, iter_fasta_records, run, sam_headers, sam_records
 
 
 class PerformanceHarnessTests(unittest.TestCase):
@@ -53,6 +53,13 @@ class PerformanceHarnessTests(unittest.TestCase):
             self.assertEqual(result["expected_count"], 4)
             self.assertEqual(len(result["missing"]), 3)
             self.assertFalse(result["equal"])
+
+    def test_streaming_reference_rejects_duplicate_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            reference = Path(folder) / "reference.fa"
+            reference.write_text(">same\nACGT\n>same\nTGCA\n")
+            with self.assertRaisesRegex(ValueError, "Duplicate FASTA ID"):
+                list(iter_fasta_records(reference))
 
 
 if __name__ == "__main__":
