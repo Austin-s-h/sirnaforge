@@ -15,8 +15,8 @@ which differs from the user's comprehensive local test environment.
 | --- | --- | --- |
 | Installed tools | Pixi 0.76.1, uv 0.12.2, micromamba 2.3.2, Nextflow 26.04.2, OpenJDK 21.0.12.1 | PATH inventory, not environment parity |
 | `pixi info` on isolated prototype | Three successful runs; median approximately 0.041 s | Manifest parses; this is metadata/startup timing only |
-| Pixi runtime cold install | One isolated Linux x86_64 trial: 9.96 s, 246 MiB peak RSS, approximately 285 MB cache; OS cache was not evicted | A single observed cold environment install, not a stable benchmark |
-| Micromamba runtime cold install | One isolated Linux x86_64 trial with matching direct tool versions: 35.87 s, 1,446 MiB peak RSS, approximately 374 MB downloads; installed environment approximately 1.1 GB | Direct versions match, but dependency closures differ and this is one trial |
+| Pixi locked runtime install | Three fresh-cache Linux x86_64 trials: median 9.65 s (8.76–10.47), median 249 MiB peak RSS (247–249), 1.29 GiB combined cache/prefix disk use | Repeated on one machine; network enabled and OS cache not evicted |
+| Micromamba runtime install | Three fresh-root Linux x86_64 trials with matching direct versions: median 35.18 s (31.56–42.47), median 1,413 MiB peak RSS (1,412–1,417), 2.66 GiB combined root disk use | Direct versions match; resolved closures are 94 Pixi packages vs 98 micromamba packages |
 | Warm environment install | Three idempotent trials each; Pixi median 0.060 s, micromamba median 5.862 s | Cached no-op install comparison only; not environment creation or update performance |
 | Pixi application and offline Nextflow | Editable application install succeeded after pinning the PyPI launcher to 25.10.2 and pointing `NXF_DIST` at the Conda framework JAR; `sirnaforge --help` and three offline Nextflow launches succeeded | Resolves the observed launcher/framework mismatch for this locked Linux prototype |
 | BWA comparison | Official MEM2 2.2.1 and source-built MEM3 0.15.0 passed controlled synthetic and 320-guide chr21 SAM parity and independent exact-match checks | Limited compatibility evidence, with compiler caveat below |
@@ -30,10 +30,15 @@ x86_64/WSL. Both runtime environments pinned Python 3.12.15, Nextflow 25.10.2,
 OpenJDK 17.0.18, BWA-MEM2 2.2.1, samtools 1.24, pysam 0.24.1, and ViennaRNA
 2.7.0. The Pixi lock resolved 94 packages; the micromamba baseline resolved 98,
 including four additional Python packaging tools, so only the requested direct
-versions match. Network downloads were enabled and the OS file cache was not
-evicted. Cold results are single trials. Warm results reran each manager's
-install/sync command against its already-created environment; they measure a
-no-op check, not a warm environment creation.
+versions match. Each of three trials used a fresh manager cache/root and
+environment prefix. Network downloads were enabled and the OS file cache was
+not evicted; results include network and shared-host effects. Disk use is the
+allocated size of the manager cache/root plus environment prefix, with hardlinks
+deduplicated inside each measurement. Raw commands, trial metrics, closure
+counts, and checksums are in
+`scripts/performance/measurements/pixi-env-install-cold.json`. Warm results
+reran each manager's install/sync command against its already-created
+environment; they measure a no-op check, not a warm environment creation.
 
 Representative commands (use fresh roots/prefixes for cold trials and the same
 roots for warm no-op trials):
@@ -103,7 +108,11 @@ Use separate throwaway prototype copies and caches for each cold trial; do not
 relabel a reused environment as cold. Hold resolved Python/Nextflow/Java/native
 tool versions fixed in the uv/micromamba baseline. Use the generic `measure`
 command for each exact installation or startup argv and record at least three
-successful trials plus variability. Three cold trials per manager, identical dependency closures, update behavior, and representative application startup benchmarks remain pending. Do not infer general Pixi speedup from warm no-op measurements.
+successful trials plus variability. The cold install comparison now has three
+trials per manager, but dependency closures differ. Update behavior,
+clean/cached Docker builds, and representative application startup benchmarks
+remain pending. The observed difference is from one Linux host, not a general
+Pixi speedup claim.
 
 Dependency ownership requiring resolution before adoption:
 
