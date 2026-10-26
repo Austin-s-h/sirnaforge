@@ -345,6 +345,10 @@ def test_bwa_mem3_plain_mode_runs_through_nextflow(tmp_path: Path) -> None:
         "        cpus = 1\n"
         "        memory = '2.GB'\n"
         "    }\n"
+        "    withName: 'SIRNAFORGE_OFFTARGET:SIRNA_OFFTARGET_ANALYSIS:OFFTARGET_ANALYSIS' {\n"
+        "        cpus = 1\n"
+        "        memory = '2.GB'\n"
+        "    }\n"
         "}\n"
     )
     command = [
