@@ -159,13 +159,26 @@
         "bwa_mem2": {
           "elapsed_seconds": 53.99,
           "peak_rss_kib": 3910628,
-          "index_member_bytes": 927482762
+          "index_member_bytes": 927482762,
+          "index_member_sha256": {
+            "rat_index.0123": "2069502e579799395fe0bbbc606d6838be9f5c988c92815c67b13ed7c999ff14",
+            "rat_index.amb": "cbe8d4b27451cc7ef0344fa78b614a216f57c3459b81ab20fd0419ee4a20a170",
+            "rat_index.ann": "6e07991b913599515a8ce82bfd8f445fcb6c43d33352ca9f903d25201b8d84e0",
+            "rat_index.bwt.2bit.64": "d416e755fb7483d98cea29b2093a70f09ed950eb212f63cab892950e938919c5",
+            "rat_index.pac": "7a42f943793caf14ecc9682224309146d855ef2efb79aa2e4ef6830bf9cad035"
+          }
         },
         "bwa_mem3": {
           "elapsed_seconds": 30.70,
           "peak_rss_kib": 1723348,
           "memory_budget": "4G",
-          "index_member_bytes": 595316974
+          "index_member_bytes": 595316974,
+          "index_member_sha256": {
+            "rat_index.amb": "cbe8d4b27451cc7ef0344fa78b614a216f57c3459b81ab20fd0419ee4a20a170",
+            "rat_index.ann": "6e07991b913599515a8ce82bfd8f445fcb6c43d33352ca9f903d25201b8d84e0",
+            "rat_index.bwt.2bit.64": "ff8395ee85945e73d2dbce09efc05f9297f88e26da19d578f8f9fe2292a7db1d",
+            "rat_index.pac": "7a42f943793caf14ecc9682224309146d855ef2efb79aa2e4ef6830bf9cad035"
+          }
         }
       }
     },
@@ -198,6 +211,8 @@
       "differing_rows": 0,
       "selection_state_counts_each_backend": {"eligible": 2719, "not_eligible": 676},
       "qualified_table_rows_each_backend": 2719,
+      "candidates_all_csv_sha256_each_backend": "b60060eb16bb1ec8343c5bd6edeeaffbc648bb870d46a1754bdba41fa99b6358",
+      "candidates_qualified_csv_sha256_each_backend": "ec4672738e51bfcfcdb59edd68dfa05bdd20d8f925db6e127bd3e4daa63614c0",
       "gate_verdict_counts_each_backend": {
         "max_transcriptome_hits_0mm": {"pass": 2733, "fail": 662},
         "max_transcriptome_hits_1mm": {"pass": 3381, "fail": 14},
