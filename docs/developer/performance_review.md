@@ -287,6 +287,18 @@ temporary full-reference FASTAs, indices, SAM files, reports, and raw result
 JSON were kept outside the repository and removed after this summary was
 recorded.
 
+The pinned Docker package now also passes a real Nextflow MEM3 smoke on a small
+synthetic transcriptome: it builds a MEM3-specific index, emits and parses the
+exact guide alignment, publishes complete one-guide evidence, and records the
+selected MEM3 release in `transcriptome/versions.yml`. This ran in the Docker
+workflow on commit `73463ef` (Actions run
+https://github.com/Austin-s-h/sirnaforge/actions/runs/40271766698); Python CI
+also passed (run
+https://github.com/Austin-s-h/sirnaforge/actions/runs/40271766723). The test
+caps the two synthetic-reference tasks at 2 GB for GitHub's 8 GB container;
+production resource defaults are unchanged. This does not replace the larger
+rat/macaque panel evidence above or establish full human cDNA feasibility.
+
 Outstanding before #122 can close:
 
 1. Run both profiles against pinned binaries, synthetic truth and representative
@@ -298,12 +310,13 @@ Outstanding before #122 can close:
 3. Benchmark cold/warm indexing and alignment, small/large query batches, CPU/RSS,
    index size and end-to-end time. Fresh index construction does not make OS
    page caches cold. Never interpret fewer retained hits as a speedup.
-4. Validate packaging and host/container Nextflow distribution of the selected
-   MEM3 executable. Index identity, rebuild, cleanup, and staging are now
-   backend-specific; test them with the supported packaged binary before
-   considering any default change.
-5. Validate host/container/Nextflow, binary/version checks, distribution support,
-   fallback and rollback; then record adopt/defer with measured gains.
+4. The selected MEM3 executable, backend-specific index, plain SAM parser, and
+   version output now pass the pinned Docker/Nextflow smoke above. Host
+   packaging/distribution, index cache/rebuild behavior with the packaged
+   binary, and other supported platforms remain outstanding before any default
+   change.
+5. Complete the remaining host checks, distribution support, fallback and
+   rollback review, then record adopt/defer with measured gains.
 
 ## Coordination with report performance (#111)
 
