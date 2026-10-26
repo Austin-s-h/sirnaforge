@@ -123,6 +123,39 @@ jobs:
           coverage.xml
         retention-days: 30
 
+  pixi-review:
+    name: Pixi locked environment review
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # This is an evaluation lane for #121, not the production environment owner.
+    # Exercise the checked-in lock against the host selection used for the local review.
+    - name: Set up Pixi
+      uses: prefix-dev/setup-pixi@v0.10.0
+      with:
+        pixi-version: v0.76.1
+        manifest-path: scripts/performance/pixi/pixi.toml
+        locked: true
+        cache: true
+        environments: tests
+
+    - name: Verify locked Pixi runtime
+      run: |
+        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests python --version
+        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests nextflow -version
+        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests bwa-mem2 version
+
+    - name: Run Pixi host validation
+      run: >-
+        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests
+        python -m pytest
+        -m '(dev or ci or release) and not runs_in_container and not requires_network'
+        -n 0
+
   build-package:
     name: Build Package
     runs-on: ubuntu-latest
@@ -166,7 +199,7 @@ jobs:
   final-status:
     name: CI Status Summary
     runs-on: ubuntu-latest
-    needs: [ lint-and-security, test-matrix, build-package ]
+    needs: [ lint-and-security, test-matrix, pixi-review, build-package ]
     if: always()
     outputs:
       success: ${{ steps.status.outputs.success }}
@@ -180,12 +213,14 @@ jobs:
         LINT_STATUS="${{ needs.lint-and-security.result }}"
         TEST_STATUS="${{ needs.test-matrix.result }}"
         BUILD_STATUS="${{ needs.build-package.result }}"
+        PIXI_STATUS="${{ needs.pixi-review.result }}"
 
         echo "Lint & Security: $LINT_STATUS"
         echo "Tests: $TEST_STATUS"
         echo "Build: $BUILD_STATUS"
+        echo "Pixi review: $PIXI_STATUS"
 
-        if [[ "$LINT_STATUS" == "success" && "$TEST_STATUS" == "success" && "$BUILD_STATUS" == "success" ]]; then
+        if [[ "$LINT_STATUS" == "success" && "$TEST_STATUS" == "success" && "$BUILD_STATUS" == "success" && "$PIXI_STATUS" == "success" ]]; then
           echo "All CI jobs passed!"
           echo "success=true" >> $GITHUB_OUTPUT
         else
