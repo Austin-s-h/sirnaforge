@@ -6,7 +6,14 @@ The scientific basis and limits of the scoring and off-target screens are summar
 
 ## Prepare pinned local inputs
 
-Obtain the GENCODE GTF and transcript FASTA from the same release and GRCh38 assembly, and retain the release identifier plus SHA-256 checksums with the files. See {ref}`annotation_providers.md <obtain-a-pinned-release>` for official download and format references. The following minimal VCF records the exact GRCh38 allele above and deliberately omits population-frequency fields. ClinGen maps this variant to GENCODE transcript `ENST00000302262.8`; check that the selected release contains a matching transcript version in both annotation and FASTA and that its sequence agrees with the VCF REF allele. The workflow searches compatible GAA transcripts; it does not convert or select the RefSeq accession `NM_000152.5` by itself.
+This example was run with GENCODE human release 49 (GRCh38.p14), using the [official release files](https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/) below. The SHA-256 hashes were computed from the downloaded compressed files and the MD5 values match GENCODE's `MD5SUMS` manifest.
+
+| Input | Official MD5 | SHA-256 |
+| --- | --- | --- |
+| `gencode.v49.annotation.gtf.gz` | `0ef4a024ea2d35b1b88c12447b0b70b9` | `d6e6fe0515c95b2a8cd36a853c1989cee9115c736c60237c56ae92b9daaaf7c4` |
+| `gencode.v49.transcripts.fa.gz` | `ce72162016c56f64918a7dde76535ddb` | `08ee7ee86514061de6fd62dc643c2fe962fbc393080589ebc491bd11e22b119e` |
+
+See {ref}`annotation_providers.md <obtain-a-pinned-release>` for GENCODE format details. The following minimal VCF records the exact GRCh38 allele above and deliberately omits population-frequency fields. ClinGen maps this variant to GENCODE transcript `ENST00000302262.8`; confirm that the matching version is present in both files and that its sequence agrees with the VCF REF allele. The workflow searches compatible GAA transcripts; it does not convert or select the RefSeq accession `NM_000152.5` by itself.
 
 ```text
 ##fileformat=VCFv4.2
@@ -41,4 +48,4 @@ The repository's deterministic variant-resolution demo uses the bundled transcri
 
 ## GAA acceptance status
 
-No GAA candidate output is included here because the repository does not bundle a pinned GENCODE/RefSeq release and transcript FASTA. The example now specifies a sourced allele and coordinates, replacing the incorrect prior `c.428A>G` pairing. It is reproducible once matching local GRCh38 inputs are obtained and checksummed, and the selected GAA transcript's presence and sequence are confirmed. Any generated candidates remain computational hypotheses and require independent biological testing.
+The command completed against the pinned release 49 files above, resolving the one VCF SNV and retrieving 14 protein-coding GAA transcripts. It generated 11,120 general siRNA candidates but no candidate overlapping the variant under the default filters (`candidate_variants.json` reported zero variant-annotated candidates). No candidate output is included because this run did not produce an allele-specific guide. The result demonstrates input and workflow behavior only; it is not evidence of knockdown or clinical utility. The full GENCODE GTF is scanned during transcript lookup and annotation enrichment, so this local run took 8m47s; combine annotation requests and plan for the scan time when using full releases.
