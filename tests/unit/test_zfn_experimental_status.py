@@ -123,6 +123,8 @@ def _discover_zfn_doc_pages() -> list[str]:
     for glob in DOC_SURFACE_GLOBS:
         for path in root.glob(glob):
             rel = path.relative_to(root).as_posix()
+            if ".pixi" in path.relative_to(root).parts or not path.is_file():
+                continue
             if rel in BANNER_EXEMPT_PAGES:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -272,6 +274,16 @@ def test_zfn_doc_discovery_walked_the_tree() -> None:
     missing = REQUIRED_DISCOVERED_PAGES - discovered
     assert not missing, f"ZFN doc discovery missed known ZFN pages: {sorted(missing)}"
     assert len(discovered) >= MIN_DISCOVERED_PAGES, f"only {len(discovered)} ZFN pages discovered: {sorted(discovered)}"
+
+
+@pytest.mark.unit
+def test_zfn_doc_discovery_skips_pixi_runtime_directories(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A JDK legal path can end in .md while being a directory, not a document."""
+    generated_legal_path = tmp_path / "scripts/performance/pixi/.pixi/envs/tests/lib/jvm/legal/jdk.internal.md"
+    generated_legal_path.mkdir(parents=True)
+    monkeypatch.setattr(sys.modules[__name__], "_repo_root", lambda: tmp_path)
+
+    assert _discover_zfn_doc_pages() == []
 
 
 @pytest.mark.unit
