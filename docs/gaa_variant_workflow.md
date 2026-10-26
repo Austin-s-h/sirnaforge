@@ -26,8 +26,8 @@ chr17	80112922	ClinVar_4029	C	A	.	PASS	.
 Save this as `/data/pinned/gaa_c1935c_a.vcf`, then run the current allele-aware workflow:
 
 ```bash
-export SIRNAFORGE_GENCODE_GTF=/data/pinned/gencode.annotation.gtf.gz
-export SIRNAFORGE_GENCODE_FASTA=/data/pinned/gencode.transcripts.fa.gz
+export SIRNAFORGE_GENCODE_GTF=/data/pinned/gencode.v49.annotation.gtf.gz
+export SIRNAFORGE_GENCODE_FASTA=/data/pinned/gencode.v49.transcripts.fa.gz
 export SIRNAFORGE_GENCODE_ASSEMBLY=GRCh38
 
 uv run sirnaforge workflow GAA \
