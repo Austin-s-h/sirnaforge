@@ -48,12 +48,12 @@ environment; they measure a no-op check, not a warm environment creation.
 
 The startup observations are in
 `scripts/performance/measurements/pixi-runtime-startup.json`. The installed
-Pixi application environment occupied 1.4 GiB by `du` (2,107,751,371 apparent
-bytes) and used a separate 312 MiB cache; these do not represent a Pixi Docker
-image. Its editable application install reports PyPI Nextflow, pysam, and
-ViennaRNA files overwriting Conda files. The tested commands and imports worked,
-but overlapping ownership remains unresolved and is a reason to defer adoption.
-Startup trial ranges have no OS cache eviction.
+Pixi environment from the original startup trial occupied 1.4 GiB by `du`
+(2,107,751,371 apparent bytes) and used a separate 312 MiB cache; these do not
+represent a Pixi Docker image. That trial used the earlier mixed-owner manifest.
+The revised single-owner manifest was installed separately and its commands and
+imports passed, but startup measurements have not been repeated with it. Startup
+trial ranges have no OS cache eviction.
 
 Representative commands (use fresh roots/prefixes for cold trials and the same
 roots for warm no-op trials):
@@ -118,7 +118,8 @@ When channel access is available, solve without installation first:
 ```
 
 Only after reviewing the lock, install with `pixi install --locked` using the same
-manifest path. Record separate cold-cache, locked fresh-install, warm-install,
+manifest path, then run the `install-app` task to install the editable package
+without dependency re-resolution. Record separate cold-cache, locked fresh-install, warm-install,
 update, disk/image-size, Docker-build and first/warm application-startup results.
 Use separate throwaway prototype copies and caches for each cold trial; do not
 relabel a reused environment as cold. Hold resolved Python/Nextflow/Java/native
@@ -130,20 +131,23 @@ clean/cached Docker builds, and representative application startup benchmarks
 remain pending. The observed difference is from one Linux host, not a general
 Pixi speedup claim.
 
-Dependency ownership requiring resolution before adoption:
+Dependency ownership in the revised Pixi prototype:
 
-- `pyproject.toml` and `uv.lock` own Python dependencies; `environment-dev.yml`
-  duplicates much of the stack. The captured inventory embeds both Conda sources
-  and lists Python/dev requirements rather than silently choosing an owner.
-- Nextflow is supplied by both PyPI and Conda. The Dockerfile preserves the
-  Conda launcher after pip installation and sets `NXF_DIST` to its framework JAR.
-  The application install initially overwrote the Conda launcher with PyPI
-  Nextflow 26.10.3, which failed offline against the bundled 25.10.2 framework.
-  The prototype now pins both to 25.10.2 and points `NXF_DIST` at the Conda
-  framework; isolated offline launches succeed. Failed pre-fix observations
-  remain only as historical evidence.
-- Native ViennaRNA/pysam packages overlap PyPI distributions. Resolve explicit
-  ownership and ABI compatibility; installation success alone is insufficient.
+- `pyproject.toml` and `uv.lock` remain the current Python dependency authority;
+  `environment-dev.yml` duplicates much of the stack. The Pixi prototype now
+  assigns every direct runtime dependency to Conda except `fm-index`, which has
+  no candidate on the declared Conda channels and is assigned to PyPI.
+- Nextflow, pysam, and ViennaRNA are Conda-owned in the revised lock. Pixi's
+  editable install task uses `pip install --no-deps --no-build-isolation`, so it
+  does not reinstall project dependencies over Conda files. The Conda Nextflow
+  launcher and framework remain paired, with `NXF_DIST` pointing to the bundled
+  framework. The former PyPI overwrite observations are retained as historical
+  evidence only.
+- A fresh locked `tests` environment installed without package-overwrite
+  warnings. The editable CLI, native pysam/ViennaRNA imports, PyPI `fm_index`
+  import, and offline Nextflow 25.10.2 launch all succeeded. This resolves the
+  prototype's package ownership conflict on Linux x86_64; it does not establish
+  cross-platform or Docker image parity.
 - The prototype test feature installs pytest dependencies. The focused host
   test `test_gencode_structure_versions_and_gzip` passes in Pixi Python 3.12.15
   (pytest 9.1.1, pytest-asyncio 1.4.1) when run outside the execution sandbox.
@@ -208,13 +212,14 @@ production environment, cache, or user command needs migration because no
 Pixi-managed environment was adopted. The host suite, Pixi locked CI lane, real
 alignment/index smoke, Nextflow provider, arbitrary-UID cache path, and Pixi
 environment mounted into the current project image now pass on Linux x86_64.
-Reconsider adoption only after dependency ownership is resolved and comparable
-repeated update, Pixi image-size, and application/Nextflow startup measurements
-justify the additional owner.
+The single-owner dependency split is validated on Linux x86_64; its CI result
+and container measurement remain pending. Reconsider adoption only after
+comparable repeated update, Pixi image-size, and application/Nextflow startup
+measurements justify the additional owner.
 
-#121 remains open until dependency ownership, comparable update, Pixi
-image-size/build, and startup measurements are complete and the final
-migration/rollback recommendation is recorded.
+#121 remains open until repeated update, Pixi image/build-size, and comparable
+startup measurements are complete. Record supported-platform gaps and the final
+migration/rollback recommendation before closing it.
 
 Official references checked for this investigation:
 [Pixi manifest](https://pixi.prefix.dev/latest/reference/pixi_manifest/) and

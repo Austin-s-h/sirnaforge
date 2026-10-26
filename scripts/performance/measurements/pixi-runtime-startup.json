@@ -134,8 +134,53 @@
     "Three fresh-process launches per command; no OS cache eviction and the Pixi environment was already installed.",
     "Docker timings include starting a fresh Docker container; Pixi timings include the pixi run launcher. These are end-user command observations, not an isolated manager-overhead comparison.",
     "Nextflow versions differ (25.10.2 Pixi vs 26.10.3 image), so their startup timings are not a matched-version comparison.",
-    "The current Pixi application environment warns that PyPI Nextflow, pysam, and ViennaRNA files overwrite Conda files. Runtime imports and commands succeeded, but dependency ownership remains a defer criterion.",
+    "This startup comparison used the original mixed-owner Pixi application environment. The editable install then overwrote Conda files for Nextflow, pysam, and ViennaRNA. A revised single-owner locked environment now passes CLI, native import, and Nextflow smokes; startup trials have not yet been repeated against it.",
     "No Pixi-managed Docker image was built; image-size and clean/cached Docker build comparisons remain open."
   ],
-  "decision": "defer Pixi adoption"
+  "decision": "defer Pixi adoption",
+  "dependency_ownership_followup": {
+    "date": "2026-10-26",
+    "manifest": "scripts/performance/pixi/pixi.toml",
+    "pixi_version": "0.76.1",
+    "environment": "tests",
+    "resolution": {
+      "conda": {
+        "nextflow": "25.10.2",
+        "pysam": "0.24.1",
+        "viennarna": "2.7.0"
+      },
+      "pypi": {
+        "fm-index": "4.0.0"
+      },
+      "pypi_only_reason": "No fm-index candidate exists on the declared conda-forge/bioconda channels."
+    },
+    "editable_install": "pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests install-app",
+    "editable_install_behavior": "pip --no-deps --no-build-isolation; runtime dependencies are managed by the locked environment.",
+    "smokes": {
+      "sirnaforge_help": {
+        "status": "ok",
+        "returncode": 0
+      },
+      "native_imports": {
+        "status": "ok",
+        "pysam": "0.24.1",
+        "ViennaRNA": "2.7.0",
+        "fm_index": "4.0.0"
+      },
+      "nextflow_version": {
+        "status": "ok",
+        "version": "25.10.2"
+      }
+    },
+    "installed_test_environment": {
+      "apparent_bytes": 1482639404,
+      "du": "1.5G",
+      "cache": "fresh PIXI_CACHE_DIR under /tmp"
+    },
+    "limits": [
+      "Linux x86_64 only; no other declared platform was validated.",
+      "Startup timings were not repeated against this revised dependency ownership.",
+      "No Pixi-managed Docker image, image-size, or paired clean/cached build timing has been measured."
+    ]
+  }
 }

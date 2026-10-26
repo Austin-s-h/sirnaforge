@@ -149,6 +149,9 @@ jobs:
         pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests nextflow -version
         pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests bwa-mem2 version
 
+    - name: Install editable application without dependency overwrites
+      run: pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests install-app
+
     - name: Run Pixi host validation
       run: >-
         pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests
