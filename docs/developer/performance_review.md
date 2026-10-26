@@ -133,7 +133,15 @@ Dependency ownership requiring resolution before adoption:
   exposed a separate provenance bug: the current BWA executable version was
   reported as the build version for an unstamped index. The index provenance
   now leaves that version unknown unless its stamp records a usable build-time
-  version; the current runtime executable is recorded separately.
+  version; the current runtime executable is recorded separately. After the
+  fix, the final full-host run passed 2,195 tests with 75 deselected. A fresh
+  offline Nextflow 25.10.2 local-process smoke also passed from the Pixi test
+  environment and wrote its expected output; `sirnaforge --help` passed from
+  the editable install. A Nextflow process explicitly pointed at the Pixi
+  prefix with `NXF_CONDA_CLI=micromamba` did not run: this host lacks the
+  `conda` activation command/shim Nextflow invokes. The production Docker image
+  supplies its Conda command path; this host experiment does not validate that
+  image integration or justify replacing the existing process provider.
   Reproduce with `pixi run --manifest-path scripts/performance/pixi/pixi.toml
   --environment tests python -m pytest -m '(dev or ci or release) and not
   runs_in_container and not requires_network' -n 0`. Green GitHub CI and Docker
