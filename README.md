@@ -122,15 +122,14 @@ sirnaforge workflow BRCA1 \
 
 ### ZFN mutation constraints (composable)
 
-> **⚠️ EXPERIMENTAL — ZFN output is not decision-grade.** The ZFN arm ships experimental in 0.6.0
-> with known unfixed defects, tracked in
-> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82): the right half-site must be passed as
-> the reverse complement of its published `(−)` text or it matches nothing; the FokI seed budget
-> guards the wrong end of that half-site; a site inside a large containing gene can be reported
-> `intergenic`; the exported `worst_site_score` / `best_offtarget_score` fields are inverted; and
-> the default `pyahocorasick` backend raises `ValueError` above 3 mismatches on a 12 bp half-site.
-> Do not use ZFN output for any decision without independent validation. Start from the
-> [ZFN Module Guide](docs/zfn_module.md).
+> **⚠️ EXPERIMENTAL — ZFN output is not decision-grade.** The implementation defects tracked in
+> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82) have regression coverage, including the
+> right-half-site orientation, FokI seed geometry, nested gene overlaps, mismatch enumeration,
+> result fields, empty outputs, sharding, and the public Nextflow route. Exact and two-mismatch
+> searches against GRCh38 primary recover the CCR5 on-target and produce candidate sites; these
+> software checks do not establish nuclease activity, specificity, or agreement with an independent
+> experimental panel. Do not use ZFN output for decisions without independent validation. Start from
+> the [ZFN Module Guide](docs/zfn_module.md).
 
 ZFN mode accepts repeatable mutation constraints so you can combine per-subfinger and global budgets.
 

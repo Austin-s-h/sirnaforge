@@ -1,10 +1,11 @@
 # CCR5 ZFN Benchmark (PROGNOS 2014 Extract)
 
-> ## ⚠️ EXPERIMENTAL — the half-sites on this page are not what you pass to the CLI
+> ## ⚠️ EXPERIMENTAL — literature evidence is not a Sirnaforge validation panel
 >
-> The ZFN arm ships **experimental** in 0.6.0 with known defects tracked in
-> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any
-> decision without independent validation.**
+> The implementation defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82)
+> have regression coverage. ZFN remains experimental because these software checks do not establish
+> nuclease activity, biological specificity, or ranking performance against an independent panel.
+> **Do not use ZFN output for decisions without independent biological validation.**
 >
 > This page preserves the PROGNOS visible rows and their hg19 coordinates. The published CCR5
 > on-target row is chr3:46,414,544 on hg19; do not use that coordinate as GRCh38. The exact target
@@ -75,13 +76,14 @@ Tests assert:
   own published figure for PROGNOS, quoted from Fine et al. 2014, not a siRNAforge measurement.**
   The JSON field is named `performance.prognos_recovery_at_3x` for that reason, and
   `ccr5_study_facts.json` records it as a target to regress against "once golden-site
-  coordinates/sequences are available". siRNAforge has never been scored against this panel, and
-  the ZFN defects in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82) — the half-site
-  orientation convention above, plus a default backend that cannot run the 4-mismatch budget this
-  benchmark needs — have to be resolved before any such number would mean anything.
+  coordinates/sequences are available". Sirnaforge has not been scored against this experimental
+  panel. The GRCh38 primary search confirms the exact CCR5 on-target and reports two-mismatch
+  candidate sites, but that is not a recovery comparison against the PROGNOS panel; its rows still
+  need verified sequence/coordinate matching and independent review before they can validate this
+  tool.
 - tie-break policy metadata (Exon > Promoter > Intron > Intergenic, then chromosomal location) —
-  note the region tie-break is fed by the off-target region classifier, which #82 records as able
-  to call a site inside a large containing gene `intergenic`
+  nested-feature classification has regression coverage, but annotation accuracy still needs
+  independent real-genome review.
 - fixture scope and ambiguity markers (`?`, `Sequencing Failure`, `N/A`)
 
 ## Notes and Limits
