@@ -51,6 +51,17 @@ unintended-repression endpoint. Any use must keep residual expression as its own
 endpoint, group uncertainty by source accession, and report these limitations.
 See the [primary paper](https://doi.org/10.1186/1471-2105-7-65), Results section.
 
+A fixed, exploratory check of the shipped GC feature is reproducible with
+`uv run python scripts/validate_shabalina_independent.py`. At scoring version
+4.1.0, the default design GC score has a pooled Spearman ρ of −0.215 against
+residual expression (the expected direction is negative), but its accession
+fixed-effect slope is +12.47 residual-expression percentage points per score
+unit, with within-accession Pearson r = +0.159. These are point estimates over
+32 observations and 10 unverified accession groups, not inferential validation;
+the opposing pooled and within-accession directions do not support promoting the
+GC weight. The script emits the source checksums, profile identity, group counts,
+and limitations with the metrics.
+
 ## Interpretation boundaries
 
 - `compatible_core_only` means a reported 19–23 nt core can be represented for
