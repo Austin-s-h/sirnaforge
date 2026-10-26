@@ -42,3 +42,38 @@ def test_bwa_mem2_index_and_exact_guide_hit(tmp_path: Path) -> None:
         and hit["cigar"] == f"{len(guide)}M"
         for hit in hits
     )
+
+
+def test_bwa_mem3_index_and_repeated_exact_guide_hits(tmp_path: Path) -> None:
+    """The packaged plain-mode backend retains all exact hits for a repeated guide."""
+    executable = shutil.which("bwa-mem3")
+    if executable is None:
+        pytest.skip("bwa-mem3 is not installed in this environment")
+
+    version = subprocess.run([executable, "version"], capture_output=True, text=True, check=False, timeout=10)
+    if version.returncode != 0:
+        pytest.skip(f"bwa-mem3 is not runnable: {version.stderr.strip()}")
+
+    guide = "ACGTTGCACTGATCGTACGTA"
+    reference = tmp_path / "repeated_guide_transcriptome.fa"
+    reference.write_text(
+        "\n".join(
+            f">ENST_REPEAT_{index} gene:ENSG_REPEAT_{index}\n{'G' * 40}{guide}{'C' * 40}" for index in range(1, 4)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    index_prefix = tmp_path / "repeated_guide_bwa_mem3_index"
+
+    build_bwa_index(reference, index_prefix, aligner="bwa-mem3")
+
+    assert validate_index_files(index_prefix, tool="bwa-mem3")
+    hits, outcome = BwaAnalyzer(index_prefix, aligner="bwa-mem3").analyze_sequences_with_outcome(
+        {"guide_repeated": guide}
+    )
+
+    exact_hits = [hit for hit in hits if hit["qname"] == "guide_repeated" and hit["nm"] == 0]
+    assert outcome.completed
+    assert outcome.submitted == outcome.processed == 1
+    assert {hit["rname"] for hit in exact_hits} == {"ENST_REPEAT_1", "ENST_REPEAT_2", "ENST_REPEAT_3"}
+    assert all(hit["cigar"] == f"{len(guide)}M" for hit in exact_hits)
