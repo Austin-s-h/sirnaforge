@@ -15,6 +15,7 @@ from sirnaforge.reporting.artifacts import (
     ReportModeThresholds,
     resolve_report_mode,
 )
+from sirnaforge.reporting.payload import ReportInputError
 from tests.unit.test_reporting_payload import GUIDE, OTHER, _candidate_row, _hit_row, _write_run
 
 
@@ -73,3 +74,27 @@ def test_parquet_store_projects_and_streams_source_tables_and_traces_exports(tmp
     updated = json.loads((store.root / "report_manifest.json").read_text())
     assert updated["exports"]["candidates"]["artifact_table_sha256"] == manifest["tables"]["candidates"]["sha256"]
     assert updated["exports"]["candidates"]["sha256"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("destination_kind", ["run", "input_parent", "unowned_existing"])
+def test_artifact_store_refuses_destinations_that_could_delete_user_data(tmp_path: Path, destination_kind: str) -> None:
+    """Artifact publication never replaces the run, its source inputs, or an unowned directory."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    candidate_path = run / "sirnaforge/candidates_all.csv"
+    original = candidate_path.read_bytes()
+    if destination_kind == "run":
+        destination = run
+    elif destination_kind == "input_parent":
+        destination = run / "sirnaforge"
+    else:
+        destination = tmp_path / "existing-artifacts"
+        destination.mkdir()
+        (destination / "important.csv").write_text("preserve this\n")
+
+    with pytest.raises(ReportInputError):
+        ReportArtifactStore.from_run(run, destination)
+
+    assert candidate_path.read_bytes() == original
+    if destination_kind == "unowned_existing":
+        assert (destination / "important.csv").read_text() == "preserve this\n"

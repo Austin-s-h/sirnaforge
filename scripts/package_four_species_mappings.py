@@ -88,16 +88,40 @@ def _package_manifest(
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 
+def _source_csvs_from_manifest(
+    artifact_root: Path,
+    manifest_path: Path,
+    *,
+    include_assay: bool,
+) -> list[Path]:
+    """Return only uncompressed source CSVs named by this manifest."""
+    manifest: dict[str, Any] = json.loads(manifest_path.read_text())
+    sources: list[Path] = []
+    if include_assay:
+        sources.append(artifact_root / manifest["assay_observations_csv"]["path"])
+    for species in manifest["species"].values():
+        for name in ("mappings", "observations"):
+            path_key = f"{name}_csv"
+            sources.append(artifact_root / "species" / species[path_key])
+    return sources
+
+
 def main() -> None:
     """Package the generator's plain CSV outputs in place and preserve both digests."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-dir", type=Path, required=True)
     args = parser.parse_args()
     root = args.artifact_dir.resolve()
-    _package_manifest(root, root / "manifest.json", include_assay=True)
-    _package_manifest(root, root / "species" / "manifest.json", include_assay=False)
-    for path in root.rglob("*.csv"):
-        path.unlink()
+    manifest_paths = [root / "manifest.json", root / "species" / "manifest.json"]
+    source_csvs = {
+        source
+        for manifest_path, include_assay in zip(manifest_paths, (True, False), strict=True)
+        for source in _source_csvs_from_manifest(root, manifest_path, include_assay=include_assay)
+    }
+    for manifest_path, include_assay in zip(manifest_paths, (True, False), strict=True):
+        _package_manifest(root, manifest_path, include_assay=include_assay)
+    for path in source_csvs:
+        path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

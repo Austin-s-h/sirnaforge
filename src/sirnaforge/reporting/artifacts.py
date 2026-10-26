@@ -76,7 +76,12 @@ class ReportArtifactStore:
         destination = Path(artifact_dir)
         if mode not in {"auto", *_MODE_ORDER}:
             raise ValueError(f"unsupported report mode: {mode}")
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        resolved_run = run_root.resolve()
+        resolved_destination = destination.resolve()
+        if resolved_destination == resolved_run or resolved_run in resolved_destination.parents:
+            raise ReportInputError(
+                f"artifact directory {destination} cannot replace the source run directory {run_root}"
+            )
         candidates_path = next(iter(sorted(run_root.glob("**/candidates_all.csv"))), None)
         if candidates_path is None:
             raise ReportInputError(f"no candidates_all.csv under {run_root}")
@@ -88,7 +93,14 @@ class ReportArtifactStore:
         agg = run_root / "off_target" / "results" / "aggregated"
         hit_path = agg / "combined_offtargets.tsv"
         mirna_path = agg / "combined_mirna_hits.tsv"
+        report_input_paths = [candidates_path, *(path for path in (hit_path, mirna_path) if path.exists())]
+        if any(
+            resolved_destination == source.resolve() or resolved_destination in source.resolve().parents
+            for source in report_input_paths
+        ):
+            raise ReportInputError(f"artifact directory {destination} would replace a report input under {run_root}")
 
+        destination.parent.mkdir(parents=True, exist_ok=True)
         stage = Path(tempfile.mkdtemp(prefix=f".{destination.name}.stage-", dir=destination.parent))
         try:
             tables: dict[str, dict[str, Any]] = {}
@@ -116,8 +128,10 @@ class ReportArtifactStore:
                 distinct_guides=int(candidate_meta["distinct_guides"]),
             )
             selected_mode = resolve_report_mode(mode, facts, thresholds or ReportModeThresholds())
-            source_paths = {"candidates": candidates_path, "hits": hit_path, "mirna": mirna_path}
-            source_provenance = {name: _source_provenance(path) for name, path in source_paths.items() if path.exists()}
+            source_tables = {"candidates": candidates_path, "hits": hit_path, "mirna": mirna_path}
+            source_provenance = {
+                name: _source_provenance(path) for name, path in source_tables.items() if path.exists()
+            }
             if manifest_path is not None:
                 source_provenance["manifest"] = _source_provenance(manifest_path)
             report_manifest = {
@@ -282,8 +296,12 @@ def _publish_directory(stage: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     backup = destination.with_name(f".{destination.name}.previous")
     if backup.exists():
-        shutil.rmtree(backup)
+        raise ReportInputError(f"refusing to overwrite {destination}: prior artifact backup exists at {backup}")
     if destination.exists():
+        if destination.is_symlink() or not _is_sirnaforge_artifact_directory(destination):
+            raise ReportInputError(
+                f"refusing to replace existing directory {destination}: no recognized report manifest found"
+            )
         destination.replace(backup)
     try:
         stage.replace(destination)
@@ -292,3 +310,17 @@ def _publish_directory(stage: Path, destination: Path) -> None:
             backup.replace(destination)
         raise
     shutil.rmtree(backup, ignore_errors=True)
+
+
+def _is_sirnaforge_artifact_directory(path: Path) -> bool:
+    """Return whether a directory carries a manifest identifying owned report artifacts."""
+    manifest_path = path / "report_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        manifest.get("artifact_schema_version") == ARTIFACT_SCHEMA_VERSION
+        and manifest.get("report_mode") in _MODE_ORDER
+        and isinstance(manifest.get("tables"), dict)
+    )

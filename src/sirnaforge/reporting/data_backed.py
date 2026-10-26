@@ -8,6 +8,7 @@ import math
 import shutil
 import sqlite3
 import sys
+import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ from sirnaforge.reporting.payload import (
     REPORT_READ_CHUNK_ROWS,
     STATUSES,
     VERDICT_WARN,
+    ReportInputError,
     _evaluate,
     _flag,
     _gate_panel,
@@ -171,9 +173,7 @@ def write_report_from_run(
         phases["guide_index_write"] = time.perf_counter() - phase_started
         guide_index_file = str(guide_index["file"])
         detail_directory = output_path.with_name(f"{output_path.stem}.details")
-        if detail_directory.exists():
-            shutil.rmtree(detail_directory)
-        shutil.copytree(shard_dir, detail_directory, dirs_exist_ok=True)
+        _publish_detail_directory(shard_dir, detail_directory)
         detail_directory_name = detail_directory.name
         detail_loading = "classic_script_shards_on_demand"
     store.manifest["reader"] = {
@@ -215,6 +215,51 @@ def write_report_from_run(
         build_started,
         store.root,
     )
+
+
+_DETAIL_DIRECTORY_MARKER = ".sirnaforge-report-details.json"
+
+
+def _publish_detail_directory(source: Path, destination: Path) -> None:
+    """Publish report shards without deleting an unowned directory at the destination."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() and (destination.is_symlink() or not _is_owned_detail_directory(destination)):
+        raise ReportInputError(
+            f"refusing to replace existing detail directory {destination}: ownership marker is missing"
+        )
+    backup = destination.with_name(f".{destination.name}.previous")
+    if backup.exists():
+        raise ReportInputError(f"refusing to replace {destination}: prior detail backup exists at {backup}")
+    stage = Path(tempfile.mkdtemp(prefix=f".{destination.name}.stage-", dir=destination.parent))
+    try:
+        shutil.copytree(source, stage, dirs_exist_ok=True)
+        (stage / _DETAIL_DIRECTORY_MARKER).write_text(
+            json.dumps({"kind": "sirnaforge-report-details", "schema_version": 1}) + "\n",
+            encoding="utf-8",
+        )
+        if destination.exists():
+            destination.replace(backup)
+        try:
+            stage.replace(destination)
+        except BaseException:
+            if backup.exists() and not destination.exists():
+                backup.replace(destination)
+            raise
+        if backup.exists():
+            shutil.rmtree(backup)
+    except BaseException:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
+        raise
+
+
+def _is_owned_detail_directory(path: Path) -> bool:
+    """Recognize the marker written with generated on-demand report detail shards."""
+    try:
+        marker = json.loads((path / _DETAIL_DIRECTORY_MARKER).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(marker == {"kind": "sirnaforge-report-details", "schema_version": 1})
 
 
 def _derive_normalized_tables(store: ReportArtifactStore, run_dir: Path, *, policy: Any = None) -> None:

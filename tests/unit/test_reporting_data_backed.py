@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from sirnaforge.cli import app
 from sirnaforge.reporting import data_backed as data_backed_module
 from sirnaforge.reporting import write_report_from_run
+from sirnaforge.reporting.payload import ReportInputError
 from tests.unit.test_reporting_payload import GUIDE, _candidate_row, _hit_row, _write_run
 
 
@@ -27,6 +28,43 @@ def _base4(value: int, length: int = 21) -> str:
         chars.append(letters[value & 3])
         value >>= 2
     return "".join(reversed(chars))
+
+
+@pytest.mark.unit
+def test_detail_directory_publish_preserves_unowned_directory(tmp_path: Path) -> None:
+    """A report build refuses to remove unrelated files at its detail-directory path."""
+    source = tmp_path / "shards"
+    source.mkdir()
+    (source / "guide-index.js").write_text("window.SF_GUIDE_INDEX=[];\n")
+    destination = tmp_path / "report.details"
+    destination.mkdir()
+    protected = destination / "important.csv"
+    protected.write_text("keep this\n")
+
+    with pytest.raises(ReportInputError, match="ownership marker is missing"):
+        data_backed_module._publish_detail_directory(source, destination)
+
+    assert protected.read_text() == "keep this\n"
+
+
+@pytest.mark.unit
+def test_detail_directory_publish_replaces_owned_directory(tmp_path: Path) -> None:
+    """A prior generated detail package can be atomically refreshed."""
+    source = tmp_path / "shards"
+    source.mkdir()
+    (source / "guide-index.js").write_text("window.SF_GUIDE_INDEX=[];\n")
+    destination = tmp_path / "report.details"
+    destination.mkdir()
+    (destination / data_backed_module._DETAIL_DIRECTORY_MARKER).write_text(
+        json.dumps({"kind": "sirnaforge-report-details", "schema_version": 1}) + "\n"
+    )
+    (destination / "old.js").write_text("old\n")
+
+    data_backed_module._publish_detail_directory(source, destination)
+
+    assert not (destination / "old.js").exists()
+    assert (destination / "guide-index.js").exists()
+    assert data_backed_module._is_owned_detail_directory(destination)
 
 
 @pytest.mark.unit
