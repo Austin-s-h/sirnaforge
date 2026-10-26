@@ -326,7 +326,7 @@ docker run --rm -v $(pwd)/examples:/data sirnaforge:latest \
 > do not establish on-target recovery. The current real-reference runbooks use
 > `--zfn-right-half-site CTTTTGCAGTTT`, the model-oriented reverse complement of the published
 > `AAACTGCAAAAG`. Require independent genomic and experimental validation before using ZFN output
-> for decisions.
+> for decisions. Require independent validation before sign-off.
 
 The heavy ZFN benchmarking and real-reference checks are documented as technical validation notes rather than notebook-management policy.
 
