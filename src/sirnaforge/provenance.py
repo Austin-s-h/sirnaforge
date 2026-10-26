@@ -718,14 +718,25 @@ def index_attestation(
     stamped_aligner = stamp_inputs.get("aligner")
     if isinstance(stamped_aligner, dict) and isinstance(stamped_aligner.get("name"), str):
         aligner = aligner or stamped_aligner["name"]
-        aligner_version = present(
-            stamped_aligner.get("version"),
-            "index_build_version_probe",
-            "captured by the selected aligner's version command when this index was built",
+        stamped_version = stamped_aligner.get("version")
+        aligner_version = (
+            present(
+                stamped_version,
+                "index_build_version_probe",
+                "captured by the selected aligner's version command when this index was built",
+            )
+            if isinstance(stamped_version, str) and stamped_version
+            else absent(
+                "index_build_version_unavailable",
+                "the index stamp records the aligner but not a usable version from its build-time probe",
+            )
         )
     else:
         aligner = aligner or ALIGNER_NAME
-        aligner_version = _aligner_version_identity(aligner)
+        aligner_version = absent(
+            "index_build_version_not_recorded",
+            "the index stamp does not record the aligner version used to build these index bytes",
+        )
     if stamp is None:
         return {
             "attested": False,
@@ -781,14 +792,6 @@ def _stamped_input_digest(inputs: dict[str, Any], reference_fasta_name: str | No
     if len(inputs) == 1:
         return str(next(iter(inputs.values())))
     return None
-
-
-def _aligner_version_identity(name: str) -> dict[str, Any]:
-    """Capture a version for a prebuilt or unstamped index's selected backend."""
-    identity = _aligner_identity(name)
-    if identity["value"] is None:
-        return absent(identity["state"], identity["reason"])
-    return present(identity["value"], identity["state"], identity["reason"])
 
 
 def _stamped_in_this_process(stamped_at: Any) -> dict[str, Any]:

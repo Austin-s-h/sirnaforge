@@ -119,20 +119,26 @@ Dependency ownership requiring resolution before adoption:
   remain only as historical evidence.
 - Native ViennaRNA/pysam packages overlap PyPI distributions. Resolve explicit
   ownership and ABI compatibility; installation success alone is insufficient.
-- The prototype test feature installs pytest dependencies, but the focused host
-  test `test_gencode_structure_versions_and_gzip` does not complete in the Pixi
-  Python 3.12.15 environment (pytest 9.1.1, pytest-asyncio 1.4.1). An isolated
-  pytest async test awaiting `asyncio.to_thread(lambda: 42)` passes, and the
-  standalone Pixi `asyncio.run` probe also exits normally. The hang is specific
-  to awaiting the local annotation provider's `_bundle` result: the worker
-  becomes idle after running the call, while the event loop remains blocked in
-  `selectors.select`; the test never resumes from `await`. `--asyncio-mode=auto`
-  and disabling xdist do not change the result. This points to an interaction
-  in this concrete provider/test execution path, not a general failure of
-  Python's default executor or pytest-asyncio. No production workaround has
-  been identified. The green Python 3.10/3.11/3.12 CI runs and Docker suite
-  validate their configured environments, not the Pixi environment; run the
-  full suite in a functioning Pixi runtime before adoption.
+- The prototype test feature installs pytest dependencies. The focused host
+  test `test_gencode_structure_versions_and_gzip` passes in Pixi Python 3.12.15
+  (pytest 9.1.1, pytest-asyncio 1.4.1) when run outside the execution sandbox.
+  Inside the sandbox, the executor thread's asyncio wakeup-socket write raises
+  `EPERM`; asyncio suppresses that socket error, leaving the loop blocked in
+  `selectors.select` after the worker future completes. This is a sandbox
+  restriction rather than a Pixi/provider hang. The same sandbox condition can
+  affect other `asyncio.to_thread` work that completes after the event loop has
+  begun waiting. The full serial Pixi host selection
+  `(dev or ci or release) and not runs_in_container and not requires_network`
+  passed outside the sandbox: 2,195 passed and 75 were deselected. That run
+  exposed a separate provenance bug: the current BWA executable version was
+  reported as the build version for an unstamped index. The index provenance
+  now leaves that version unknown unless its stamp records a usable build-time
+  version; the current runtime executable is recorded separately.
+  Reproduce with `pixi run --manifest-path scripts/performance/pixi/pixi.toml
+  --environment tests python -m pytest -m '(dev or ci or release) and not
+  runs_in_container and not requires_network' -n 0`. Green GitHub CI and Docker
+  runs also cover their configured environments, not the Pixi container; real
+  Pixi container/provider/cache validation remains necessary before adoption.
 - Pixi managing the parent environment is separate from Nextflow creating
   process environments. Preserve the current micromamba process-environment
   mechanism until a supported replacement is demonstrated.

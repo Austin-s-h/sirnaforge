@@ -1227,6 +1227,7 @@ def test_an_unstamped_index_is_named_unattested_rather_than_assumed_good(tmp_pat
     assert index["built_from_digest"] is None
     assert index["aligner"] == "bwa-mem2"
     assert index["aligner_version"]["value"] is None
+    assert index["aligner_version"]["state"] == "index_build_version_not_recorded"
     assert len(index["reason"]) >= 20
 
 
@@ -1259,6 +1260,32 @@ def test_a_stamped_index_proves_it_agrees_with_its_reference_and_keeps_digest_mo
         assert member["digest_mode"] in {"full", "sampled"}
         assert member["size"] == 2048
     assert {member["digest_mode"] for member in members.values()} == {"full", "sampled"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("stamped_aligner", "expected_version", "expected_state"),
+    [
+        ({"name": "bwa-mem3", "version": "0.15.0"}, "0.15.0", "index_build_version_probe"),
+        ({"name": "bwa-mem3", "version": None}, None, "index_build_version_unavailable"),
+        ({"name": "bwa-mem3"}, None, "index_build_version_unavailable"),
+    ],
+)
+def test_index_build_version_comes_only_from_a_usable_stamp(
+    tmp_path, stamped_aligner, expected_version, expected_state
+):
+    """Runtime tool availability cannot fill in missing index build provenance."""
+    _, paths = _cached_reference(tmp_path, with_index_stamp=True)
+    stamp_path = artifact_stamp_path(Path(paths["index"]))
+    stamp = json.loads(stamp_path.read_text())
+    stamp["inputs"]["aligner"] = stamped_aligner
+    stamp_path.write_text(json.dumps(stamp))
+
+    index = _provenance_module().index_attestation(Path(paths["index"]))
+
+    assert index["aligner"] == "bwa-mem3"
+    assert index["aligner_version"]["value"] == expected_version
+    assert index["aligner_version"]["state"] == expected_state
 
 
 # ---------------------------------------------------------------------------------------------
