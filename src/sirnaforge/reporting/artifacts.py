@@ -78,7 +78,7 @@ class ReportArtifactStore:
             raise ValueError(f"unsupported report mode: {mode}")
         resolved_run = run_root.resolve()
         resolved_destination = destination.resolve()
-        if resolved_destination == resolved_run or resolved_run in resolved_destination.parents:
+        if resolved_destination == resolved_run or resolved_destination in resolved_run.parents:
             raise ReportInputError(
                 f"artifact directory {destination} cannot replace the source run directory {run_root}"
             )
