@@ -188,9 +188,9 @@ Dependency ownership requiring resolution before adoption:
   and exact-guide alignment smoke. Actions run
   [40292606798](https://github.com/Austin-s-h/sirnaforge/actions/runs/40292606798)
   passed: 2,196 passed and 76 deselected, including the real index/alignment
-  regression. The commit's push-triggered Python run had one unrelated
-  10-second timeout in an existing report data test; its failed Python 3.12
-  job is being rerun.
+  regression. The commit's push-triggered Python run initially hit one
+  unrelated 10-second timeout in an existing report data test; the failed
+  Python 3.12 job passed on rerun in [run 40292602159](https://github.com/Austin-s-h/sirnaforge/actions/runs/40292602159).
 - The real BWA-MEM2 index-build and exact-guide alignment smoke also passed
   locally against the Pixi environment's BWA-MEM2 2.2.1 executable. The local
   sandbox could not fetch packages from conda.anaconda.org; the application
