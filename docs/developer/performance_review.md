@@ -19,6 +19,7 @@ local test environment.
 | Pixi locked runtime install | Three fresh-cache Linux x86_64 trials: median 9.65 s (8.76–10.47), median 249 MiB peak RSS (247–249), 1.29 GiB combined cache/prefix disk use | Locked install from an existing Pixi lock; one machine, network enabled, OS cache not evicted |
 | Micromamba runtime create | Three fresh-root Linux x86_64 trials with matching direct versions: median 35.18 s (31.56–42.47), median 1,413 MiB peak RSS (1,412–1,417), 2.66 GiB combined root disk use | Includes dependency solving and installation; 94 Pixi vs 98 micromamba packages |
 | Warm environment install | Three idempotent trials each; Pixi median 0.060 s, micromamba median 5.862 s | Cached no-op install comparison only; not environment creation or update performance |
+| CLI / Nextflow startup | Three fresh processes each: Pixi CLI median 1.31 s (1.29–3.34), Pixi Nextflow 1.06 s (1.04–1.08); current image CLI 1.66 s (1.65–1.72), Nextflow 1.44 s (1.41–1.46) | Same WSL2 host; Pixi `run` versus fresh Docker containers, so launch overhead differs. Nextflow versions also differ (25.10.2 vs 26.10.3); exploratory timings only |
 | Pixi application and offline Nextflow | Editable application install succeeded after pinning the PyPI launcher to 25.10.2 and pointing `NXF_DIST` at the Conda framework JAR; `sirnaforge --help` and three offline Nextflow launches succeeded | Resolves the observed launcher/framework mismatch for this locked Linux prototype |
 | BWA comparison | Official MEM2 2.2.1 and source-built MEM3 0.15.0 passed controlled synthetic and 320-guide chr21 SAM parity and independent exact-match checks | Limited compatibility evidence, with compiler caveat below |
 | samtools and RNAfold | Unavailable on PATH | Container/runtime validation remains necessary |
@@ -44,6 +45,15 @@ counts, and checksums are in
 `scripts/performance/measurements/pixi-env-install-cold.json`. Warm results
 reran each manager's install/sync command against its already-created
 environment; they measure a no-op check, not a warm environment creation.
+
+The startup observations are in
+`scripts/performance/measurements/pixi-runtime-startup.json`. The installed
+Pixi application environment occupied 1.4 GiB by `du` (2,107,751,371 apparent
+bytes) and used a separate 312 MiB cache; these do not represent a Pixi Docker
+image. Its editable application install reports PyPI Nextflow, pysam, and
+ViennaRNA files overwriting Conda files. The tested commands and imports worked,
+but overlapping ownership remains unresolved and is a reason to defer adoption.
+Startup trial ranges have no OS cache eviction.
 
 Representative commands (use fresh roots/prefixes for cold trials and the same
 roots for warm no-op trials):
@@ -175,12 +185,20 @@ Dependency ownership requiring resolution before adoption:
 - A dedicated Pixi CI lane now installs the checked-in `tests` environment with
   `--locked`, checks the pinned Python/Nextflow/BWA-MEM2 tools, and runs the
   existing host validation selection, including a real BWA-MEM2 index-build
-  and exact-guide alignment smoke. Its first live Actions result is pending.
-  The local sandbox could not fetch packages from conda.anaconda.org, so it
-  could not independently recreate that environment in this session.
-- Other supported-platform checks, and comparable update, Docker build/image
-  size, and representative application/Nextflow startup measurements remain
-  outstanding.
+  and exact-guide alignment smoke. Actions run
+  [40292606798](https://github.com/Austin-s-h/sirnaforge/actions/runs/40292606798)
+  passed: 2,196 passed and 76 deselected, including the real index/alignment
+  regression. The commit's push-triggered Python run had one unrelated
+  10-second timeout in an existing report data test; its failed Python 3.12
+  job is being rerun.
+- The real BWA-MEM2 index-build and exact-guide alignment smoke also passed
+  locally against the Pixi environment's BWA-MEM2 2.2.1 executable. The local
+  sandbox could not fetch packages from conda.anaconda.org; the application
+  environment was recreated outside the sandbox.
+- Other supported-platform checks, comparable update behavior, and Pixi Docker
+  build/image-size measurements remain outstanding. The startup observations
+  above are deliberately non-equivalent because Pixi and Docker add different
+  launch overhead, and the Nextflow versions differ.
 
 **Decision: defer Pixi adoption.** Keep uv/pip as the host Python owner and
 micromamba/Conda as the existing Nextflow process-environment provider. Do not

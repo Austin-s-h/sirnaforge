@@ -1,0 +1,141 @@
+{
+  "kind": "pixi_runtime_startup_comparison",
+  "date": "2026-10-26",
+  "commit": "1fd1c2e6a47dd0273ffca46c5cf1c64339ac18db",
+  "machine": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "cpu_count": 12,
+    "python": "3.11.13",
+    "git_revision": "1fd1c2e6a47dd0273ffca46c5cf1c64339ac18db"
+  },
+  "runtime_versions": {
+    "pixi_application": {
+      "python": "3.12.15",
+      "nextflow": "25.10.2",
+      "bwa_mem2": "2.2.1",
+      "pysam": "0.24.1",
+      "viennarna": "2.7.2"
+    },
+    "micromamba_image": {
+      "image": "sirnaforge:latest",
+      "image_id": "sha256:b3d94fad7d533674251c3abd81671067fdcdaf315c7f300cb098d87713958191",
+      "image_size_bytes": 2253426750,
+      "python": "3.12.15",
+      "nextflow": "26.10.3",
+      "bwa_mem2": "2.2.1"
+    }
+  },
+  "pixi_storage": {
+    "application_environment_du": "1.4 GiB",
+    "application_environment_apparent_bytes": 2107751371,
+    "external_pixi_cache_du": "312 MiB",
+    "note": "Hardlinks and shared cache layers make apparent bytes differ from allocated disk use; this is an installed host environment, not a Pixi Docker image size."
+  },
+  "measurements": {
+    "pixi_cli": {
+      "command": "pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment application sirnaforge --help",
+      "cache_state": "locked application environment installed; fresh processes; host OS cache not evicted",
+      "trials": [
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 3.341656589997001
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.3130805079999845
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.286586141999578
+        }
+      ],
+      "wall_median_seconds": 1.3130805079999845,
+      "wall_min_seconds": 1.286586141999578,
+      "wall_max_seconds": 3.341656589997001
+    },
+    "pixi_nextflow": {
+      "command": "pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment application nextflow -version",
+      "cache_state": "locked application environment installed; fresh processes; framework JAR bundled; host OS cache not evicted",
+      "trials": [
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.0602989280014299
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.0420910679968074
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.0818692150060087
+        }
+      ],
+      "wall_median_seconds": 1.0602989280014299,
+      "wall_min_seconds": 1.0420910679968074,
+      "wall_max_seconds": 1.0818692150060087
+    },
+    "container_cli": {
+      "command": "docker run --rm --entrypoint sirnaforge sirnaforge:latest --help",
+      "cache_state": "sirnaforge:latest image; fresh containers; Docker daemon cache present; host OS cache not evicted",
+      "trials": [
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.6497960629931185
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.7180284280038904
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.6648583539936226
+        }
+      ],
+      "wall_median_seconds": 1.6648583539936226,
+      "wall_min_seconds": 1.6497960629931185,
+      "wall_max_seconds": 1.7180284280038904
+    },
+    "container_nextflow": {
+      "command": "docker run --rm --entrypoint nextflow sirnaforge:latest -version",
+      "cache_state": "sirnaforge:latest image; fresh containers; bundled framework; Docker daemon cache present; host OS cache not evicted",
+      "trials": [
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.4596123560040724
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.4433123399940087
+        },
+        {
+          "status": "ok",
+          "returncode": 0,
+          "wall_seconds": 1.4129751229920657
+        }
+      ],
+      "wall_median_seconds": 1.4433123399940087,
+      "wall_min_seconds": 1.4129751229920657,
+      "wall_max_seconds": 1.4596123560040724
+    }
+  },
+  "limitations": [
+    "Three fresh-process launches per command; no OS cache eviction and the Pixi environment was already installed.",
+    "Docker timings include starting a fresh Docker container; Pixi timings include the pixi run launcher. These are end-user command observations, not an isolated manager-overhead comparison.",
+    "Nextflow versions differ (25.10.2 Pixi vs 26.10.3 image), so their startup timings are not a matched-version comparison.",
+    "The current Pixi application environment warns that PyPI Nextflow, pysam, and ViennaRNA files overwrite Conda files. Runtime imports and commands succeeded, but dependency ownership remains a defer criterion.",
+    "No Pixi-managed Docker image was built; image-size and clean/cached Docker build comparisons remain open."
+  ],
+  "decision": "defer Pixi adoption"
+}
