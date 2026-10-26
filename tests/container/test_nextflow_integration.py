@@ -4,6 +4,7 @@ Tests that verify Nextflow workflows work correctly in Docker environments
 with proper resource constraints and Docker-in-Docker functionality.
 """
 
+import csv
 import hashlib
 import json
 import re
@@ -318,6 +319,63 @@ def test_transcript_seed_channel_executes_and_reconciles_scoped_evidence(
         guide_digest,
     )
     assert entry["status"] == status
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+@pytest.mark.requires_nextflow
+@pytest.mark.requires_tools
+def test_bwa_mem3_plain_mode_runs_through_nextflow(tmp_path: Path) -> None:
+    """The pinned MEM3 package indexes, aligns, parses SAM, and emits completed evidence in Nextflow."""
+    runner = NextflowRunner()
+    workflow = runner.get_main_workflow()
+    assert workflow.is_file(), f"embedded workflow missing from the image: {workflow}"
+
+    guide = "ACGTTGCAAGTCGATCCTAGC"
+    guides = tmp_path / "guides.fasta"
+    guides.write_text(f">guide_1\n{guide}\n")
+    reference = tmp_path / "transcriptome.fasta"
+    reference.write_text(f">ENST_TEST.1 gene:ENSG_TEST.1\nGATTACAGATTACAGATTACA{guide}CGTACGTACGTAGCTAGCTAGC\n")
+    outdir = tmp_path / "out"
+    work_dir = tmp_path / "nextflow-work"
+    command = [
+        "nextflow",
+        "run",
+        str(workflow),
+        "-profile",
+        "local",
+        "--input",
+        str(guides),
+        "--outdir",
+        str(outdir),
+        "--transcriptome_species",
+        "human",
+        "--transcriptome_fastas",
+        f"human:{reference}",
+        "--mirna_species",
+        ",",
+        "--aligner",
+        "bwa-mem3",
+        "-work-dir",
+        str(work_dir),
+        "--ansi-log",
+        "false",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, cwd=tmp_path, timeout=300, check=False)
+    assert result.returncode == 0, f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
+
+    analysis = outdir / "transcriptome" / "human_analysis.tsv"
+    with analysis.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert any(row["qname"] == "guide_1" and row["rname"] == "ENST_TEST.1" and row["nm"] == "0" for row in rows)
+
+    evidence = json.loads((outdir / "transcriptome" / "transcriptome_human_evidence.json").read_text())
+    assert evidence["entry"]["status"] == "complete"
+    assert evidence["entry"]["processed_guides"] == 1
+
+    mem3_versions = [path.read_text() for path in work_dir.rglob("versions.yml") if "bwa-mem3" in path.read_text()]
+    assert mem3_versions, "no Nextflow task recorded the selected MEM3 backend/version"
+    assert any("0.15.0" in versions for versions in mem3_versions)
 
 
 @pytest.mark.integration

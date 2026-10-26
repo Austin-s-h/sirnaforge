@@ -105,7 +105,7 @@ WORKDIR /home/sirnauser
 
 # Set environment variables
 # Ensure conda/micromamba binaries are on PATH so installed tools (nextflow,
-# bwa-mem2, samtools, ViennaRNA, and the installed sirnaforge entrypoint) are
+# bwa-mem2, bwa-mem3, samtools, ViennaRNA, and the installed sirnaforge entrypoint) are
 # available to healthchecks and the default CMD which run via /bin/sh.
 ENV PATH="/opt/conda/bin:/opt/conda/condabin:/usr/local/bin:$PATH"
 ENV JAVA_HOME="/opt/conda/lib/jvm"
@@ -157,6 +157,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD sirnaforge version && \
         nextflow -version && \
         bwa-mem2 version && \
+        bwa-mem3 version && \
         samtools --version && \
         RNAfold --version || exit 1
 
