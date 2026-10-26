@@ -338,10 +338,21 @@ def test_bwa_mem3_plain_mode_runs_through_nextflow(tmp_path: Path) -> None:
     reference.write_text(f">ENST_TEST.1 gene:ENSG_TEST.1\nGATTACAGATTACAGATTACA{guide}CGTACGTACGTAGCTAGCTAGC\n")
     outdir = tmp_path / "out"
     work_dir = tmp_path / "nextflow-work"
+    resources = tmp_path / "test-resources.config"
+    resources.write_text(
+        "process {\n"
+        "    withName: 'SIRNAFORGE_OFFTARGET:SIRNA_OFFTARGET_ANALYSIS:BUILD_BWA_INDEX' {\n"
+        "        cpus = 1\n"
+        "        memory = '2.GB'\n"
+        "    }\n"
+        "}\n"
+    )
     command = [
         "nextflow",
         "run",
         str(workflow),
+        "-c",
+        str(resources),
         "-profile",
         "local",
         "--input",
