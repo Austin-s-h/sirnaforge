@@ -37,6 +37,41 @@ def test_nextflow_available():
 
 @pytest.mark.integration
 @pytest.mark.runs_in_container
+@pytest.mark.requires_nextflow
+def test_nextflow_conda_process_activates_the_micromamba_environment(tmp_path: Path) -> None:
+    """Nextflow's Conda provider must activate a local micromamba prefix."""
+    workflow = tmp_path / "conda-probe.nf"
+    workflow.write_text(
+        """process CONDA_PROBE {
+    conda '/opt/conda'
+    output:
+    path 'probe.txt'
+    script:
+    '''
+    python -c \"from pathlib import Path; Path('probe.txt').write_text('activated')\"
+    '''
+}
+workflow {
+    CONDA_PROBE()
+}
+"""
+    )
+    work_dir = tmp_path / "work"
+    result = subprocess.run(
+        ["nextflow", "run", str(workflow), "-with-conda", "-work-dir", str(work_dir), "-ansi-log", "false"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, f"Nextflow Conda process failed:\n{result.stdout}\n{result.stderr}"
+    output = next(work_dir.rglob("probe.txt"), None)
+    assert output is not None, f"Nextflow process produced no output:\n{result.stdout}\n{result.stderr}"
+    assert output.read_text() == "activated"
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
 def test_default_cpu_ceiling_fits_the_nextflow_runtime(tmp_path):
     """The local profile must inherit the actual JVM CPU count, including Docker quotas."""
     probe = tmp_path / "cpu-probe.config"

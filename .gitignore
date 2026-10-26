@@ -81,9 +81,6 @@ tmp/
 work/
 .nextflow_work/
 
-# Docker
-.dockerignore
-
 # Development
 .mypy_cache/
 .ruff_cache/

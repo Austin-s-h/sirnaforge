@@ -9,7 +9,7 @@ VERSION = $(shell uv run python -c "from sirnaforge import __version__; print(__
 # Digest of everything the image bakes in. VERSION cannot answer "is this image current?" -- it stays
 # 0.7.1 across every commit of an unreleased version, so a version-only check passes an image built
 # before the code it is meant to validate. Reads the working tree, not git, so uncommitted edits count.
-SRC_FINGERPRINT = $(shell find src pyproject.toml uv.lock docker/Dockerfile -type f \
+SRC_FINGERPRINT = $(shell find src pyproject.toml uv.lock README.md LICENSE docker .dockerignore -type f \
 	! -name '*.pyc' ! -path '*/__pycache__/*' -print0 2>/dev/null \
 	| sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -c1-16)
 NEXTFLOW_IMAGE ?= $(DOCKER_IMAGE):$(VERSION)

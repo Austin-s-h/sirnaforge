@@ -152,11 +152,18 @@ Dependency ownership requiring resolution before adoption:
   fix, the final full-host run passed 2,195 tests with 75 deselected. A fresh
   offline Nextflow 25.10.2 local-process smoke also passed from the Pixi test
   environment and wrote its expected output; `sirnaforge --help` passed from
-  the editable install. A Nextflow process explicitly pointed at the Pixi
-  prefix with `NXF_CONDA_CLI=micromamba` did not run: this host lacks the
-  `conda` activation command/shim Nextflow invokes. The production Docker image
-  supplies its Conda command path; this host experiment does not validate that
-  image integration or justify replacing the existing process provider.
+  the editable install. The Pixi test environment was then mounted read-only in
+  the project image and exercised as UID 12345: Python, the CLI, Nextflow 25.10.2,
+  and a Nextflow Conda process environment all ran successfully.
+  This exposed and fixed an existing production image defect: Nextflow expects
+  `conda info --json` to report `conda_prefix` and sources that prefix's
+  `bin/activate`, while micromamba reports a different JSON schema and the
+  image had no activation script. The image now provides a narrow compatibility
+  shim, activates through micromamba's shell hook, and points HOME and the
+  micromamba package cache at world-writable Nextflow cache storage for numeric
+  UIDs without passwd entries. The rebuilt image passed the focused Nextflow
+  activation test plus six other `requires_nextflow` container tests; a fresh
+  micromamba process environment also passed under UID 12345.
   Reproduce with `pixi run --manifest-path scripts/performance/pixi/pixi.toml
   --environment tests python -m pytest -m '(dev or ci or release) and not
   runs_in_container and not requires_network' -n 0`. Green GitHub CI and Docker
@@ -165,23 +172,25 @@ Dependency ownership requiring resolution before adoption:
 - Pixi managing the parent environment is separate from Nextflow creating
   process environments. Preserve the current micromamba process-environment
   mechanism until a supported replacement is demonstrated.
-- Docker is installed but the local Docker socket denies access. Actual
-  container/Nextflow execution, arbitrary-UID writable caches, provider/index
-  behavior, CI under Pixi, and other platform checks remain outstanding.
+- CI under the Pixi-managed environment, Pixi-backed alignment/index behavior,
+  other supported-platform checks, and comparable update, Docker build/image
+  size, and representative application/Nextflow startup measurements remain
+  outstanding.
 
 **Decision: defer Pixi adoption.** Keep uv/pip as the host Python owner and
 micromamba/Conda as the existing Nextflow process-environment provider. Do not
 replace either tool or the Docker setup with the prototype. Rollback is to
 remove the isolated `scripts/performance/pixi/` prototype and its lockfile; no
-production environment, cache, image, or user command needs migration because
-none was switched. Reconsider only after the full Pixi host suite passes,
-provider/index and arbitrary-UID cache behavior pass in a real container, and
-comparable repeated cold/update/startup measurements justify the added
-environment owner. Until then, retain this prototype as an isolated evaluation.
+production environment, cache, or user command needs migration because no
+Pixi-managed environment was adopted. The host suite, Nextflow provider,
+arbitrary-UID cache path, and Pixi environment in the current project image now
+pass on Linux x86_64. Reconsider adoption only after Pixi-specific CI and
+alignment/index behavior are covered and comparable repeated update, image-size,
+and application/Nextflow startup measurements justify the additional owner.
 
-#121 remains open until host tests, container/Nextflow and cache/provider checks,
-comparable benchmark repetitions, and a reviewed migration/rollback recommendation
-are complete.
+#121 remains open until Pixi-specific CI and alignment/index behavior, comparable
+update, image-size, and startup measurements, and the final migration/rollback
+recommendation are complete.
 
 Official references checked for this investigation:
 [Pixi manifest](https://pixi.prefix.dev/latest/reference/pixi_manifest/) and
