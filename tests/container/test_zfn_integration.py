@@ -27,6 +27,7 @@ from Bio.Seq import Seq
 # Primary on-target half-sites reported in PROGNOS Table 1
 CCR5_LEFT_HALF_SITE = "GTCATCCTCATC"
 CCR5_RIGHT_HALF_SITE = "AAACTGCAAAAG"
+CCR5_RIGHT_QUERY = "CTTTTGCAGTTT"
 
 # Known validated off-target genes (from S10 visible rows)
 CCR5_KNOWN_OFFTARGET_GENES = frozenset({"CCR5", "CSNK1G3", "TMOD1"})
@@ -310,8 +311,8 @@ def test_zfn_workflow_cli_smoke(tmp_path: Path) -> None:
 @pytest.mark.runs_in_container
 @pytest.mark.requires_nextflow
 def test_zfn_public_nextflow_route_matches_direct_search(tmp_path: Path) -> None:
-    """The opt-in public route executes in real Nextflow with the direct route's full contract."""
-    genome_fasta = _build_ccr5_synthetic_genome(tmp_path)
+    """The public Nextflow route matches direct search on the published CCR5 GRCh38 on-target."""
+    genome_fasta = Path(__file__).resolve().parents[1] / "unit" / "data" / "zfn" / "ccr5_grch38_on_target.fa"
     direct_dir = tmp_path / "zfn_direct"
     nextflow_dir = tmp_path / "zfn_nextflow"
     base_command = [
@@ -323,15 +324,15 @@ def test_zfn_public_nextflow_route_matches_direct_search(tmp_path: Path) -> None
         "--zfn-left-half-site",
         CCR5_LEFT_HALF_SITE,
         "--zfn-right-half-site",
-        CCR5_RIGHT_HALF_SITE,
+        CCR5_RIGHT_QUERY,
         "--zfn-search-space",
         str(genome_fasta),
         "--zfn-search-backend",
         "exhaustive_python",
         "--zfn-spacer-lengths",
-        "5,6",
+        "5",
         "--zfn-max-mismatches",
-        "4",
+        "0",
         "--zfn-algorithm",
         "homology",
     ]
@@ -369,6 +370,10 @@ def test_zfn_public_nextflow_route_matches_direct_search(tmp_path: Path) -> None
     with nextflow_csv.open(newline="", encoding="utf-8") as handle:
         nextflow_rows = list(csv.DictReader(handle))
     assert nextflow_rows == direct_rows
+    assert len(nextflow_rows) == 1
+    assert nextflow_rows[0]["sequence"] == "GTCATCCTCATCCTGATAAACTGCAAAAG"
+    assert (nextflow_rows[0]["start_1based"], nextflow_rows[0]["end_1based"]) == ("31", "59")
+    assert (nextflow_rows[0]["strand"], nextflow_rows[0]["orientation"]) == ("+", "L...R")
 
     direct_candidate = json.loads((direct_dir / "sirnaforge" / "candidate_summary.json").read_text())["candidates"][0]
     nextflow_candidate = json.loads((nextflow_dir / "sirnaforge" / "candidate_summary.json").read_text())["candidates"][

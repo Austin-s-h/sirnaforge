@@ -2,20 +2,22 @@
 
 > ## ⚠️ EXPERIMENTAL — the half-sites on this page are not what you pass to the CLI
 >
-> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects tracked in
+> The ZFN arm ships **experimental** in 0.6.0 with known defects tracked in
 > [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any
 > decision without independent validation.**
 >
-> This page defines the `(+)`/`(−)` half-site convention the fixtures use, and that convention does
-> not survive a round trip through `sirnaforge zfn`. With the default `require_opposite_strands=True`
-> the CLI expects the right half-site as the **reverse complement** of the published `(−)` text, so
-> the CCR5 pair as printed in the source tables matches **no site at all**, including its own
-> on-target locus:
+> This page preserves the PROGNOS visible rows and their hg19 coordinates. The published CCR5
+> on-target row is chr3:46,414,544 on hg19; do not use that coordinate as GRCh38. The exact target
+> sequence occurs at chr3:46,373,053–46,373,081 in the GRCh38 chr3 reference slice at
+> `tests/unit/data/zfn/ccr5_grch38_on_target.fa`. With the default
+> `require_opposite_strands=True`, the CLI right query is the **reverse complement** of the
+> publication's `(−)` text. The pair as printed in the source table therefore finds no inward-facing
+> site, while the model-oriented query finds the GRCh38 on-target:
 >
 > ```bash
 > # published text, as tabulated below -> 0 sites
 > sirnaforge zfn --zfn-left-half-site GTCATCCTCATC --zfn-right-half-site AAACTGCAAAAG ...
-> # what actually finds chr3:46414544 -> 1 site
+> # model-oriented query; GRCh38 chr3:46373053 -> 1 exact site
 > sirnaforge zfn --zfn-left-half-site GTCATCCTCATC --zfn-right-half-site CTTTTGCAGTTT ...
 > ```
 >
