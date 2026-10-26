@@ -125,8 +125,15 @@ Dependency ownership requiring resolution before adoption:
   Minimal probes across the Pixi Python 3.12 environment, the existing uv Python
   3.11.13 environment, and system Python 3.12.3 returned the thread result but
   then hung while `asyncio.run` shut down its executor. This points to a host
-  runtime shutdown issue, but does not prove Pixi host-suite compatibility; run
-  the full suite in a functioning runtime before adoption.
+  runtime shutdown issue. A focused pytest run of that test in the existing
+  Python 3.11.13 `.venv` also remained in the test body for more than 35 seconds;
+  faulthandler showed the event loop waiting in `select` while its executor
+  worker was idle on the work queue. A standalone invocation returned the
+  expected transcript bundle, then remained alive during `asyncio.run` shutdown.
+  This does not prove Pixi host-suite compatibility. The green Python 3.10/3.11/
+  3.12 CI runs and Docker suite validate their configured environments, not the
+  Pixi environment; run the full suite in a functioning Pixi runtime before
+  adoption.
 - Pixi managing the parent environment is separate from Nextflow creating
   process environments. Preserve the current micromamba process-environment
   mechanism until a supported replacement is demonstrated.
@@ -134,9 +141,19 @@ Dependency ownership requiring resolution before adoption:
   container/Nextflow execution, arbitrary-UID writable caches, provider/index
   behavior, CI under Pixi, and other platform checks remain outstanding.
 
-Do not adopt from these partial measurements. #121 remains open until host tests,
-container/Nextflow and cache/provider checks, comparable benchmark repetitions,
-and a reviewed migration/rollback recommendation are complete.
+**Decision: defer Pixi adoption.** Keep uv/pip as the host Python owner and
+micromamba/Conda as the existing Nextflow process-environment provider. Do not
+replace either tool or the Docker setup with the prototype. Rollback is to
+remove the isolated `scripts/performance/pixi/` prototype and its lockfile; no
+production environment, cache, image, or user command needs migration because
+none was switched. Reconsider only after the full Pixi host suite passes,
+provider/index and arbitrary-UID cache behavior pass in a real container, and
+comparable repeated cold/update/startup measurements justify the added
+environment owner. Until then, retain this prototype as an isolated evaluation.
+
+#121 remains open until host tests, container/Nextflow and cache/provider checks,
+comparable benchmark repetitions, and a reviewed migration/rollback recommendation
+are complete.
 
 Official references checked for this investigation:
 [Pixi manifest](https://pixi.prefix.dev/latest/reference/pixi_manifest/) and
