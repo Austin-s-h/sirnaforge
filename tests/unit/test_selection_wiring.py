@@ -208,6 +208,8 @@ def test_an_exploratory_shortfall_is_provisional_and_gets_its_own_export(tmp_pat
     assert any(entry.channel is ScreeningChannel.TRANSCRIPTOME for entry in requirements.channel_requirements)
 
     candidates = [_candidate(f"cand_{i}") for i in range(2)]
+    candidates[0].guide_sequence = f"{GUIDE[:-1]}A"
+    candidates[1].guide_sequence = f"{GUIDE[:-1]}C"
     for candidate in candidates:
         candidate.off_target_screened = False
 

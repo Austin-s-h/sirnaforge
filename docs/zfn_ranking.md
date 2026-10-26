@@ -2,7 +2,7 @@
 
 > **⚠️ EXPERIMENTAL.** The engineering defects tracked in
 > [#82](https://github.com/Austin-s-h/sirnaforge/issues/82) have been addressed, but the ZFN arm
-> still requires independent genomic and experimental validation. Current artifacts use
+> still requires independent validation in genomic and experimental settings. Current artifacts use
 > `worst_site_score` for the maximum concerning off-target score and `best_offtarget_score` for
 > the minimum. Historical v1 artifacts used the inverse convention and must be regenerated. See
 > [ZFN Module Guide](zfn_module.md).

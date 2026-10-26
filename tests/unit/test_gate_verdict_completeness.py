@@ -885,6 +885,8 @@ def test_exploratory_sorts_incomplete_evidence_below_complete(tmp_path: Path) ->
     )
     unknown_coverage = _candidate("high_score_unknown_coverage")
     known_coverage = _candidate("low_score_known_coverage")
+    unknown_coverage.guide_sequence = f"{GUIDE[:-1]}A"
+    known_coverage.guide_sequence = f"{GUIDE[:-1]}C"
 
     workflow._integrate_offtarget_results(
         [unknown_coverage, known_coverage], dict(NO_HITS), screened_species=["human"], mirna_screened=True
