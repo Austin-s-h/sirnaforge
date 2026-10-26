@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -109,10 +110,12 @@ def read_panel() -> list[dict[str, Any]]:
     return rows
 
 
-def local_sequence_sets() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+def local_sequence_sets() -> tuple[dict[str, set[str]], dict[str, set[str]], list[Path]]:
     """Collect local 19-nt core and exact 21-nt sequence identities for overlap audit."""
     cores: dict[str, set[str]] = defaultdict(set)
     full: dict[str, set[str]] = defaultdict(set)
+    source_files = source_extract_files()
+    input_files = [*source_files, OLIGOGYM, NATIVE_OBSERVATIONS]
 
     def add(source: str, sequence: str) -> None:
         value = canonical(sequence)
@@ -124,8 +127,9 @@ def local_sequence_sets() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
             exact = value[:21]
             full[source].update((exact, exact.translate(_RC)[::-1]))
 
-    for path in sorted(SOURCES.glob("*.jsonl")):
+    for path in source_files:
         source = path.stem
+        source_core_count = len(cores[source])
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
@@ -133,6 +137,8 @@ def local_sequence_sets() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
             for key in ("guide_sequence", "sequence", "paired_guide_sequence", "full_guide_sequence"):
                 if row.get(key):
                     add(source, str(row[key]))
+        if len(cores[source]) == source_core_count:
+            raise ValueError(f"No usable guide sequences found in overlap-audit input: {path}")
 
     for source, path in (("oligogym", OLIGOGYM), ("oligogym_native", NATIVE_OBSERVATIONS)):
         if not path.exists():
@@ -144,7 +150,15 @@ def local_sequence_sets() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
                         add(source, row[key])
         if not cores[source]:
             raise ValueError(f"No usable guide sequences found in overlap-audit input: {path}")
-    return cores, full
+    return cores, full, input_files
+
+
+def source_extract_files() -> list[Path]:
+    """Return the tracked source extracts, rejecting a missing audit corpus."""
+    files = sorted(SOURCES.glob("*.jsonl"))
+    if not files:
+        raise ValueError(f"No source-extract JSONL files found in overlap-audit input directory: {SOURCES}")
+    return files
 
 
 def target_cluster_interval(values: np.ndarray) -> tuple[float, float, float]:
@@ -200,7 +214,7 @@ def analyze() -> dict[str, Any]:
         per_target["asymmetry_19nt_core_proxy"][target] = spearman(values[:, 0], values[:, 2])
         per_target["gc_content_full_guide"][target] = spearman(values[:, 1], values[:, 2])
 
-    cores, exact = local_sequence_sets()
+    cores, exact, overlap_input_files = local_sequence_sets()
     overlap_rows: dict[str, list[str]] = {"core_19": [], "exact_21": []}
     core_union = set().union(*cores.values()) if cores else set()
     exact_union = set().union(*exact.values()) if exact else set()
@@ -227,6 +241,14 @@ def analyze() -> dict[str, Any]:
 
     weights = ScoringWeights()
     design_weights = weights.design.as_mapping()
+    profile_payload = {
+        "profile": SHIPPED_PROFILE.model_dump(mode="json"),
+        "term_records": [term.model_dump(mode="json") for term in SHIPPED_PROFILE.term_records()],
+    }
+    profile_json = json.dumps(profile_payload, sort_keys=True, separators=(",", ":"))
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
+    ).stdout.strip()
     return {
         "analysis_id": "dsir-2012-target-stratified-feature-check-v2",
         "purpose": "exploratory efficacy-term check; no fitting, full-profile claim, or default promotion",
@@ -240,13 +262,18 @@ def analyze() -> dict[str, Any]:
         "inputs": {
             "panel_jsonl_sha256": sha256(PANEL),
             "feature_code_sha256": {str(path.relative_to(ROOT)): sha256(path) for path in FEATURE_FILES},
+            "git_revision": revision,
             "profile_id": SHIPPED_PROFILE.profile_id,
+            "canonical_profile_terms_sha256": hashlib.sha256(profile_json.encode()).hexdigest(),
             "weight_set_version": SCORING_WEIGHT_SET_VERSION,
             "design_vector_weights": {
                 "asymmetry": float(design_weights["asymmetry"]),
                 "gc_content": float(design_weights["gc_content"]),
             },
             "viennarna_version": getattr(RNA, "__version__", "unknown"),
+            "sequence_overlap_audit_input_sha256": {
+                str(path.relative_to(ROOT)): sha256(path) for path in overlap_input_files
+            },
         },
         "counts": {
             "measured_table_rows": len(rows),

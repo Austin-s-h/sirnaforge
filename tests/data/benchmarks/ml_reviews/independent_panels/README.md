@@ -60,5 +60,7 @@ equal-target means and a target-cluster bootstrap interval. The DSIR duplexes
 have two-base 3' overhangs, unlike the shipped fully complementary 21-nt duplex
 geometry, so the asymmetry result is not direct validation of that geometry.
 The analysis is fixed and does not fit weights. It records
-panel and code hashes, the current profile identity, the exact sequence-overlap
-scope, and the limits above.
+panel and code hashes, the Git revision, the canonical profile-and-term hash,
+checksums for every sequence-overlap audit input, the exact sequence-overlap
+scope, and the limits above. The script rejects an empty source-extract corpus
+or an individual extract with no usable guide sequences.
