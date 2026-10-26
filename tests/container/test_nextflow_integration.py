@@ -388,9 +388,11 @@ def test_bwa_mem3_plain_mode_runs_through_nextflow(tmp_path: Path) -> None:
     assert evidence["entry"]["status"] == "complete"
     assert evidence["entry"]["processed_guides"] == 1
 
-    mem3_versions = [path.read_text() for path in work_dir.rglob("versions.yml") if "bwa-mem3" in path.read_text()]
-    assert mem3_versions, "no Nextflow task recorded the selected MEM3 backend/version"
-    assert any("0.15.0" in versions for versions in mem3_versions)
+    versions_file = outdir / "transcriptome" / "versions.yml"
+    assert versions_file.is_file(), "Nextflow did not publish the alignment task's tool versions"
+    versions = versions_file.read_text(encoding="utf-8")
+    assert "bwa-mem3" in versions
+    assert "0.15.0" in versions
 
 
 @pytest.mark.integration
