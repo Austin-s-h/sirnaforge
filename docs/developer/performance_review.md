@@ -459,6 +459,36 @@ temporary full-reference FASTAs, indices, SAM files, reports, and raw result
 JSON were kept outside the repository and removed after this summary was
 recorded.
 
+### Release-116 downstream gate comparison
+
+Both backends were also run through the actual predesigned-guide screening and
+Nextflow off-target workflow using the same 3,395 human-derived OligoGym guide
+queries, the checksum-verified rat and macaque release-116 references, and
+previously built backend-specific indices. This exercises downstream parsing,
+evidence reconciliation, and configured gate evaluation; the run excludes
+index-build time. End-to-end post-index wall time, including workflow launch,
+was 28.21 s for MEM2 and 24.12 s for MEM3 on this single local WSL2 host; this
+small cached run is startup-bound and is not a general speed comparison. The
+retained compact record is
+[`bwa-mem3-v0.15.0-release116-downstream-gates.json`](../../scripts/performance/measurements/bwa-mem3-v0.15.0-release116-downstream-gates.json).
+
+The parsed rat and macaque tables were byte-identical across backends (16,323
+and 16,573 sites, respectively). All 3,395 candidate rows also matched across
+all fields. Both workflows reported complete rat/macaque transcriptome and
+miRNA channels, processed every guide, and had no unplanned evidence. The
+miRNA input was a pinned synthetic fixture used only to exercise software
+routing and reconciliation; it is not biological evidence.
+
+The query species was human, but the tested transcriptome references were rat
+and macaque. The human transcriptome channel was therefore absent, and all
+3,395 candidates correctly remained `provisional_incomplete_evidence`; the
+transcriptome and miRNA gate verdicts listed in the JSON record were `unknown`
+for every candidate under both backends. This is evidence that both backends
+preserve conservative incomplete-evidence behavior and produce matching
+downstream outputs. It does not establish biological eligibility, qualified
+output equivalence, or MEM3 suitability for full human cDNA. The earlier full
+human cDNA index limitation remains.
+
 The pinned Docker package now also passes a real Nextflow MEM3 smoke on a small
 synthetic transcriptome: it builds a MEM3-specific index, emits and parses the
 exact guide alignment, publishes complete one-guide evidence, and records the
@@ -471,18 +501,16 @@ caps the two synthetic-reference tasks at 2 GB for GitHub's 8 GB container;
 production resource defaults are unchanged. This does not replace the larger
 rat/macaque panel evidence above or establish full human cDNA feasibility.
 
-Remaining before #122 can close:
-
-1. Exercise representative panels through downstream hit classes and gate
-   verdicts. Current evidence covers parsed hits and complete evidence
-   reconciliation, not biological eligibility or gate equivalence. Exact SAM
-   parity is waived by the user.
-2. Extend package/cache validation to any supported platforms beyond the
-   passing Linux x86_64 host and Docker/Nextflow checks. Bioconda metadata for
-   other architectures is not a successful integration test.
-3. Assess end-to-end workflow cost on representative workloads. The retained
-   repeated measurements cover index construction and alignment, while the
-   prior Nextflow panel smoke records completion and evidence reconciliation.
+Outstanding for #122 are independent, feasible human-scale transcriptome
+coverage for this human-derived query set and benchmarking against any
+additional platforms the project elects to support. The downstream gate run
+above completes the software-route comparison, while its biological gate
+verdicts remain unknown because human reference evidence was unavailable. The
+application workflows and Pixi environment currently declare and validate
+Linux x86_64; Bioconda metadata for other architectures is not a successful
+integration test. The repeated release-116 benchmark records index-build,
+alignment, and resource measurements; downstream workflow execution was also
+completed with cached indices, as documented above.
 
 **Decision so far: defer adoption.** BWA-MEM2 remains the default. The pinned
 Docker/Nextflow package smoke, backend-specific index, plain SAM parser, and
