@@ -46,17 +46,25 @@ counts, and checksums are in
 reran each manager's install/sync command against its already-created
 environment; they measure a no-op check, not a warm environment creation.
 
-The startup observations are in
-`scripts/performance/measurements/pixi-runtime-startup.json`. The installed
-Pixi environment from the original startup trial occupied 1.4 GiB by `du`
-(2,107,751,371 apparent bytes) and used a separate 312 MiB cache; these do not
-represent a Pixi Docker image. That trial used the earlier mixed-owner manifest.
-The revised single-owner manifest was installed separately and its commands and
-imports passed, but startup measurements have not been repeated with it. Startup
-trial ranges have no OS cache eviction.
+The historical Pixi host-startup observations are in
+`scripts/performance/measurements/pixi-runtime-startup.json`. The installed Pixi
+environment from that trial occupied 1.4 GiB by `du` (2,107,751,371 apparent
+bytes) and used a separate 312 MiB cache; these do not represent an image. That
+trial used the earlier mixed-owner manifest, and its host `pixi run` startup
+measurements were not repeated. The current Docker startup comparison is recorded
+below. Trial ranges have no OS cache eviction.
 
-Representative commands (use fresh roots/prefixes for cold trials and the same
-roots for warm no-op trials):
+The following commands are historical. The Pixi manifest/lock are from the
+measured revision `f4626b7`; the current manifest has different direct versions
+and must not be substituted when reproducing these old trials.
+
+```bash
+mkdir -p /tmp/pixi-historical
+git show f4626b7:scripts/performance/pixi/pixi.toml > /tmp/pixi-historical/pixi.toml
+git show f4626b7:scripts/performance/pixi/pixi.lock > /tmp/pixi-historical/pixi.lock
+```
+
+Use fresh roots/prefixes for cold trials and the same roots for warm no-op trials:
 
 ```bash
 PIXI_CACHE_DIR=/tmp/pixi-cold pixi install --locked \

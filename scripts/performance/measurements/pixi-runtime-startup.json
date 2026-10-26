@@ -142,59 +142,46 @@
     "date": "2026-10-26",
     "manifest": "scripts/performance/pixi/pixi.toml",
     "pixi_version": "0.76.1",
-    "environment": "application",
+    "environment": "tests",
     "resolution": {
       "conda": {
-        "python": "3.12.15",
-        "nextflow": "26.10.3",
-        "openjdk": "24.0.2",
-        "awscli": "2.38.1",
-        "bwa-mem2": "2.2.1",
-        "bwa-mem3": "0.15.0",
-        "samtools": "1.24",
-        "viennarna": "2.7.2",
-        "pysam": "0.24.1"
+        "nextflow": "25.10.2",
+        "pysam": "0.24.1",
+        "viennarna": "2.7.0"
       },
       "pypi": {
-        "fm-index": "4.0.0",
-        "pyarrow": "26.0.0"
+        "fm-index": "4.0.0"
       },
-      "pypi_only_reason": "fm-index has no candidate on the declared Conda channels; PyArrow follows production PyPI/uv ownership and avoids the AWS CLI Conda solver conflict."
+      "pypi_only_reason": "No fm-index candidate exists on the declared conda-forge/bioconda channels."
     },
-    "editable_install": "pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment application install-app",
+    "editable_install": "pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests install-app",
     "editable_install_behavior": "pip --no-deps --no-build-isolation; runtime dependencies are managed by the locked environment.",
     "smokes": {
       "sirnaforge_help": {
         "status": "ok",
-        "returncode": 0,
-        "uid": "12345:12345"
+        "returncode": 0
       },
       "native_imports": {
         "status": "ok",
-        "pyarrow": "26.0.0",
         "pysam": "0.24.1",
-        "ViennaRNA": "2.7.2",
-        "fm_index": "import-ok"
+        "ViennaRNA": "2.7.0",
+        "fm_index": "4.0.0"
       },
-      "tools": {
+      "nextflow_version": {
         "status": "ok",
-        "java": "24.0.2",
-        "awscli": "2.38.1",
-        "nextflow": "26.10.3",
-        "bwa-mem2": "2.2.1",
-        "bwa-mem3": "0.15.0",
-        "samtools": "1.24",
-        "RNAfold": "2.7.2",
-        "procps": "4.0.2"
-      },
-      "nextflow_conda_provider": {
-        "status": "ok",
-        "uid": "12345:12345",
-        "process": "local",
-        "conda_spec": "conda-forge::python=3.12",
-        "result": "Python 3.12.15"
+        "version": "25.10.2"
       }
-    }
+    },
+    "installed_test_environment": {
+      "apparent_bytes": 1482639404,
+      "du": "1.5G",
+      "cache": "fresh PIXI_CACHE_DIR under /tmp"
+    },
+    "limits": [
+      "Linux x86_64 only; no other declared platform was validated.",
+      "Startup timings were not repeated against this revised dependency ownership.",
+      "No Pixi-managed Docker image, image-size, or paired clean/cached build timing has been measured."
+    ]
   },
   "pixi_container_comparison": {
     "date": "2026-10-26",
@@ -268,6 +255,76 @@
       "Startup includes fresh Docker-container launch overhead.",
       "No cross-platform or package-update behavior is established."
     ],
-    "clean_build_image_id": "sha256:800099ae23a96626788df896f2e7fab23c916c6d5d21aff89b1752452242ec96"
+    "clean_build_image_id": "sha256:800099ae23a96626788df896f2e7fab23c916c6d5d21aff89b1752452242ec96",
+    "input_sha256": {
+      "manifest": "a2391b24432f0d12b1a9b3fce937ab3a861d88973d75c7d1cf970be7a8661f46",
+      "lock": "3ace86c419e3ae3c010ee1af1c4f69ce208c3b54cf5b949e6ce9219ff3454e08"
+    }
+  },
+  "current_application_validation": {
+    "date": "2026-10-26",
+    "manifest": "scripts/performance/pixi/pixi.toml",
+    "environment": "application",
+    "pixi_version": "0.76.1",
+    "input_sha256": {
+      "manifest": "a2391b24432f0d12b1a9b3fce937ab3a861d88973d75c7d1cf970be7a8661f46",
+      "lock": "3ace86c419e3ae3c010ee1af1c4f69ce208c3b54cf5b949e6ce9219ff3454e08"
+    },
+    "resolution": {
+      "conda": {
+        "python": "3.12.15",
+        "nextflow": "26.10.3",
+        "openjdk": "24.0.2",
+        "awscli": "2.38.1",
+        "bwa-mem2": "2.2.1",
+        "bwa-mem3": "0.15.0",
+        "samtools": "1.24",
+        "viennarna": "2.7.2",
+        "pysam": "0.24.1"
+      },
+      "pypi": {
+        "fm-index": "4.0.0",
+        "pyarrow": "26.0.0"
+      },
+      "ownership_note": "fm-index has no declared Conda candidate; PyArrow stays with the production PyPI/uv owner and avoids a Conda solver conflict with AWS CLI."
+    },
+    "editable_install": "pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment application install-app",
+    "editable_install_behavior": "pip --no-deps --no-build-isolation",
+    "smokes": {
+      "sirnaforge_help": {
+        "status": "ok",
+        "uid": "12345:12345"
+      },
+      "native_imports": {
+        "status": "ok",
+        "pyarrow": "26.0.0",
+        "pysam": "0.24.1",
+        "ViennaRNA": "2.7.2",
+        "fm_index": "import-ok"
+      },
+      "tools": {
+        "status": "ok",
+        "java": "24.0.2",
+        "awscli": "2.38.1",
+        "nextflow": "26.10.3",
+        "bwa-mem2": "2.2.1",
+        "bwa-mem3": "0.15.0",
+        "samtools": "1.24",
+        "RNAfold": "2.7.2",
+        "procps": "4.0.2"
+      },
+      "nextflow_conda_provider": {
+        "status": "ok",
+        "uid": "12345:12345",
+        "process": "local",
+        "conda_spec": "conda-forge::python=3.12",
+        "result": "Python 3.12.15"
+      }
+    },
+    "limits": [
+      "Linux x86_64 only.",
+      "Host test-suite CI for this revised lock remains pending at recording time.",
+      "No supported-platform or package-update behavior is established."
+    ]
   }
 }
