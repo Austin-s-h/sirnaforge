@@ -99,6 +99,39 @@ combined-minus-A/U intervals were [−0.075, 0.075] and [−0.070, 0.058]. The
 combined model did not show a held-out gain over either individual feature in
 this panel. This does not determine a universal replacement or validate weights.
 
+## Additional archival efficacy source: DSIR 2012
+
+The separately tracked `independent_panels/dsir_2012.jsonl` recovers guide/passenger
+sequences and measured residual target-mRNA expression from the primary paper's
+Supplementary Tables S1 and S3. The S1/S3 join contains 129 unique 21-nt guide
+records across 10 genes; the article prose describes 128 sequences, so the
+one-record discrepancy is retained and documented in the panel manifest. The
+assays used 20 nM siRNA in HeLa cells, with a 72-hour endpoint except BCL2L1
+at 24 hours. The paper used two design rounds, with the second informed by
+first-round findings. DSIR-designed, high-score-selected guides introduce
+selection and range restriction. Its sequences have no 19-nt core or full
+21-nt guide match in the tracked source extracts or OligoGym files audited by
+the script; this does not prove separation from every external training corpus.
+
+Run `uv run python scripts/validate_dsir2012_independent.py` for the fixed
+within-target rank check. Across ten target groups, mean per-target Spearman ρ
+against residual expression was −0.022 for asymmetry calculated on the verified
+19-nt paired core (95% target-cluster bootstrap interval [−0.177, 0.145]) and
++0.066 for the shipped GC feature calculated on the full guide
+([−0.114, 0.237]); lower residual expression means stronger knockdown, so a
+negative association is the expected direction. The asymmetry result is an
+applicability-limited proxy because these source duplexes have two-base 3′
+overhangs, unlike the shipped fully complementary 21-nt duplex geometry. Both
+intervals include zero, and the GC point estimate is in the opposite direction.
+These are exploratory point estimates for individual sequence terms, not
+held-out profile validation.
+The paper analyzed multiple same-panel features, which adds source reuse limits.
+It includes no broad measured unintended-repression endpoint; three guides were
+checked only for cross-repression of CSNK2A2. This source does not satisfy the
+liability or full-profile promotion requirements in #98/#102. Extraction and
+source-file checksums, row counts, license, and these limits are recorded in
+[`independent_panels/README.md`](independent_panels/README.md).
+
 ## Interpretation boundaries
 
 - `compatible_core_only` means a reported 19–23 nt core can be represented for

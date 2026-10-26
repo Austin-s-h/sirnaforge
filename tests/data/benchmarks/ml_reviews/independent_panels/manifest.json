@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0.0",
+  "panels": [
+    {
+      "id": "dsir_2012",
+      "extract": "dsir_2012.jsonl",
+      "sha256": "9ba410513ed88765ca97b39f0199ec6f2818b0a67712b37daaaba43bbd8b1d68",
+      "rows": 129,
+      "unique_guides": 129,
+      "target_groups": 10,
+      "source": {
+        "title": "DSIR: assessing the design of highly potent siRNA by testing a set of cancer-relevant target genes",
+        "citation": "PLOS ONE. 2012;7(10):e48057",
+        "doi": "10.1371/journal.pone.0048057",
+        "license": "CC BY; version not specified in the source article",
+        "supplementary_files": [
+          {
+            "table": "S1",
+            "file_id": "journal.pone.0048057.s003",
+            "url": "https://journals.plos.org/plosone/article/file?id=10.1371%2Fjournal.pone.0048057.s003&type=supplementary",
+            "sha256": "4e44096679123c5e5355fcbb4e80cb508d52a7ba3fe72ac7579d7aa55d9703be"
+          },
+          {
+            "table": "S3",
+            "file_id": "journal.pone.0048057.s005",
+            "url": "https://journals.plos.org/plosone/article/file?id=10.1371%2Fjournal.pone.0048057.s005&type=supplementary",
+            "sha256": "6602f45d52a7f70f3dfd0a5dea7b2988ec058090fea63de0507871205ea0873b"
+          }
+        ]
+      },
+      "endpoint": {
+        "name": "residual_expression",
+        "measurement": "percent residual non-cleaved target mRNA relative to control",
+        "units": "percent_of_control",
+        "direction": "lower_is_better"
+      },
+      "assay_conditions": {
+        "cell_line": "HeLa",
+        "siRNA_concentration_nM": 20,
+        "measurement_time_hours": "72 except BCL2L1 at 24",
+        "selection_design": "two rounds; second-round candidates were selected using first-round findings"
+      },
+      "selection_and_limits": [
+        "The source describes DSIR-designed, high-score-selected guides; score range and design selection limit generalization.",
+        "The article prose says 128 sequences; the matched S1/S3 tables contain 129 unique guide rows.",
+        "The article analyzes features on this same panel; subsequent siRNAforge feature associations are exploratory.",
+        "No broad measured unintended-repression endpoint is included.",
+        "Zero sequence overlap with tracked source extracts and OligoGym files does not establish non-overlap with every external training corpus.",
+        "Asymmetry is evaluated on the validated 19-nt paired core as an applicability-limited proxy; the source duplex has two-base 3-prime overhangs unlike the shipped fully complementary 21-nt geometry."
+      ],
+      "analysis_script": "scripts/validate_dsir2012_independent.py"
+    }
+  ]
+}
