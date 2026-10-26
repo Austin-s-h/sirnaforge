@@ -205,15 +205,16 @@ micromamba/Conda as the existing Nextflow process-environment provider. Do not
 replace either tool or the Docker setup with the prototype. Rollback is to
 remove the isolated `scripts/performance/pixi/` prototype and its lockfile; no
 production environment, cache, or user command needs migration because no
-Pixi-managed environment was adopted. The host suite, Nextflow provider,
-arbitrary-UID cache path, and Pixi environment in the current project image now
-pass on Linux x86_64. Reconsider adoption only after Pixi-specific CI and
-alignment/index behavior are covered and comparable repeated update, image-size,
-and application/Nextflow startup measurements justify the additional owner.
+Pixi-managed environment was adopted. The host suite, Pixi locked CI lane, real
+alignment/index smoke, Nextflow provider, arbitrary-UID cache path, and Pixi
+environment mounted into the current project image now pass on Linux x86_64.
+Reconsider adoption only after dependency ownership is resolved and comparable
+repeated update, Pixi image-size, and application/Nextflow startup measurements
+justify the additional owner.
 
-#121 remains open until Pixi-specific CI and alignment/index behavior, comparable
-update, image-size, and startup measurements, and the final migration/rollback
-recommendation are complete.
+#121 remains open until dependency ownership, comparable update, Pixi
+image-size/build, and startup measurements are complete and the final
+migration/rollback recommendation is recorded.
 
 Official references checked for this investigation:
 [Pixi manifest](https://pixi.prefix.dev/latest/reference/pixi_manifest/) and

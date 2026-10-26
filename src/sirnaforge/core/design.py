@@ -174,7 +174,7 @@ class SiRNADesigner:
         # Sort by design_score (descending); composite_score does not exist until screening.
         all_candidates.sort(key=ranking_order_key)
 
-        # Get top candidates only from those passing filters; fallback to all if none pass
+        # Failed candidates remain available in the full result but never enter the shortlist.
         passing = [
             c
             for c in all_candidates
@@ -235,7 +235,7 @@ class SiRNADesigner:
         # Sort by design_score (descending); composite_score does not exist until screening.
         scored_candidates.sort(key=ranking_order_key)
 
-        # Get top candidates only from those passing filters; fallback to all if none pass
+        # Failed candidates remain available in the full result but never enter the shortlist.
         passing = [
             c
             for c in scored_candidates
