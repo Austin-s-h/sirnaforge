@@ -1,5 +1,5 @@
 {
-  "kind": "pixi_vs_micromamba_cold_locked_runtime_installs",
+  "kind": "pixi_locked_install_vs_micromamba_solve_and_install",
   "machine": {
     "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
     "architecture": "x86_64",

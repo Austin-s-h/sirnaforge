@@ -7,16 +7,17 @@ Existing package, execution, index and reporting defaults are unchanged.
 ## Recorded local evidence
 
 Machine-readable BWA observations are in `scripts/performance/measurements/`.
-Pixi trial results are summarized here rather than checked in as raw,
-machine-specific command logs. Measurements refer to this agent's environment,
-which differs from the user's comprehensive local test environment.
+Pixi trial results are summarized here, with compact raw measurements in
+`scripts/performance/measurements/pixi-env-install-cold.json`. Measurements
+refer to this agent's environment, which differs from the user's comprehensive
+local test environment.
 
 | Observation | Result | What it establishes |
 | --- | --- | --- |
 | Installed tools | Pixi 0.76.1, uv 0.12.2, micromamba 2.3.2, Nextflow 26.04.2, OpenJDK 21.0.12.1 | PATH inventory, not environment parity |
 | `pixi info` on isolated prototype | Three successful runs; median approximately 0.041 s | Manifest parses; this is metadata/startup timing only |
-| Pixi locked runtime install | Three fresh-cache Linux x86_64 trials: median 9.65 s (8.76–10.47), median 249 MiB peak RSS (247–249), 1.29 GiB combined cache/prefix disk use | Repeated on one machine; network enabled and OS cache not evicted |
-| Micromamba runtime install | Three fresh-root Linux x86_64 trials with matching direct versions: median 35.18 s (31.56–42.47), median 1,413 MiB peak RSS (1,412–1,417), 2.66 GiB combined root disk use | Direct versions match; resolved closures are 94 Pixi packages vs 98 micromamba packages |
+| Pixi locked runtime install | Three fresh-cache Linux x86_64 trials: median 9.65 s (8.76–10.47), median 249 MiB peak RSS (247–249), 1.29 GiB combined cache/prefix disk use | Locked install from an existing Pixi lock; one machine, network enabled, OS cache not evicted |
+| Micromamba runtime create | Three fresh-root Linux x86_64 trials with matching direct versions: median 35.18 s (31.56–42.47), median 1,413 MiB peak RSS (1,412–1,417), 2.66 GiB combined root disk use | Includes dependency solving and installation; 94 Pixi vs 98 micromamba packages |
 | Warm environment install | Three idempotent trials each; Pixi median 0.060 s, micromamba median 5.862 s | Cached no-op install comparison only; not environment creation or update performance |
 | Pixi application and offline Nextflow | Editable application install succeeded after pinning the PyPI launcher to 25.10.2 and pointing `NXF_DIST` at the Conda framework JAR; `sirnaforge --help` and three offline Nextflow launches succeeded | Resolves the observed launcher/framework mismatch for this locked Linux prototype |
 | BWA comparison | Official MEM2 2.2.1 and source-built MEM3 0.15.0 passed controlled synthetic and 320-guide chr21 SAM parity and independent exact-match checks | Limited compatibility evidence, with compiler caveat below |
@@ -28,11 +29,15 @@ use the existing `.venv` Python directly; no global tools were installed.
 The cold install comparison used Pixi 0.76.1 against micromamba 2.3.2 on Linux
 x86_64/WSL. Both runtime environments pinned Python 3.12.15, Nextflow 25.10.2,
 OpenJDK 17.0.18, BWA-MEM2 2.2.1, samtools 1.24, pysam 0.24.1, and ViennaRNA
-2.7.0. The Pixi lock resolved 94 packages; the micromamba baseline resolved 98,
-including four additional Python packaging tools, so only the requested direct
-versions match. Each of three trials used a fresh manager cache/root and
-environment prefix. Network downloads were enabled and the OS file cache was
-not evicted; results include network and shared-host effects. Disk use is the
+2.7.0. The Pixi trials used `pixi install --locked` against a pre-existing
+lock. The micromamba trials used `micromamba create` from direct version
+constraints, so those timings include dependency solving as well as
+installation. This asymmetric lifecycle comparison does not isolate installer
+performance. The Pixi lock resolved 94 packages; the micromamba baseline
+resolved 98, including four additional Python packaging tools, so only the
+requested direct versions match. Each of three trials used a fresh manager
+cache/root and environment prefix. Network downloads were enabled and the OS
+file cache was not evicted; results include network and shared-host effects. Disk use is the
 allocated size of the manager cache/root plus environment prefix, with hardlinks
 deduplicated inside each measurement. Raw commands, trial metrics, closure
 counts, and checksums are in
@@ -61,7 +66,8 @@ MAMBA_ROOT_PREFIX=/tmp/mamba-cold micromamba install -y -n runtime \
 Record timing with `scripts/performance/review.py measure` as described below;
 for cold installation, set the manager-specific roots to new paths for every
 repetition. The install commands above document direct requirements, not an
-identical transitive closure.
+identical transitive closure or a matched solve/install lifecycle. A fair
+locked micromamba comparison would require an explicit exported lock/spec.
 
 ## Reproduce inventory and bounded command measurements
 
