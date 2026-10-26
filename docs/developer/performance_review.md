@@ -1,7 +1,7 @@
 # Performance investigations: Pixi and BWA-MEM3
 
-Status on 2026-10-26: **Pixi evaluation remains open; BWA-MEM3 plain mode accepted by the user for integration.**
-This implements the bounded F1/F2 investigation tooling from #124 for #121/#122.
+Status on 2026-10-26: **#121 is closed with Pixi adoption deferred; #122 remains open. BWA-MEM3 plain mode is accepted for optional integration, with BWA-MEM2 still the default.**
+This records the F1/F2 investigation work from #124 for #121/#122.
 Existing package, execution, index and reporting defaults are unchanged.
 
 ## Recorded local evidence
@@ -416,24 +416,29 @@ caps the two synthetic-reference tasks at 2 GB for GitHub's 8 GB container;
 production resource defaults are unchanged. This does not replace the larger
 rat/macaque panel evidence above or establish full human cDNA feasibility.
 
-Outstanding before #122 can close:
+Remaining before #122 can close:
 
-1. Run both profiles against pinned binaries, synthetic truth and representative
-   cDNA panels, including large/high-hit and multispecies workloads. Hash inputs.
-2. Exercise representative cDNA panels through the downstream parser and
-   evidence reconciliation, including hit classes/counts, seed/mismatch
-   coordinates, completion/censoring, and gate verdicts. Exact MEM2 parity is
-   waived by the user.
-3. Benchmark cold/warm indexing and alignment, small/large query batches, CPU/RSS,
-   index size and end-to-end time. Fresh index construction does not make OS
-   page caches cold. Never interpret fewer retained hits as a speedup.
-4. The selected MEM3 executable, backend-specific index, plain SAM parser, and
-   version output now pass the pinned Docker/Nextflow smoke above. Host
-   packaging/distribution, index cache/rebuild behavior with the packaged
-   binary, and other supported platforms remain outstanding before any default
-   change.
-5. Complete the remaining host checks, distribution support, fallback and
-   rollback review, then record adopt/defer with measured gains.
+1. Make the large rat/macaque panel runs reproducible from retained inputs or a
+   documented retrieval/preparation command, and retain compact raw results.
+   The current record has input checksums and summarized outputs, but the panel
+   FASTAs and raw result files were removed after measurement.
+2. Repeat representative high-hit panel measurements and record repetitions,
+   CPU time, throughput, index size, and end-to-end workflow cost. The current
+   panel evidence is one measurement per backend; human cDNA MEM3 indexing
+   exceeded the tested host's available memory.
+3. Exercise representative panels through downstream hit classes and gate
+   verdicts. Current evidence covers parsed hits and complete evidence
+   reconciliation, not biological eligibility or gate equivalence. Exact SAM
+   parity is waived by the user.
+4. Extend package/cache validation to any supported platforms beyond the
+   passing Linux x86_64 host and Docker/Nextflow checks. Bioconda metadata for
+   other architectures is not a successful integration test.
+
+**Decision so far: defer adoption.** BWA-MEM2 remains the default. The pinned
+Docker/Nextflow package smoke, backend-specific index, plain SAM parser, and
+version output are verified; the host package CI lane also exercises a real
+repeated-hit MEM3 index/alignment. The deferred evidence above is required
+before reconsidering a default change.
 
 ## Coordination with report performance (#111)
 
