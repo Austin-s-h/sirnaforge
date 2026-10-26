@@ -1,6 +1,6 @@
 # Performance investigations: Pixi and BWA-MEM3
 
-Status on 2026-10-26: **#121 is closed with Pixi adoption deferred; #122 remains open. BWA-MEM3 plain mode is accepted for optional integration, with BWA-MEM2 still the default.**
+Status on 2026-10-26: **#121 is closed with Pixi adoption deferred; the #122 evaluation recommends deferring broader adoption. BWA-MEM3 plain mode is available as an optional integration, with BWA-MEM2 still the default.**
 This records the F1/F2 investigation work from #124 for #121/#122.
 Existing package, execution, index and reporting defaults are unchanged.
 
@@ -489,6 +489,32 @@ downstream outputs. It does not establish biological eligibility, qualified
 output equivalence, or MEM3 suitability for full human cDNA. The earlier full
 human cDNA index limitation remains.
 
+To exercise non-unknown query-species gates, a separate software-only run used
+the same 3,395 human-derived guides with `--query-species rat` and the complete,
+checksum-verified rat reference. This deliberately artificial query metadata
+lets the pipeline calculate real observed rat hit counts; it does not make the
+human-derived guides biologically appropriate for rat. A 22-nt synthetic
+miRNA FASTA (`rno-software-only-seed-fixture`) was pinned locally to exercise
+the second evidence channel. Its contents and checksum, the exact CLI and
+Nextflow options, index commands, tool versions, and result hashes are retained
+in the compact JSON record above.
+
+Both backends completed the rat transcriptome and synthetic miRNA channels for
+all 3,395 guides, with 16,323 transcriptome sites and 505 raw miRNA seed sites.
+The parsed transcriptome and miRNA tables were byte-identical. Every candidate
+row also matched across all fields: each backend reported 2,733 passes and 662
+fails for the zero-mismatch transcriptome gate; 3,381 passes and 14 fails for
+the one-mismatch gate; all 3,395 passed the two-mismatch gate and both
+configured miRNA gates. Each backend produced 2,719 `eligible` and 676
+`not_eligible` software states. The thresholds came from the experimental,
+uncalibrated 0.7.1 policy. These are workflow outputs under deliberately
+artificial query-species metadata; neither the state label nor the default
+threshold outcomes establish biological suitability or validate the cutoffs.
+With cached indices, the application reported 22.64 s for MEM2 and 19.06 s for
+MEM3 on this one host. The fresh index builds took 53.99 s / 30.70 s and used
+927,482,762 / 595,316,974 index-member bytes (MEM2 / MEM3); these are single
+trials and supplement, rather than replace, the repeated benchmark above.
+
 The pinned Docker package now also passes a real Nextflow MEM3 smoke on a small
 synthetic transcriptome: it builds a MEM3-specific index, emits and parses the
 exact guide alignment, publishes complete one-guide evidence, and records the
@@ -501,18 +527,16 @@ caps the two synthetic-reference tasks at 2 GB for GitHub's 8 GB container;
 production resource defaults are unchanged. This does not replace the larger
 rat/macaque panel evidence above or establish full human cDNA feasibility.
 
-Outstanding for #122 are independent, feasible human-scale transcriptome
-coverage for this human-derived query set and benchmarking against any
-additional platforms the project elects to support. The downstream gate run
-above completes the software-route comparison, while its biological gate
-verdicts remain unknown because human reference evidence was unavailable. The
-application workflows and Pixi environment currently declare and validate
-Linux x86_64; Bioconda metadata for other architectures is not a successful
-integration test. The repeated release-116 benchmark records index-build,
-alignment, and resource measurements; downstream workflow execution was also
-completed with cached indices, as documented above.
+The performance review is complete with adoption deferred. The optional MEM3
+route passes the declared Linux x86_64 host and Docker/Nextflow integration
+checks. The repeated multi-species release-116 panel and the downstream
+same-output gate comparison are recorded above. Full human cDNA remains a
+documented resource limitation for MEM3 0.15.0 on this host, so MEM2 remains the
+default. The project CI and Pixi review currently validate Linux x86_64;
+Bioconda metadata for other architectures is not a successful integration
+test and does not expand the project's declared platform set.
 
-**Decision so far: defer adoption.** BWA-MEM2 remains the default. The pinned
+**Decision: defer adoption.** BWA-MEM2 remains the default. The pinned
 Docker/Nextflow package smoke, backend-specific index, plain SAM parser, and
 version output are verified; the host package CI lane also exercises a real
 repeated-hit MEM3 index/alignment. The deferred evidence above is required
