@@ -16,6 +16,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -73,7 +74,7 @@ def spearman(left: np.ndarray, right: np.ndarray) -> float:
 
 def residualize(values: np.ndarray, design: np.ndarray) -> np.ndarray:
     """Remove the least-squares intercept, target-gene and algorithm-group effects."""
-    return values - design @ np.linalg.lstsq(design, values, rcond=None)[0]
+    return cast(np.ndarray, values - design @ np.linalg.lstsq(design, values, rcond=None)[0])
 
 
 def make_features(rows: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -88,6 +89,9 @@ def make_features(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         if len(guide) != 19 or len(passenger) != 19:
             raise ValueError(f"Expected 19-nt paired cores: {row['source_record_id']}")
         gc_percent = sum(base in "GC" for base in guide) / len(guide) * 100.0
+        au_score = au_content_5p_score(guide)
+        if au_score is None:
+            raise ValueError(f"Guide too short for A/U(1–5) score: {row['source_record_id']}")
         candidate = SiRNACandidate(
             id=str(row["source_record_id"]),
             transcript_id=str(row["target_gene"]),
@@ -104,8 +108,8 @@ def make_features(rows: list[dict[str, object]]) -> list[dict[str, object]]:
                 "target": str(row["target_gene"]),
                 "algorithm": str(row["design_algorithm"]),
                 "dose": str(row["concentration"]),
-                "residual_expression": float(row["measurement_raw"]),
-                "au_1_5": float(au_content_5p_score(guide)),
+                "residual_expression": float(str(row["measurement_raw"])),
+                "au_1_5": au_score,
                 "asymmetry": float(thermodynamics.calculate_asymmetry_score(candidate)[2]),
                 "gc_feature": float(designer._calculate_gc_score(gc_percent)),
             }
