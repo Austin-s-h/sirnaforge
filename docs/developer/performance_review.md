@@ -126,8 +126,15 @@ package-manager benchmarks. Trial details and image IDs are in
 `scripts/performance/measurements/pixi-runtime-startup.json`.
 
 One clean build and three cached builds were measured per image. The dependency
-closures differ, and package-update behavior and other platforms remain
-untested. This supports Linux container feasibility, not Pixi adoption.
+closures differ. A separate minimal Conda update trial used Python 3.12.15 and
+pytest 8.0.0, then updated pytest to 8.4.2 under a `>=8,<9` constraint. Across
+three fresh trial roots, Pixi `update pytest` took 0.28/0.29/0.30 seconds
+(median 0.29); micromamba `update pytest` took 5.94/5.88/5.88 seconds (median
+5.88). Pixi updated its lock and environment after broadening the manifest
+constraint; micromamba applied an update spec to an installed environment. This
+is a narrow workflow comparison, not a whole-application update-safety claim.
+Other supported-platform checks remain outstanding. The results support Linux
+container feasibility, not Pixi adoption.
 
 ## Reproduce inventory and bounded command measurements
 
@@ -177,7 +184,7 @@ tool versions fixed in the uv/micromamba baseline. Use the generic `measure`
 command for each exact installation or startup argv and record at least three
 successful trials plus variability. The cold install comparison has three trials per manager, but dependency
 closures differ. Container build and representative startup results are recorded
-below. Comparable package-update behavior remains pending. These observations
+below. Whole-application update safety remains untested. These observations
 come from one Linux host and are not a general Pixi speedup claim.
 
 Dependency ownership in the revised Pixi prototype:
@@ -248,25 +255,23 @@ Dependency ownership in the revised Pixi prototype:
   locally against the Pixi environment's BWA-MEM2 2.2.1 executable. The local
   sandbox could not fetch packages from conda.anaconda.org; the application
   environment was recreated outside the sandbox.
-- Other supported-platform checks and comparable update behavior remain
-  outstanding. The new lock and expanded tool checks require the next Pixi CI
-  run. Docker feasibility and matched direct-version startup measurements are
-  recorded above.
+- Other supported-platform checks and whole-application update safety remain
+  outstanding. The refreshed lock and expanded tool checks passed Pixi CI. Docker
+  feasibility and matched direct-version startup measurements are recorded above.
 
 **Decision: defer Pixi adoption.** Keep uv/pip as the host Python owner and
 micromamba/Conda as the existing Nextflow process-environment provider. Do not
 replace either tool or the Docker setup with the prototype. Rollback is to
 remove the isolated `scripts/performance/pixi/` prototype and its lockfile; no
 production environment, cache, or user command needs migration because no
-Pixi-managed environment was adopted. The earlier host suite and Pixi CI lane passed; the current application image
-passed CLI, native dependency, tool, and Nextflow provider smokes as UID 12345.
-The current lock awaits its Pixi CI run.
-The current single-owner dependency split and comparison image are validated on
-Linux x86_64. Reconsider adoption only after comparable repeated update and
-other supported-platform evidence justify the additional owner.
+Pixi-managed environment was adopted. The earlier host suite passed, and the refreshed lock passed Pixi CI. The current
+application image passed CLI, native dependency, tool, and Nextflow provider
+smokes as UID 12345. The single-owner split and comparison image are validated
+on Linux x86_64. Reconsider adoption only after whole-application update safety
+and other supported-platform evidence justify the additional owner.
 
-#121 remains open until repeated update behavior and supported-platform gaps
-are documented, and the final migration/rollback recommendation is recorded.
+#121 remains open until whole-application update safety and supported-platform
+gaps are addressed and the final migration/rollback recommendation is recorded.
 
 Official references checked for this investigation:
 [Pixi manifest](https://pixi.prefix.dev/latest/reference/pixi_manifest/) and

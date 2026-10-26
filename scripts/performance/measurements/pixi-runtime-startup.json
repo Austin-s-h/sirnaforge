@@ -253,7 +253,8 @@
       "One clean build and three cached builds per image.",
       "Pixi and micromamba transitive closures differ; listed direct versions match.",
       "Startup includes fresh Docker-container launch overhead.",
-      "No cross-platform or package-update behavior is established."
+      "The update trial is a small Python/pytest environment, not a whole-application update test.",
+      "No cross-platform behavior is established."
     ],
     "clean_build_image_id": "sha256:800099ae23a96626788df896f2e7fab23c916c6d5d21aff89b1752452242ec96",
     "input_sha256": {
@@ -323,8 +324,46 @@
     },
     "limits": [
       "Linux x86_64 only.",
-      "Host test-suite CI for this revised lock remains pending at recording time.",
-      "No supported-platform or package-update behavior is established."
+      "Host test-suite CI for this revised lock passed in run 40302585774.",
+      "The separate update trial is a minimal Python/pytest environment, not a full application update test.",
+      "No other platform behavior is established."
+    ]
+  },
+  "update_behavior_comparison": {
+    "date": "2026-10-26",
+    "platform": "Linux x86_64 / WSL2",
+    "pixi_version": "0.76.1",
+    "micromamba_version": "2.3.2",
+    "scenario": "Minimal Conda environment with Python 3.12.15 and pytest initially 8.0.0; update pytest to latest compatible 8.x (8.4.2). Three fresh per-trial manager caches/roots and prefixes; update command timing excludes initial environment creation.",
+    "pixi": {
+      "initial_spec": "pytest ==8.0.0",
+      "updated_spec": "pytest >=8.0,<9",
+      "command": "pixi update pytest --manifest-path <trial>/pixi.toml",
+      "update_seconds": [
+        0.28,
+        0.29,
+        0.3
+      ],
+      "median_seconds": 0.29,
+      "result": "pytest 8.0.0 -> 8.4.2"
+    },
+    "micromamba": {
+      "initial_spec": "pytest=8.0.0",
+      "updated_spec": "pytest>=8,<9",
+      "command": "micromamba update -y -n review -c conda-forge --override-channels pytest>=8,<9",
+      "update_seconds": [
+        5.94,
+        5.88,
+        5.88
+      ],
+      "median_seconds": 5.88,
+      "result": "pytest 8.0.0 -> 8.4.2"
+    },
+    "limitations": [
+      "Small isolated Conda environment, not the full sirnaforge runtime stack.",
+      "Single Linux x86_64 host; no OS cache eviction, so network and host cache effects remain.",
+      "Pixi broadens the manifest constraint and updates its lock plus environment; micromamba applies an update spec to an installed environment. These represent each manager\u2019s update workflow, not equivalent lockfile semantics.",
+      "This does not establish whole-application update safety or cross-platform behavior."
     ]
   }
 }
