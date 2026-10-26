@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from review import (
@@ -21,7 +22,7 @@ from review import (
 
 class PerformanceHarnessTests(unittest.TestCase):
     def test_sam_differences_can_be_reported_without_masking_execution_failures(self) -> None:
-        result = {
+        result: dict[str, Any] = {
             "backends": {"mem2": {"status": "ok"}, "mem3": {"status": "ok"}},
             "parity": {"equal": False, "reference_headers_equal": True},
         }
