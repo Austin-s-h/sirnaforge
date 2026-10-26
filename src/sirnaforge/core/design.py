@@ -29,7 +29,7 @@ from sirnaforge.models.sirna import (
     DesignParameters,
     DesignResult,
     SiRNACandidate,
-    ranking_score,
+    ranking_order_key,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
 
@@ -171,7 +171,7 @@ class SiRNADesigner:
             all_candidates.extend(scored_candidates)
 
         # Sort by design_score (descending); composite_score does not exist until screening.
-        all_candidates.sort(key=ranking_score, reverse=True)
+        all_candidates.sort(key=ranking_order_key)
 
         # Get top candidates only from those passing filters; fallback to all if none pass
         passing = [
@@ -232,7 +232,7 @@ class SiRNADesigner:
         scored_candidates = self._score_candidates(filtered_candidates, sequence)
 
         # Sort by design_score (descending); composite_score does not exist until screening.
-        scored_candidates.sort(key=ranking_score, reverse=True)
+        scored_candidates.sort(key=ranking_order_key)
 
         # Get top candidates only from those passing filters; fallback to all if none pass
         passing = [

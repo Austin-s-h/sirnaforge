@@ -6,7 +6,7 @@ from Bio.Seq import Seq
 
 from sirnaforge.data.base import TranscriptInfo
 from sirnaforge.data.variant_resolution_helpers import normalize_chromosome
-from sirnaforge.models.sirna import DesignResult, SiRNACandidate, ranking_score
+from sirnaforge.models.sirna import DesignResult, SiRNACandidate, ranking_order_key
 from sirnaforge.models.transcript_annotation import TranscriptAnnotation
 from sirnaforge.models.variant import VariantMode, VariantRecord
 from sirnaforge.utils.ensembl_ids import strip_version
@@ -200,7 +200,7 @@ def apply_variant_workflow(  # noqa: PLR0912
                     design_result.candidates.append(candidate)
 
     # Re-rank the actual output pool and keep its summary counters coherent.
-    design_result.candidates.sort(key=ranking_score, reverse=True)
+    design_result.candidates.sort(key=ranking_order_key)
     passing = [
         candidate
         for candidate in design_result.candidates

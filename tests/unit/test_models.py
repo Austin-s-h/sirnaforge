@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from sirnaforge.cli import app
-from sirnaforge.models.sirna import DesignParameters, FilterCriteria, SiRNACandidate
+from sirnaforge.models.sirna import (
+    DesignParameters,
+    FilterCriteria,
+    SiRNACandidate,
+    ranking_order_key,
+)
 
 
 @pytest.mark.unit
@@ -65,6 +70,33 @@ class TestSiRNACandidate:
         assert candidate.id == "sirna_001"
         assert candidate.gc_content == 52.4
         assert candidate.composite_score == 85.2
+
+    def test_ranking_order_breaks_score_ties_by_normalized_guide_and_context(self):
+        """Equal scores sort independently of enumeration order, with RNA/DNA guides normalized."""
+        later_context = SiRNACandidate(
+            id="z-context",
+            transcript_id="ENST2",
+            position=20,
+            guide_sequence="TTTTTTTTTTTTTTTTTTTTT",
+            passenger_sequence="AAAAAAAAAAAAAAAAAAAAA",
+            gc_content=0,
+            length=21,
+            asymmetry_score=0.5,
+            composite_score=50,
+        )
+        earlier_context = SiRNACandidate(
+            id="a-context",
+            transcript_id="ENST1",
+            position=10,
+            guide_sequence="AAAAAAAAAAAAAAAAAAAAA",
+            passenger_sequence="TTTTTTTTTTTTTTTTTTTTT",
+            gc_content=0,
+            length=21,
+            asymmetry_score=0.5,
+            composite_score=50,
+        )
+
+        assert sorted([later_context, earlier_context], key=ranking_order_key) == [earlier_context, later_context]
 
     def test_sequence_validation(self):
         """Test sequence validation."""

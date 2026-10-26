@@ -43,6 +43,42 @@ def test_default_design_input_shortfalls_are_empty_and_immutable() -> None:
         inputs.design_input_shortfalls["transcript"] = "failed"
 
 
+def test_equal_score_order_uses_stable_guide_context_key_not_input_order() -> None:
+    """Equal-score candidates are ordered reproducibly across batch iteration order."""
+    first = CandidateView(
+        candidate_id="z-context",
+        ordinal=0,
+        passes_filters=True,
+        repeat_flagged=False,
+        scored_after_screening=True,
+        off_target_screened=True,
+        ranking_score=7.5,
+        stable_tiebreak_key=("TTTT", "ENST2", 20, "z-context"),
+    )
+    second = CandidateView(
+        candidate_id="a-context",
+        ordinal=1,
+        passes_filters=True,
+        repeat_flagged=False,
+        scored_after_screening=True,
+        off_target_screened=True,
+        ranking_score=7.5,
+        stable_tiebreak_key=("AAAA", "ENST1", 10, "a-context"),
+    )
+    inputs = SelectionInputs(
+        run_mode=RunMode.DESIGN_ONLY,
+        requirements=None,
+        completed_pairs=None,
+        query_species="human",
+        filter_channels={},
+        repeat_rejects=False,
+        top_n=1,
+    )
+
+    assert select((first, second), inputs).order == (1, 0)
+    assert select((second, first), inputs).order == (1, 0)
+
+
 def test_unknown_species_gate_only_withholds_when_its_species_is_required() -> None:
     """An incomplete exploratory species limit cannot inherit another species' requiredness."""
     view = CandidateView(

@@ -1246,6 +1246,25 @@ def ranking_score(candidate: SiRNACandidate) -> float:
     return candidate.design_score if candidate.design_score is not None else 0.0
 
 
+def ranking_tiebreak_key(candidate: SiRNACandidate) -> tuple[str, str, int, str]:
+    """Return stable biological and identity fields for equal-score candidate ordering.
+
+    Guide normalization follows repeat matching (uppercase DNA, with U converted to T). Transcript,
+    position, and candidate ID then make rows deterministic when the guide occurs in several contexts.
+    """
+    return (
+        candidate.guide_sequence.upper().replace("U", "T"),
+        candidate.transcript_id,
+        candidate.position,
+        candidate.id,
+    )
+
+
+def ranking_order_key(candidate: SiRNACandidate) -> tuple[float, str, str, int, str]:
+    """Sort by descending ranking score, then by a stable guide/context/identity key."""
+    return (-ranking_score(candidate), *ranking_tiebreak_key(candidate))
+
+
 def build_candidate_row(candidate: SiRNACandidate) -> dict[str, Any]:
     """Map one SiRNACandidate to its canonical output-row dict.
 

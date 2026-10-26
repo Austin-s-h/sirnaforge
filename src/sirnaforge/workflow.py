@@ -175,7 +175,9 @@ from sirnaforge.models.sirna import (
     SelectionState,
     SiRNACandidate,
     build_candidate_row,
+    ranking_order_key,
     ranking_score,
+    ranking_tiebreak_key,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelSiRNACandidate
 from sirnaforge.models.transcript_annotation import TranscriptAnnotation
@@ -1751,7 +1753,7 @@ class SiRNAWorkflow:
             c.transcript_hit_fraction = (hits / total_seqs) if total_seqs > 0 else 0.0
 
         # Sort, compute top-N (prefer passing candidates)
-        all_candidates.sort(key=ranking_score, reverse=True)
+        all_candidates.sort(key=ranking_order_key)
         passing = [
             c
             for c in all_candidates
@@ -3631,6 +3633,7 @@ class SiRNAWorkflow:
             scored_after_screening=bool(candidate.scored_after_screening),
             off_target_screened=bool(candidate.off_target_screened),
             ranking_score=ranking_score(candidate),
+            stable_tiebreak_key=ranking_tiebreak_key(candidate),
             unknown_filter_ids=frozenset(
                 filter_id for filter_id, verdict in verdicts.items() if verdict == FilterEvaluation.UNKNOWN.value
             ),

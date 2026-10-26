@@ -260,7 +260,9 @@ API for combining them and no runtime arithmetic on their values. `off_target` c
 until off-target screening has run, so the design stage scores `design_experimental_v1` into `design_score` and
 `composite_score` stays `None`. The two fields are **different vectors over different term sets and
 are not comparable**; `ranking_score(candidate)` is the single place that decides which number a
-candidate currently has.
+candidate currently has. When ranking scores tie, rows sort by normalized guide sequence (uppercase
+DNA, U converted to T), transcript ID, position, and candidate ID. This makes tie order independent
+of input iteration order; it does not combine or deduplicate transcript-context rows.
 
 `empirical`, `isoform_coverage` and `conservation` appear in no vector. They are still computed and
 reported (§2.7); removing them from scoring is what makes "no renormalisation" reachable, since the

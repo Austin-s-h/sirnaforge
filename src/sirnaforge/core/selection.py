@@ -52,6 +52,7 @@ class CandidateView:
     off_target_screened: bool
     ranking_score: float
     unknown_filter_ids: frozenset[str] = frozenset()
+    stable_tiebreak_key: tuple[str, str, int, str] = ("", "", 0, "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,8 +251,14 @@ def select(views: Sequence[CandidateView], inputs: SelectionInputs) -> Selection
 
     ordered = sorted(
         views,
-        key=lambda view: (not any_shortfall[view.ordinal], view.scored_after_screening, view.ranking_score),
-        reverse=True,
+        key=lambda view: (
+            any_shortfall[view.ordinal] != (),
+            not view.scored_after_screening,
+            -view.ranking_score,
+            *view.stable_tiebreak_key,
+            view.candidate_id,
+            view.ordinal,
+        ),
     )
 
     per_candidate: list[CandidateSelection] = []
