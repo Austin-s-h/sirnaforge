@@ -1,26 +1,62 @@
 # Performance investigations: Pixi and BWA-MEM3
 
-Status on 2026-10-24: **Pixi deferred; BWA-MEM3 plain mode accepted by the user for integration. Investigations remain open.**
+Status on 2026-10-26: **Pixi evaluation remains open; BWA-MEM3 plain mode accepted by the user for integration.**
 This implements the bounded F1/F2 investigation tooling from #124 for #121/#122.
 Existing package, execution, index and reporting defaults are unchanged.
 
 ## Recorded local evidence
 
-The machine-readable observations are in `scripts/performance/measurements/`.
-These files contain the revision, machine, exact commands, timeouts, outcomes and
-resource measurements where GNU time is available. Measurements refer to this
-agent's environment, which differs from the user's comprehensive local test environment.
+Machine-readable BWA observations are in `scripts/performance/measurements/`.
+Pixi trial results are summarized here rather than checked in as raw,
+machine-specific command logs. Measurements refer to this agent's environment,
+which differs from the user's comprehensive local test environment.
 
 | Observation | Result | What it establishes |
 | --- | --- | --- |
 | Installed tools | Pixi 0.76.1, uv 0.12.2, micromamba 2.3.2, Nextflow 26.04.2, OpenJDK 21.0.12.1 | PATH inventory, not environment parity |
 | `pixi info` on isolated prototype | Three successful runs; median approximately 0.041 s | Manifest parses; this is metadata/startup timing only |
-| Pixi lock/install | Network-enabled solve produced the committed Linux lock; cached runtime/application installs took approximately 1.05/3.73 s (one sample each) | Reproducible prototype, neither cold installs nor baseline comparisons |
+| Pixi runtime cold install | One isolated Linux x86_64 trial: 9.96 s, 246 MiB peak RSS, approximately 285 MB cache; OS cache was not evicted | A single observed cold environment install, not a stable benchmark |
+| Micromamba runtime cold install | One isolated Linux x86_64 trial with matching direct tool versions: 35.87 s, 1,446 MiB peak RSS, approximately 374 MB downloads; installed environment approximately 1.1 GB | Direct versions match, but dependency closures differ and this is one trial |
+| Warm environment install | Three idempotent trials each; Pixi median 0.060 s, micromamba median 5.862 s | Cached no-op install comparison only; not environment creation or update performance |
+| Pixi application and offline Nextflow | Editable application install succeeded after pinning the PyPI launcher to 25.10.2 and pointing `NXF_DIST` at the Conda framework JAR; `sirnaforge --help` and three offline Nextflow launches succeeded | Resolves the observed launcher/framework mismatch for this locked Linux prototype |
 | BWA comparison | Official MEM2 2.2.1 and source-built MEM3 0.15.0 passed controlled synthetic and 320-guide chr21 SAM parity and independent exact-match checks | Limited compatibility evidence, with compiler caveat below |
 | samtools and RNAfold | Unavailable on PATH | Container/runtime validation remains necessary |
 
 The repository's existing uv cache was read-only in this session. Commands below
 use the existing `.venv` Python directly; no global tools were installed.
+
+The cold install comparison used Pixi 0.76.1 against micromamba 2.3.2 on Linux
+x86_64/WSL. Both runtime environments pinned Python 3.12.15, Nextflow 25.10.2,
+OpenJDK 17.0.18, BWA-MEM2 2.2.1, samtools 1.24, pysam 0.24.1, and ViennaRNA
+2.7.0. The Pixi lock resolved 94 packages; the micromamba baseline resolved 98,
+including four additional Python packaging tools, so only the requested direct
+versions match. Network downloads were enabled and the OS file cache was not
+evicted. Cold results are single trials. Warm results reran each manager's
+install/sync command against its already-created environment; they measure a
+no-op check, not a warm environment creation.
+
+Representative commands (use fresh roots/prefixes for cold trials and the same
+roots for warm no-op trials):
+
+```bash
+PIXI_CACHE_DIR=/tmp/pixi-cold pixi install --locked \
+  --manifest-path scripts/performance/pixi/pixi.toml --environment runtime
+MAMBA_ROOT_PREFIX=/tmp/mamba-cold micromamba create -y \
+  -n runtime -c conda-forge -c bioconda \
+  python=3.12.15 nextflow=25.10.2 openjdk=17.0.18 bwa-mem2=2.2.1 \
+  samtools=1.24 pysam=0.24.1 viennarna=2.7.0
+PIXI_CACHE_DIR=/tmp/pixi-cold pixi install --locked \
+  --manifest-path scripts/performance/pixi/pixi.toml --environment runtime
+MAMBA_ROOT_PREFIX=/tmp/mamba-cold micromamba install -y -n runtime \
+  -c conda-forge -c bioconda \
+  python=3.12.15 nextflow=25.10.2 openjdk=17.0.18 bwa-mem2=2.2.1 \
+  samtools=1.24 pysam=0.24.1 viennarna=2.7.0
+```
+
+Record timing with `scripts/performance/review.py measure` as described below;
+for cold installation, set the manager-specific roots to new paths for every
+repetition. The install commands above document direct requirements, not an
+identical transitive closure.
 
 ## Reproduce inventory and bounded command measurements
 
@@ -67,7 +103,7 @@ Use separate throwaway prototype copies and caches for each cold trial; do not
 relabel a reused environment as cold. Hold resolved Python/Nextflow/Java/native
 tool versions fixed in the uv/micromamba baseline. Use the generic `measure`
 command for each exact installation or startup argv and record at least three
-successful trials plus variability. Comparable baseline and genuinely cold install trials remain pending.
+successful trials plus variability. Three cold trials per manager, identical dependency closures, update behavior, and representative application startup benchmarks remain pending. Do not infer general Pixi speedup from warm no-op measurements.
 
 Dependency ownership requiring resolution before adoption:
 
@@ -76,20 +112,27 @@ Dependency ownership requiring resolution before adoption:
   and lists Python/dev requirements rather than silently choosing an owner.
 - Nextflow is supplied by both PyPI and Conda. The Dockerfile preserves the
   Conda launcher after pip installation and sets `NXF_DIST` to its framework JAR.
-  The application install overwrote the Conda launcher with PyPI Nextflow. A fresh `NXF_HOME` proves runtime Nextflow 25.10.2 starts offline, but application Nextflow attempts to download 26.10.3 and fails. The isolated-offline measurement files record this adoption blocker.
+  The application install initially overwrote the Conda launcher with PyPI
+  Nextflow 26.10.3, which failed offline against the bundled 25.10.2 framework.
+  The prototype now pins both to 25.10.2 and points `NXF_DIST` at the Conda
+  framework; isolated offline launches succeed. Failed pre-fix observations
+  remain only as historical evidence.
 - Native ViennaRNA/pysam packages overlap PyPI distributions. Resolve explicit
   ownership and ABI compatibility; installation success alone is insufficient.
-- The prototype application feature does not reproduce the full development
-  dependency group yet; add it after establishing runtime ownership.
+- The prototype test feature installs pytest dependencies, but the full host
+  test suite has not completed: it stalled in
+  `test_gencode_structure_versions_and_gzip` while awaiting `asyncio.to_thread`.
+  Pixi host-suite compatibility is not established.
 - Pixi managing the parent environment is separate from Nextflow creating
   process environments. Preserve the current micromamba process-environment
   mechanism until a supported replacement is demonstrated.
-- Host tests, actual container/Nextflow execution, arbitrary-UID writable caches,
-  offline framework startup, CI and other platform checks remain outstanding.
+- Docker is installed but the local Docker socket denies access. Actual
+  container/Nextflow execution, arbitrary-UID writable caches, provider/index
+  behavior, CI under Pixi, and other platform checks remain outstanding.
 
-Adopt only with a reviewed lock, comparable successful benchmarks, compatibility
-checks, and a migration/rollback plan. A measured defer decision can close the
-investigation, but these partial comparisons and launcher conflict do not satisfy #121.
+Do not adopt from these partial measurements. #121 remains open until host tests,
+container/Nextflow and cache/provider checks, comparable benchmark repetitions,
+and a reviewed migration/rollback recommendation are complete.
 
 Official references checked for this investigation:
 [Pixi manifest](https://pixi.prefix.dev/latest/reference/pixi_manifest/) and
