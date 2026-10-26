@@ -62,6 +62,28 @@ the opposing pooled and within-accession directions do not support promoting the
 GC weight. The script emits the source checksums, profile identity, group counts,
 and limitations with the metrics.
 
+The Wang et al. 2009 blinded validation experiment provides a second, independent
+efficacy panel. Supplementary Table S3 contains 140 designs (135 unique 19-nt
+paired-guide cores), each measured at 3 nM and 30 nM across 14 target genes. The
+paper describes a randomized, blinded assay of three design groups and reports
+the two doses separately ([primary paper](https://doi.org/10.1093/nar/gkp864));
+the normalized extract retains the source rows and dose metadata. Exact guide
+comparison against the extracted Shabalina 653-guide training panel finds no
+overlap. This does not establish non-overlap with every model training set used
+in the Wang paper or with all external collections.
+
+Run `uv run python scripts/validate_wang2009_independent.py` to reproduce a
+fixed, exploratory comparison of guide A/U(1–5), shipped duplex asymmetry, and
+the shipped GC feature on the 19-nt cores. At both doses all three features
+associate with lower residual expression; target-gene and algorithm-adjusted
+point correlations are also printed. Those residual correlations are
+descriptive OLS adjustments, not held-out prediction or cluster-robust
+inference. The repeated dose measurements are correlated. This extract contains
+efficacy outcomes only; it does not contain the paper's separate cellular
+phenotype specificity experiment, so it cannot satisfy the unintended-repression
+endpoint or promote the complete default score. Script output records exact
+extract hashes and explicitly reports these limits.
+
 ## Interpretation boundaries
 
 - `compatible_core_only` means a reported 19–23 nt core can be represented for
