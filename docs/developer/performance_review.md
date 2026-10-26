@@ -120,9 +120,13 @@ Dependency ownership requiring resolution before adoption:
 - Native ViennaRNA/pysam packages overlap PyPI distributions. Resolve explicit
   ownership and ABI compatibility; installation success alone is insufficient.
 - The prototype test feature installs pytest dependencies, but the full host
-  test suite has not completed: it stalled in
-  `test_gencode_structure_versions_and_gzip` while awaiting `asyncio.to_thread`.
-  Pixi host-suite compatibility is not established.
+  test suite has not completed: the process stalled around
+  `test_gencode_structure_versions_and_gzip`, which uses `asyncio.to_thread`.
+  Minimal probes across the Pixi Python 3.12 environment, the existing uv Python
+  3.11.13 environment, and system Python 3.12.3 returned the thread result but
+  then hung while `asyncio.run` shut down its executor. This points to a host
+  runtime shutdown issue, but does not prove Pixi host-suite compatibility; run
+  the full suite in a functioning runtime before adoption.
 - Pixi managing the parent environment is separate from Nextflow creating
   process environments. Preserve the current micromamba process-environment
   mechanism until a supported replacement is demonstrated.
