@@ -463,10 +463,10 @@ rat/macaque panel evidence above or establish full human cDNA feasibility.
 
 Remaining before #122 can close:
 
-1. Make the large rat/macaque panel runs reproducible from retained inputs or a
-   documented retrieval/preparation command, and retain compact raw results.
-   The current record has input checksums and summarized outputs, but the panel
-   FASTAs and raw result files were removed after measurement.
+1. Rerun the rat/macaque panels with the committed guide generator and pinned
+   release-116 reference retrieval recipe above, then retain the compact raw
+   JSON results. The historical input checksums and summarized outputs remain,
+   but their FASTAs and raw result files were removed after measurement.
 2. Repeat representative high-hit panel measurements and record repetitions,
    CPU time, throughput, index size, and end-to-end workflow cost. The current
    panel evidence is one measurement per backend; human cDNA MEM3 indexing
