@@ -114,6 +114,9 @@ jobs:
   run-ci:
     name: Run Main CI Pipeline
     needs: validate-release
+    permissions:
+      contents: read
+      packages: read
     uses: ./.github/workflows/ci.yml
 
   # Run comprehensive release tests with full coverage
