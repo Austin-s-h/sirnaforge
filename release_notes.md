@@ -1,121 +1,71 @@
-# 🧬 siRNAforge v0.4.2
+# 🧬 siRNAforge v0.8.0
 
 **Comprehensive siRNA design toolkit with multi-species off-target analysis**
 
-## [0.4.2] - 2026-03-01
-
-### Breaking
-
-- Drop support for Python 3.9; minimum supported Python is now 3.10. This
-  enables PEP 604 union syntax (e.g. `list[str] | None`) and other modern
-  typing features. Update developer environments, CI, and pre-commit hooks to
-  use Python 3.10 or later.
-
-
-### New Features
-- **ZFN workflow release-readiness**:
-  - End-to-end ZFN design mode support with validated CLI workflow path.
-  - Configurable algorithm selection (`homology`, `conserved_g`, `zfn_v2`) and dimer modes.
-  - Stable ZFN output artifacts for downstream review and benchmarking.
-
-### Improvements
-- **Documentation and command accuracy**:
-  - Reconciled stale workflow flags in examples (`--species`, `--modifications`).
-  - Added required ZFN half-site guidance for `--design-mode zfn` usage.
-  - Added curated ZFN usage notes alongside auto-generated CLI reference content.
-- **miRNA backend rollout readiness**:
-  - Set `pyahocorasick` as the internal operational default for miRNA seed analysis while keeping the workflow and reporting surface unchanged.
-  - Kept `exhaustive_python` as the deterministic correctness oracle and BWA as the semantic parity baseline.
-  - Verified the embedded Nextflow miRNA batch path still emits the expected aggregated artifacts through the default backend.
-  - Documented the release-facing validation sequence for future miRNA backend changes without widening the public interface.
-
-### Previous 0.4.1 highlights
-- **Variant Targeting Implementation**: Complete Phase 1-5 implementation for targeting specific genetic variants
-  - Core variant models and resolver infrastructure with Parquet-based caching
-  - Population-specific AF filtering for geographic variant targeting
-  - Phase 5 workflow integration with CLI flags for variant_mode parameter
-  - Comprehensive variant feature implementation summary and documentation
-- **Enhanced CLI and Workflow Integration**:
-  - Off-target-only entry point for pre-designed siRNA candidates
-  - Support for any sequence length in thermodynamic calculations
-  - Improved CLI enum integration for variant_mode parameter
-- **Docker and Container Improvements**:
-  - Python 3.12 upgrade with optimized Dockerfile targeting
-  - Login shell PATH preservation with `/etc/profile.d/conda-path.sh`
-  - Enhanced container testing with dedicated test categories
-  - Improved Docker entrypoint and health checks
-
-### Additional 0.4.1 improvements
-- **Performance Optimizations**:
-  - Parquet-based variant cache for improved performance
-  - Cache-first index reuse with complete validation
-  - Transcriptome filtering and major refactoring for simplicity
-  - Unified cache management with Pythonic interface
-- **CI/CD Pipeline Enhancements**:
-  - Python 3.12 requirement across all workflows
-  - Aligned pre-commit mypy with uv package manager
-  - Enhanced release workflow with comprehensive testing
-  - Improved Docker build and test categorization
-- **Code Quality and Maintenance**:
-  - Python 3.10+ syntax modernization throughout codebase
-  - Comprehensive typing improvements and linting fixes
-  - Enhanced error handling and validation middleware
-  - Improved documentation with live CLI output examples
-
-### Dependencies
-- **Python 3.12 Support**: Full upgrade to Python 3.12 with modern syntax
-- **Enhanced Dependencies**: Added `pyarrow>=18.0.0` for Parquet support
-- **Updated Packages**: Modernized dependency versions with improved compatibility
-- **uv Package Manager**: Full alignment with uv for faster dependency resolution
-
-### Performance
-- **Variant Caching**: Parquet-based storage for improved variant data performance
-- **Memory Optimization**: Reduced memory requirements for Docker-constrained environments
-- **Parallel Processing**: Enhanced concurrent execution for variant analysis
-- **Index Reuse**: Cache-first approach for transcriptome indices
-
-
-## [0.3.4] - 2025-12-31
+## [0.8.0] - 2026-11-22
 
 ### Added
-- **Transcript Annotation Provider Layer**: New data provider interface for fetching genomic transcript annotations
-  - Added `AbstractTranscriptAnnotationClient` interface in `src/sirnaforge/data/base.py`
-  - Implemented `EnsemblTranscriptModelClient` using Ensembl REST API (lookup/id and overlap/region endpoints)
-  - Added `VepConsequenceClient` stub for optional VEP enrichment (behind config flag, placeholder implementation)
-  - New Pydantic models: `Interval`, `TranscriptAnnotation`, and `TranscriptAnnotationBundle` in `src/sirnaforge/models/transcript_annotation.py`
-  - In-memory LRU cache with TTL for transcript annotations
-  - Support for fetching by stable IDs or genomic regions
-  - Comprehensive unit tests with mocked REST responses
-  - Integration tests for real Ensembl REST API (gated by `@pytest.mark.requires_network`)
 
-### Improvements
-- **Extensible Architecture**: Transcript annotation provider follows the same layered pattern as existing data providers (gene search, ORF analysis, transcriptome management)
-- **Reference Tracking**: Annotations include provenance metadata (provider, endpoint, reference choice) for reproducibility
-- **Error Handling**: Robust handling of unresolved IDs and network errors with fallback to unresolved list
+- Report evidence schema 1.4.0: canonical availability states, stable generic gate-warning IDs,
+  separate clean-evidence counts, unresolved guide views and explicit threshold units/provenance.
+  Optional local Chromium acceptance checks cover all offline report modes.
 
-### Documentation
-- Added comprehensive docstrings for all new classes and methods
-- Unit and integration tests serve as usage examples
+- Pinned local mature miRNA reference manifests for workflow and off-target commands,
+  with staged Nextflow inputs, checksum validation and task-produced reference evidence.
+  See [local miRNA references](docs/mirna_references.md).
 
+
+### Fixed
+
+- `max_off_target_count` is now an opt-in query-species liability ceiling over `nm<=2`. The previous
+  default of 15 was calibrated against an all-species, all-mismatch total and is not transferred to
+  the newly scoped metric; all-species `off_target_count` remains descriptive.
+
+- Recorded `unavailable`, `not_established` and legacy unknown gate states no longer fall through
+  to numeric defaults. Threshold and guide panes scroll independently, and staged readers fit
+  below their actual header height instead of overflowing the viewport.
+
+- Native benchmark review preserves unpublished post-screen scores as missing and uses the
+  supplied source weights for the current-profile comparison. Report register-neighbour lookup
+  uses sorted position windows instead of repeatedly scanning entire transcripts. Nextflow
+  version artifacts terminate their heredocs correctly and record the numeric BWA-MEM2 version.
+
+- RefSeq gene lookup reads nested NCBI ELink `nuccore` groups and selects RefSeq RNA links,
+  fixing empty transcript results for genes such as TP53. E-utilities calls are paced and
+  retry HTTP 429 with bounded backoff. The README now documents existing
+  local GENCODE and miRBase/combined-source support instead of marking them TODO.
+
+- Host and container release gates exclude live-network tests. Remote functionality remains
+  available locally through `make test-requires-network` / `pytest --run-network`; normal test
+  runs skip it and CI refuses the opt-in, so public API outages cannot block releases.
+
+- Automatic Nextflow CPU ceilings respect available processors, affinity and container quotas,
+  preventing index/alignment tasks from requesting more CPUs than a small CI runner provides.
+  Explicit production configuration overrides are accepted without duplicate-keyword errors.
+- The container variant gate uses local transcripts and synthetic cached variants; live TP53/rsID
+  checks remain in a separate integration suite instead of depending on public endpoint uptime
+  during image publication. The default image gate excludes all `requires_network` checks;
+  live container checks remain local-only and require `DOCKER_TEST_MARKERS=runs_in_container`
+  plus `DOCKER_TEST_PYTEST_ARGS=--run-network`.
 
 ## Installation
 
 ### Docker (recommended)
 ```bash
-# Pull the latest release
-docker pull ghcr.io/austin-s-h/sirnaforge:0.4.2
+# Pull this versioned release
+docker pull ghcr.io/austin-s-h/sirnaforge:0.8.0
 
 # Quick test - should complete in ~2 seconds
-docker run --rm ghcr.io/austin-s-h/sirnaforge:0.4.2 sirnaforge --help
+docker run --rm ghcr.io/austin-s-h/sirnaforge:0.8.0 sirnaforge --help
 ```
 
 ### Python package
 ```bash
 # Via pip
-pip install sirnaforge==0.4.2
+pip install sirnaforge==0.8.0
 
 # Via uv (recommended for speed)
-uv add sirnaforge==0.4.2
+uv add sirnaforge==0.8.0
 
 # Verify installation
 sirnaforge --help
@@ -134,59 +84,9 @@ make dev
 make test-dev  # ~15 seconds
 ```
 
-## Usage
-
-### Basic workflow (Docker)
-```bash
-# Complete gene-to-siRNA workflow
-docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:0.4.2 \
-  sirnaforge workflow TP53 --output-dir results --species human
-
-# Custom transcript file
-docker run --rm -v $(pwd):/workspace -w /workspace \
-  ghcr.io/austin-s-h/sirnaforge:0.4.2 \
-  sirnaforge design transcripts.fasta --output results.csv
-```
-
-### Python API
-```python
-from sirnaforge import SiRNADesigner, GeneSearcher
-
-# Search for gene transcripts
-searcher = GeneSearcher(species="human")
-transcripts = searcher.search_gene("TP53")
-
-# Design siRNAs
-designer = SiRNADesigner()
-candidates = designer.design_from_transcripts(transcripts)
-```
-
-### Commands
-```bash
-sirnaforge workflow   # Complete pipeline: gene → siRNAs
-sirnaforge search     # Gene/transcript search
-sirnaforge design     # siRNA candidate generation
-sirnaforge validate   # Input file validation
-sirnaforge config     # Show configuration
-sirnaforge cache      # Manage miRNA databases
-sirnaforge version    # Version information
-```
-
-## Key features in v0.4.2
-
-- **Smart siRNA design** - Thermodynamic scoring with 90% duplex binding weight
-- **Off-target analysis** - BWA-MEM2 alignment across human/rat/rhesus genomes
-- **ViennaRNA integration** - Secondary structure prediction for accuracy
-- **Pandera data schemas** - Type-safe output validation and formatting
-- **uv package manager** - Fast dependency resolution
-- **Production Docker** - Pre-built images with all bioinformatics tools
-- **Nextflow pipeline** - Scalable execution with automatic parallelization
-- **ZFN design mode** - Constraint-aware left/right half-site evaluation and ranked off-target reporting
-
 ## Testing & quality
 
-**This release passed comprehensive validation:**
+**Release validation is pending completion of `make test-release` and the release-candidate gate:**
 - **Unit tests** - Core algorithm validation
 - **Local Python tests** - Fastest development iteration
 - **Docker smoke tests** - Critical functionality verification
@@ -199,18 +99,17 @@ sirnaforge version    # Version information
 - [**Full documentation**](https://austin-s-h.github.io/sirnaforge) - Complete user guide
 - [**Quick start**](https://github.com/austin-s-h/sirnaforge#-quick-start) - Get running in minutes
 - [**API reference**](https://austin-s-h.github.io/sirnaforge/api) - Python API documentation
-- [**Development guide**](https://github.com/austin-s-h/sirnaforge/blob/main/CONTRIBUTING.md) - Contributing instructions
+- [**Development guide**](https://github.com/austin-s-h/sirnaforge/blob/master/CONTRIBUTING.md) - Contributing instructions
 
 ### Container images
-- **Versioned:** `ghcr.io/austin-s-h/sirnaforge:0.4.2`
-- **Latest:** `ghcr.io/austin-s-h/sirnaforge:latest`
-- **Registry:** [ghcr.io/austin-s-h/sirnaforge](ghcr.io/austin-s-h/sirnaforge)
+- **Versioned:** `ghcr.io/austin-s-h/sirnaforge:0.8.0`
+- **Registry:** `ghcr.io/austin-s-h/sirnaforge`
 
 ### Support
 - [**Source code**](https://github.com/austin-s-h/sirnaforge)
 - [**Issues**](https://github.com/austin-s-h/sirnaforge/issues) - Bug reports & feature requests
 - [**Discussions**](https://github.com/austin-s-h/sirnaforge/discussions) - Community support
-- [**Changelog**](https://github.com/austin-s-h/sirnaforge/blob/main/CHANGELOG.md) - Version history
+- [**Changelog**](https://github.com/austin-s-h/sirnaforge/blob/master/CHANGELOG.md) - Version history
 - [**All releases**](https://github.com/austin-s-h/sirnaforge/releases) - Previous versions
 
 ---
@@ -218,9 +117,9 @@ sirnaforge version    # Version information
 **Quick verification:**
 ```bash
 # Test Docker image (should complete in ~2 seconds)
-docker run --rm ghcr.io/austin-s-h/sirnaforge:0.4.2 sirnaforge version
+docker run --rm ghcr.io/austin-s-h/sirnaforge:0.8.0 sirnaforge version
 
-# Expected output: siRNAforge v0.4.2
+# Expected output: siRNAforge v0.8.0
 ```
 
 
