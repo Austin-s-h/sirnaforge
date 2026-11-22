@@ -212,5 +212,5 @@ intersphinx_mapping = reachable_intersphinx_mapping(
 )
 
 # Program output configuration (for live CLI examples)
-# Commands will be run through uv to use the project environment
+# Commands use the executable from the environment running Sphinx
 programoutput_prompt_template = "$ {command}\n{output}"

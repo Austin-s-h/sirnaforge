@@ -32,6 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends procps ca-certi
     ln -s "$CONDA_PREFIX/bin/micromamba" /usr/local/bin/micromamba
 
 COPY --from=locked-runtime /opt/sirnaforge/.pixi/envs/${PIXI_ENV}/ /opt/sirnaforge/.pixi/envs/${PIXI_ENV}/
+COPY --from=locked-runtime /opt/sirnaforge/pixi.lock /opt/sirnaforge/.pixi/envs/${PIXI_ENV}/share/sirnaforge/pixi.lock
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/conda-shim.sh /usr/local/bin/conda
 COPY docker/conda-path.sh /etc/profile.d/conda-path.sh
