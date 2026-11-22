@@ -65,7 +65,7 @@ repository's public example gene throughout.
 ### Regeneration
 
 ```bash
-uv run python scripts/build_accessibility_test_fixture.py \
+pixi run --locked -e dev python scripts/build_accessibility_test_fixture.py \
     --benchmark-csv work/sirna_bench.csv \
     --transcripts work/bench_tx.fa \
     --out-dir tests/unit/data

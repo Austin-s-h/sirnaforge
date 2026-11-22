@@ -1,17 +1,20 @@
 # Makefile for siRNAforge
-# Uses uv for Python package management
+# Development and release commands use the root Pixi lock.
 
 .PHONY: help install test lint format build clean docker docs all
 
 # Variables
 DOCKER_IMAGE = sirnaforge
-VERSION = $(shell uv run python -c "from sirnaforge import __version__; print(__version__)" 2>/dev/null || echo "0.1.0")
+VERSION := $(shell sed -n '/^\[project\]/,/^\[/s/^version = "\([^"]*\)".*/\1/p' pyproject.toml)
 # Digest of everything the image bakes in. VERSION cannot answer "is this image current?" -- it stays
 # 0.7.1 across every commit of an unreleased version, so a version-only check passes an image built
 # before the code it is meant to validate. Reads the working tree, not git, so uncommitted edits count.
-SRC_FINGERPRINT = $(shell find src pyproject.toml uv.lock README.md LICENSE docker .dockerignore -type f \
+fingerprint = $(shell find $(1) -type f \
 	! -name '*.pyc' ! -path '*/__pycache__/*' -print0 2>/dev/null \
 	| sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -c1-16)
+WHEEL_INPUTS = src pyproject.toml README.md LICENSE
+WHEEL_SRC_FINGERPRINT = $(call fingerprint,$(WHEEL_INPUTS))
+SRC_FINGERPRINT = $(call fingerprint,$(WHEEL_INPUTS) pixi.toml pixi.lock scripts/check_pixi_environment.py docker .dockerignore)
 NEXTFLOW_IMAGE ?= $(DOCKER_IMAGE):$(VERSION)
 SIRNAFORGE_NEXTFLOW_IMAGE ?= $(NEXTFLOW_IMAGE)
 export SIRNAFORGE_NEXTFLOW_IMAGE
@@ -24,21 +27,14 @@ HOST_GID = $(shell id -g)
 DOCKER_HOST_NAMESPACE ?= --userns=host
 DOCKER_HOST_USER = $(DOCKER_HOST_NAMESPACE) --user $(HOST_UID):$(HOST_GID)
 
-# Docker configuration
-UV_CACHE_MOUNT = $(shell \
-	if [ -n "$$CI" ] || [ -n "$$GITHUB_ACTIONS" ]; then echo ""; \
-	elif [ -d "$$(uv cache dir 2>/dev/null)" ] && [ -w "$$(uv cache dir 2>/dev/null)" ]; then \
-		echo "-v $$(uv cache dir):/home/sirnauser/.cache/uv"; \
-	else echo ""; fi)
-
 # SiRNAforge data cache mounts (transcriptomes and miRNA databases)
 SIRNAFORGE_CACHE_DIR = $(shell echo "$$HOME/.cache/sirnaforge")
 SIRNAFORGE_CACHE_MOUNT = -v $(SIRNAFORGE_CACHE_DIR):/home/sirnauser/.cache/sirnaforge
 
-DOCKER_MOUNT_FLAGS = -v $$(pwd):/workspace -w /workspace $(UV_CACHE_MOUNT) $(SIRNAFORGE_CACHE_MOUNT)
+DOCKER_MOUNT_FLAGS = -v $$(pwd):/workspace -w /workspace $(SIRNAFORGE_CACHE_MOUNT)
 # Propagate CI-related env vars into the container so tests can reliably
 # skip known-flaky network flows in CI (e.g., Ensembl blocks runner IPs).
-DOCKER_TEST_ENV = -e UV_LINK_MODE=copy -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE
+DOCKER_TEST_ENV = -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTEST_ADDOPTS='--basetemp=/workspace/.pytest_tmp' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE
 DOCKER_RUN = docker run --rm $(DOCKER_HOST_USER) $(DOCKER_MOUNT_FLAGS) $(DOCKER_TEST_ENV) $(DOCKER_IMAGE):latest
 
 # GitHub Actions checkouts (and many local workspaces) are often owned by a
@@ -51,8 +47,13 @@ DOCKER_TEST_MARKERS ?= runs_in_container and not requires_network
 DOCKER_TEST_PYTEST_ARGS ?=
 DOCKER_TEST_RESOURCE_FLAGS ?=
 
+PIXI_ENV ?= dev
+RUN = pixi run --locked -e $(PIXI_ENV)
+RUN_DOCS = pixi run --locked -e docs
+RUN_RUNTIME = pixi run --locked -e runtime
+
 # Pytest command shortcuts
-PYTEST = uv run pytest
+PYTEST = $(RUN) pytest
 PYTEST_V = $(PYTEST) -v
 PYTEST_Q = $(PYTEST) -q
 
@@ -101,12 +102,17 @@ help: ## Show available commands
 # INSTALLATION
 #==============================================================================
 
-install: ## Install production dependencies
-	uv sync --no-dev
+install: ## Install locked runtime dependencies and the local package
+	$(RUN_RUNTIME) install-app
 
-dev: ## Quick dev setup (install + pre-commit)
-	uv sync
-	uv run pre-commit install
+dev: ## Install locked dev and docs environments
+	$(RUN) install-app
+	$(RUN_DOCS) install-app
+	@if [ "$$(git rev-parse --git-dir)" = "$$(git rev-parse --git-common-dir)" ]; then \
+		$(RUN) pre-commit install; \
+	else \
+		echo "Linked worktree: run make pre-commit to run the hooks."; \
+	fi
 	@echo "Ready for development!"
 
 #==============================================================================
@@ -120,7 +126,11 @@ test-ci: ## CI tier - smoke tests for CI/CD (host-only, skip Docker/Nextflow sui
 	$(PYTEST_V) -m "ci and not runs_in_container and not requires_docker and not requires_tools and not requires_network" -n 0 --junitxml=pytest-report.xml \
 		--cov=sirnaforge --cov-report=xml:coverage.xml --cov-report=term-missing
 
-test-release: docs test-release-host test-release-container test-release-report ## Release tier - comprehensive validation (host + container tests with combined coverage)
+test-release: ## Run the release gate in order
+	$(MAKE) docs
+	$(MAKE) test-release-host
+	$(MAKE) test-release-container
+	$(MAKE) test-release-report
 
 # `-n 0` is deliberate: it overrides the repo-wide `-n 2` in pyproject.toml so this stage runs serial.
 # The reason is one wall-clock assertion, not coverage (pytest-cov combines xdist workers fine, and the
@@ -136,44 +146,25 @@ test-release-host: ## Host-only release suite, serial (1,822 tests, ~83s, produc
 		--junitxml=pytest-host-report.xml
 	@echo ""
 
-# PYTHONDONTWRITEBYTECODE stops the container writing tests/__pycache__ into the bind-mounted repo.
-# The host runs the same pytest version, so it reused that bytecode and reported its own skip
-# locations as `../../../../../workspace/tests/conftest.py` - cosmetic, but it made host output look
-# like container output while debugging a release run.
-test-release-container: cache-ensure docker-ensure ## Container release suite, ~4.7min (expects .coverage from host stage)
-	@if [ ! -f ".coverage" ]; then \
-		echo "Missing .coverage from host tests. Run 'make test-release-host' first or provide the artifact before running container tests."; \
-		exit 1; \
-	fi
-	@echo "Step 2/3: Running container tests (appending coverage)..."
-	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_TEST_RESOURCE_FLAGS) $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTHONDONTWRITEBYTECODE=1 -e PYTEST_ADDOPTS='' -e SIRNAFORGE_CACHE_DIR=/home/sirnauser/.cache/sirnaforge -e NXF_HOME=/home/sirnauser/.cache/sirnaforge/nextflow/home -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
-		"shopt -s nullglob; \
-		pip install --quiet pytest pytest-cov --target /workspace/.pip; \
-		set +e; \
-		PYTHONPATH=/workspace/.pip:\$$PYTHONPATH /opt/conda/bin/python -m pytest tests/container/ -v -m 'runs_in_container and not requires_network' \
-		--cov=sirnaforge --cov-append --cov-report= \
-		--junitxml=/workspace/pytest-container-report.xml \
-		--override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
-		status=\$$?; \
-		set -e; \
-		chown -R \$$HOST_UID:\$$HOST_GID /workspace/.pytest_tmp /workspace/tp53_workflow_debug /workspace/workflow_output /workspace/workflow_test_debug_* /workspace/docker_results 2>/dev/null || true; \
-		chown \$$HOST_UID:\$$HOST_GID /workspace/.coverage* /workspace/coverage*.xml /workspace/pytest-*.xml 2>/dev/null || true; \
-		exit \$$status"
-	@echo ""
+test-release-container: docker-smoke ## Run offline container tests and combine their coverage with host data
+	@test -f .coverage || { echo "Run make test-release-host first or provide host coverage."; exit 1; }
+	COVERAGE_FILE=.coverage.pixi-container $(MAKE) docker-test \
+		DOCKER_TEST_RESOURCE_FLAGS="$(DOCKER_TEST_RESOURCE_FLAGS) --network none" \
+		DOCKER_TEST_PYTEST_ARGS="--cov=sirnaforge --cov-report= --junitxml=pytest-container-report.xml"
+	$(RUN) coverage combine --append .coverage.pixi-container
 
 test-release-report: ## Generate coverage rollups used for release verification artifacts
 	@echo "Step 3/3: Generating combined coverage reports..."
-	@uv run coverage report -m
-	@uv run coverage xml -o coverage.xml
-	@uv run coverage html -d htmlcov
+	@$(RUN) coverage report -m
+	@$(RUN) coverage xml -o coverage.xml
+	@$(RUN) coverage html -d htmlcov
 	@echo ""
 	@echo "Release validation complete!"
 	@echo "   Test Reports: pytest-host-report.xml, pytest-container-report.xml"
 	@echo "   Coverage: coverage.xml (HTML: htmlcov/index.html)"
 	@echo ""
 	@echo "   Summary:"
-	@uv run coverage report --format=total 2>/dev/null | awk '{printf "      Total Coverage: %.1f%%\n", $$1}' || echo "      (see above)"
+	@$(RUN) coverage report --format=total 2>/dev/null | awk '{printf "      Total Coverage: %.1f%%\n", $$1}' || echo "      (see above)"
 
 test: ## Run all tests (shows what passes/skips/fails)
 	$(PYTEST_V)
@@ -201,10 +192,38 @@ test-requires-nextflow: ## Tests requiring Nextflow (2 tests, both container-tie
 print-src-fingerprint: ## Print the source fingerprint an image must carry to be considered current
 	@echo "$(SRC_FINGERPRINT)"
 
-docker-build: ## Build Docker image
-	docker build -f docker/Dockerfile --build-arg VERSION=$(VERSION) \
-		--build-arg SRC_FINGERPRINT=$(SRC_FINGERPRINT) \
-		-t $(DOCKER_IMAGE):$(VERSION) -t $(DOCKER_IMAGE):latest .
+DOCKER_TEST_IMAGE ?= $(DOCKER_IMAGE):$(VERSION)-test
+
+.PHONY: docker-smoke
+docker-smoke: docker-ensure ## Smoke-test the runtime image offline as an arbitrary UID
+	docker run --rm $(DOCKER_TEST_RESOURCE_FLAGS) --network none --user 12345:12345 $(DOCKER_IMAGE):latest \
+		bash -ec 'nextflow -version; bwa-mem2 version; bwa-mem3 version; samtools --version; RNAfold --version; \
+		python -c "import Bio, RNA, fm_index, numpy, pandas, pyarrow, pysam, sirnaforge"; \
+		for tool in pytest jupyter sphinx-build; do if command -v "$$tool"; then exit 1; fi; done; sirnaforge version'
+
+.PHONY: check-wheel ensure-wheel print-wheel-sha docker-build-locked
+check-wheel:
+	@set -eu; set -- dist/*.whl; test "$$#" -eq 1 && test -f "$$1"; \
+	test "$$(head -n 1 dist/.pixi-build)" = "$(WHEEL_SRC_FINGERPRINT)"; \
+	tail -n +2 dist/.pixi-build | sha256sum --check --status
+
+ensure-wheel:
+	@if ! $(MAKE) --no-print-directory -s check-wheel >/dev/null 2>&1; then $(MAKE) build; fi
+
+print-wheel-sha: check-wheel ## Print the verified wheel digest
+	@cut -d ' ' -f 1 < dist/.pixi-build | tail -n 1
+
+DOCKER_BUILD_ENV ?= runtime
+DOCKER_BUILD_IMAGE ?= $(DOCKER_IMAGE):$(VERSION)
+docker-build-locked: check-wheel
+	docker build --platform linux/amd64 -f docker/Dockerfile \
+		--build-arg VERSION=$(VERSION) --build-arg SRC_FINGERPRINT=$(SRC_FINGERPRINT) \
+		--build-arg PIXI_ENV=$(DOCKER_BUILD_ENV) --build-arg WHEEL_SHA256="$$(tail -n 1 dist/.pixi-build | cut -d ' ' -f 1)" \
+		-t "$(DOCKER_BUILD_IMAGE)" .
+
+docker-build: ensure-wheel ## Build the runtime image from the verified wheel and locked runtime
+	$(MAKE) docker-build-locked
+	docker tag "$(DOCKER_IMAGE):$(VERSION)" "$(DOCKER_IMAGE):latest"
 	@echo "Docker image: $(DOCKER_IMAGE):$(VERSION) (sources $(SRC_FINGERPRINT))"
 
 # Rebuild when :latest is absent, was built from a different version, or was built from different
@@ -214,7 +233,7 @@ docker-build: ## Build Docker image
 # The version check alone was not enough and had already failed in practice: VERSION stays 0.7.1 across
 # every commit of an unreleased version, so a three-day-old image passed the guard while ~180 commits
 # landed, and the container tier certified stale code. SRC_FINGERPRINT is the content answer.
-docker-ensure: ## Ensure the image matches the project version AND its sources (build if missing or stale)
+docker-ensure: ensure-wheel ## Ensure the image matches the project version AND its sources (build if missing or stale)
 	@env=$$(docker image inspect $(DOCKER_IMAGE):latest \
 		--format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null); \
 	built=$$(printf '%s\n' "$$env" | sed -n 's/^BUILD_VERSION=//p'); \
@@ -231,6 +250,9 @@ docker-ensure: ## Ensure the image matches the project version AND its sources (
 	elif [ "$$fp" != "$(SRC_FINGERPRINT)" ]; then \
 		echo "Image $(DOCKER_IMAGE):latest was built from sources $$fp but the tree is $(SRC_FINGERPRINT) - rebuilding..."; \
 		$(MAKE) docker-build; \
+	elif [ "$$(printf '%s\n' "$$env" | sed -n 's/^BUILD_WHEEL_SHA256=//p')" != "$$(tail -n 1 dist/.pixi-build | cut -d ' ' -f 1)" ]; then \
+		echo "Image $(DOCKER_IMAGE):latest has a different wheel, rebuilding..."; \
+		$(MAKE) docker-build; \
 	else \
 		echo "Image $(DOCKER_IMAGE):latest matches $(VERSION) and sources $(SRC_FINGERPRINT)"; \
 	fi
@@ -238,18 +260,15 @@ docker-ensure: ## Ensure the image matches the project version AND its sources (
 cache-ensure: ## Ensure the host cache directory exists
 	@mkdir -p "$(SIRNAFORGE_CACHE_DIR)"
 
-docker-test: cache-ensure docker-ensure ## Run tests INSIDE Docker container (validates image)
-	@mkdir -p .pytest_tmp && chmod 777 .pytest_tmp 2>/dev/null || true
-	docker run --rm $(DOCKER_TEST_RESOURCE_FLAGS) $(DOCKER_TEST_USER) $(DOCKER_MOUNT_FLAGS) -e CI -e GITHUB_ACTIONS -e SIRNAFORGE_IN_CONTAINER=1 -e PYTHONDONTWRITEBYTECODE=1 -e PYTEST_ADDOPTS='' -e SIRNAFORGE_NEXTFLOW_IMAGE -e HOST_UID=$(HOST_UID) -e HOST_GID=$(HOST_GID) $(DOCKER_IMAGE):latest bash -lc \
-		"shopt -s nullglob; \
-		pip install --quiet pytest --target /workspace/.pip; \
-		set +e; \
-		PYTHONPATH=/workspace/.pip:\$$PYTHONPATH /opt/conda/bin/python -m pytest tests/container/ -v -m '$(DOCKER_TEST_MARKERS)' $(DOCKER_TEST_PYTEST_ARGS) --override-ini='addopts=-ra -q --strict-markers --strict-config --color=yes'; \
-		status=\$$?; \
-		set -e; \
-		chown -R \$$HOST_UID:\$$HOST_GID /workspace/.pytest_tmp /workspace/tp53_workflow_debug /workspace/workflow_output /workspace/workflow_test_debug_* /workspace/docker_results 2>/dev/null || true; \
-		chown \$$HOST_UID:\$$HOST_GID /workspace/.coverage* /workspace/coverage*.xml /workspace/pytest-*.xml 2>/dev/null || true; \
-		exit \$$status"
+docker-test: cache-ensure docker-ensure ## Run container tests with the same wheel and locked dev tools
+	$(MAKE) docker-build-locked DOCKER_BUILD_ENV=dev DOCKER_BUILD_IMAGE=$(DOCKER_TEST_IMAGE)
+	docker run --rm $(DOCKER_TEST_RESOURCE_FLAGS) $(DOCKER_TEST_USER) \
+		-v "$$(pwd):/workspace" -w /workspace -e CI -e GITHUB_ACTIONS -e COVERAGE_FILE \
+		-e SIRNAFORGE_IN_CONTAINER=1 -e PYTHONDONTWRITEBYTECODE=1 \
+		-e SIRNAFORGE_CACHE_DIR=/tmp/sirnaforge-cache \
+		-e SIRNAFORGE_NEXTFLOW_IMAGE=$(NEXTFLOW_IMAGE) $(DOCKER_TEST_IMAGE) \
+		python -m pytest tests/container/ -o pythonpath= -n 0 \
+		-m '$(DOCKER_TEST_MARKERS)' $(DOCKER_TEST_PYTEST_ARGS)
 
 docker-build-test: ## Clean debug folder, build Docker image, and run tests
 	@echo "Cleaning debug folders..."
@@ -287,14 +306,14 @@ RUFF_PATHS := src tests scripts
 MYPY_PATHS := src scripts
 
 lint: ## Check code quality
-	uv run ruff check $(RUFF_PATHS)
-	uv run ruff format --check $(RUFF_PATHS)
-	uv run mypy $(MYPY_PATHS)
+	$(RUN) ruff check $(RUFF_PATHS)
+	$(RUN) ruff format --check $(RUFF_PATHS)
+	$(RUN) mypy $(MYPY_PATHS)
 	@echo "Code quality checks passed!"
 
 format: ## Auto-format code
-	uv run ruff format $(RUFF_PATHS)
-	uv run ruff check --fix $(RUFF_PATHS)
+	$(RUN) ruff format $(RUFF_PATHS)
+	$(RUN) ruff check --fix $(RUFF_PATHS)
 	@echo "Code formatted!"
 
 check: format test-dev ## Quick check: format + fast tests
@@ -304,7 +323,9 @@ check: format test-dev ## Quick check: format + fast tests
 #==============================================================================
 
 build: ## Build package
-	uv build
+	$(RUN) python -m hatchling build
+	@set -eu; set -- dist/*.whl; test "$$#" -eq 1 && test -f "$$1"; \
+	{ printf '%s\n' "$(WHEEL_SRC_FINGERPRINT)"; sha256sum "$$1"; } > dist/.pixi-build
 	@echo "Package built in dist/"
 
 clean: ## Clean build and cache artifacts
@@ -313,9 +334,13 @@ clean: ## Clean build and cache artifacts
 	rm -rf coverage*.xml pytest-*.xml
 	rm -rf docs/_build/ work/ .nextflow* nextflow_results/
 	rm -rf tp53_workflow_debug workflow_output workflow_test_debug_* docker_results
-	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete
+	find . \( -name .pixi -o -name .venv \) -prune -o -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find . \( -name .pixi -o -name .venv \) -prune -o -type f -name "*.pyc" -exec rm -f {} +
 	@echo "Cleaned!"
+
+.PHONY: print-version
+print-version: ## Print the package version from project metadata
+	@echo "$(VERSION)"
 
 version: ## Show version
 	@echo "siRNAforge version: $(VERSION)"
@@ -325,12 +350,12 @@ version: ## Show version
 #==============================================================================
 
 docs: ## Build documentation (warnings fail the build)
-	uv run sphinx-build -W --keep-going -b html docs docs/_build/html
+	$(RUN_DOCS) sphinx-build -W --keep-going -b html docs docs/_build/html
 	@echo "Docs: docs/_build/html/index.html"
 
 docs-serve: docs ## Serve docs locally
 	@echo "http://localhost:8000 (Ctrl+C to stop)"
-	@cd docs/_build/html && uv run python -m http.server 8000
+	@$(RUN_DOCS) python -m http.server 8000 --directory docs/_build/html
 
 #==============================================================================
 # UTILITIES
@@ -338,13 +363,13 @@ docs-serve: docs ## Serve docs locally
 
 example: ## Run basic example
 	@mkdir -p examples/output
-	uv run sirnaforge design examples/sample_transcripts.fasta -o examples/output/results.tsv
+	$(RUN) sirnaforge design examples/sample_transcripts.fasta -o examples/output/results.tsv
 
 pre-commit: ## Run pre-commit hooks
-	uv run pre-commit run --all-files
+	$(RUN) pre-commit run --all-files
 
 nextflow-check: ## Check Nextflow installation
-	@uv run nextflow -version || echo "Nextflow not available"
+	@$(RUN_RUNTIME) nextflow -version || echo "Nextflow not available"
 
 # Advisory, not a gate: both legs end in `|| true` on purpose, because bandit's 8 pre-existing HIGH
 # findings are all B324 weak-MD5 on cache-key derivation (not security decisions) and pip-audit needs
@@ -357,9 +382,10 @@ nextflow-check: ## Check Nextflow installation
 # outright whether a dependency scan actually happened.
 security: ## Run security checks (advisory: reports findings, does not fail the build)
 	@echo "Running security scans..."
-	@uv run bandit -r src/ -f json -o bandit-report.json || true
-	@uv run bandit -r src/ -q || true
-	@uv run --with pip-audit pip-audit --progress-spinner=off --format=json --output=pip-audit-report.json || true
+	@$(RUN) bandit -r src/ -f json -o bandit-report.json || true
+	@$(RUN) bandit -r src/ -q || true
+	@rm -f pip-audit-report.json
+	@$(RUN) pip-audit --progress-spinner=off --format=json --output=pip-audit-report.json || true
 	@if [ -s pip-audit-report.json ]; then \
 		echo "Dependency scan: pip-audit wrote pip-audit-report.json"; \
 	else \
@@ -398,4 +424,4 @@ cache-info: ## Show data cache locations and status
 	fi
 	@echo ""
 	@echo "To populate cache, run workflows or use CLI commands like:"
-	@echo "  uv run sirnaforge workflow <gene> --species human"
+	@echo "  $(RUN_RUNTIME) sirnaforge workflow <gene> --species human"

@@ -1,7 +1,7 @@
 """Tests for unified cache management system.
 
 These tests validate cache operations for both miRNA and transcriptome databases.
-They are designed to run with `uv run pytest` without requiring Docker.
+They are designed to run with `pixi run --locked -e dev pytest` without requiring Docker.
 """
 
 import pytest

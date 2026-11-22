@@ -153,13 +153,13 @@ The CLI reads all four OligoGym-derived panels off their own `vendored_csv` and 
 descriptor's row selector. These are the tallies of one run of it, per panel, at `--paired-length 19`:
 
 ```console
-$ uv run sirnaforge benchmark prepare --panel ichihara     --paired-length 19 --out-dir work/bench
+$ pixi run --locked -e dev sirnaforge benchmark prepare --panel ichihara     --paired-length 19 --out-dir work/bench
 Panel: ichihara (data present: True)      Observations kept: 2850 (incompatible: 0)
-$ uv run sirnaforge benchmark prepare --panel martinelli   --paired-length 19 --out-dir work/bench
+$ pixi run --locked -e dev sirnaforge benchmark prepare --panel martinelli   --paired-length 19 --out-dir work/bench
 Panel: martinelli (data present: True)    Observations kept: 907 (incompatible: 0)
-$ uv run sirnaforge benchmark prepare --panel shmushkovich --paired-length 19 --out-dir work/bench
+$ pixi run --locked -e dev sirnaforge benchmark prepare --panel shmushkovich --paired-length 19 --out-dir work/bench
 Panel: shmushkovich (data present: True)  Observations kept: 0 (incompatible: 356)
-$ uv run sirnaforge benchmark prepare --panel oligogym     --paired-length 19 --out-dir work/bench
+$ pixi run --locked -e dev sirnaforge benchmark prepare --panel oligogym     --paired-length 19 --out-dir work/bench
 ❌ Error: panel 'oligogym' is a shared redistribution of ichihara, martinelli,
 shmushkovich spanning more than one duplex architecture, so it has none of its
 own to ingest under; prepare one of those panels instead
@@ -197,7 +197,7 @@ prevent.
 for `tests/data/benchmarks/oligogym_native_design/`. Pass the three native inputs together:
 
 ```sh
-uv run sirnaforge benchmark prepare --panel ichihara --paired-length 19 \\
+pixi run --locked -e dev sirnaforge benchmark prepare --panel ichihara --paired-length 19 \\
   --native-observations-csv tests/data/benchmarks/oligogym_native_design/observations.csv \\
   --native-mappings-csv tests/data/benchmarks/oligogym_native_design/mappings.csv \\
   --native-reference-manifest work/native/human.json --out-dir work/bench
@@ -266,7 +266,7 @@ one JSON reference manifest for each of `human`, `mouse`, `rat`, and `macaque`:
 Then run the mapper with all four declarations:
 
 ```sh
-uv run python -m scripts.map_oligo_benchmarks_to_ensembl \
+pixi run --locked -e dev python -m scripts.map_oligo_benchmarks_to_ensembl \
   --source-dir tests/data/external/oligogym \
   --output-dir work/oligogym_four_species \
   --species-reference-manifest work/references/human.json \
@@ -330,14 +330,14 @@ the mandatory columns the descriptor itself declares, so the answer arrives at t
 is asked:
 
 ```console
-$ uv run sirnaforge benchmark prepare --panel user_supplied_fully_complementary --out-dir work/bench
+$ pixi run --locked -e dev sirnaforge benchmark prepare --panel user_supplied_fully_complementary --out-dir work/bench
 ❌ Error: panel 'user_supplied_fully_complementary' has no vendored bytes in
 this repository and no --panel-csv was given; supply --panel-csv pointing at a
 table carrying guide_sequence
 ```
 
 ```console
-$ uv run sirnaforge benchmark prepare --panel user_supplied_paired_core_with_overhang \
+$ pixi run --locked -e dev sirnaforge benchmark prepare --panel user_supplied_paired_core_with_overhang \
     --paired-length 19 --panel-csv my_table.csv --out-dir work/bench
 Panel: user_supplied_paired_core_with_overhang (data present: False)
 Paired length: 19 nt
@@ -397,7 +397,7 @@ otherwise tell them apart.
 ## `benchmark prepare`
 
 ```bash
-uv run sirnaforge benchmark prepare --panel huesken_subset --out-dir benchmark_artifacts
+pixi run --locked -e dev sirnaforge benchmark prepare --panel huesken_subset --out-dir benchmark_artifacts
 ```
 
 ```text
@@ -421,7 +421,7 @@ now vendored, that first rule bites four more panel ids than it used to.
 path consumes it with no benchmark code in the loop at all:
 
 ```bash
-uv run sirnaforge design benchmark_artifacts/huesken_subset__len19/design_inputs.fasta --length 19
+pixi run --locked -e dev sirnaforge design benchmark_artifacts/huesken_subset__len19/design_inputs.fasta --length 19
 ```
 
 That is the executable form of #109's "consumable by the current fixed-length design/workflow path"
@@ -439,7 +439,7 @@ cannot be an accessibility result.
 ## `benchmark design`
 
 ```bash
-uv run sirnaforge benchmark design --artifact benchmark_artifacts/huesken_subset__len19
+pixi run --locked -e dev sirnaforge benchmark design --artifact benchmark_artifacts/huesken_subset__len19
 ```
 
 ```text
@@ -464,7 +464,7 @@ threshold, so a widened run enumerates a **superset** of what a default run woul
 a **narrowing** of either GC bound is refused before any file is opened:
 
 ```console
-$ uv run sirnaforge benchmark design --artifact ... --gc-min 40
+$ pixi run --locked -e dev sirnaforge benchmark design --artifact ... --gc-min 40
 --gc-min 40.0 narrows the default floor of 30.0; the benchmark interface may only widen
 gc_min, never raise it, because a narrowed run cannot stand in for the default run its
 default_filter_status claims to re-derive
@@ -481,7 +481,7 @@ global default; the manifest carries _both_ resolved policies so the separation 
 than asserted:
 
 ```bash
-uv run sirnaforge benchmark design --artifact ... --gc-min 20 --gc-max 75
+pixi run --locked -e dev sirnaforge benchmark design --artifact ... --gc-min 20 --gc-max 75
 ```
 
 | Manifest field                                              | Value                    |

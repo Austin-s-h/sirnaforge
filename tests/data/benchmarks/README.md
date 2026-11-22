@@ -13,7 +13,7 @@ duplex architecture.
 For native transcript benchmarking, map the paired region to the downloaded Ensembl human cDNA:
 
 ```bash
-uv run python scripts/map_oligo_benchmarks_to_ensembl.py \
+pixi run --locked -e dev python scripts/map_oligo_benchmarks_to_ensembl.py \
   --cdna-fasta /path/to/Homo_sapiens.GRCh38.cdna.all.fa \
   --output-dir tests/data/benchmarks/oligogym_native
 ```
@@ -31,7 +31,7 @@ sequence and site coordinates needed for biologically faithful target-accessibil
 Regenerate them with:
 
 ```bash
-uv run python scripts/prepare_oligo_benchmarks.py
+pixi run --locked -e dev python scripts/prepare_oligo_benchmarks.py
 ```
 
 The adapter creates one synthetic transcript per observation:
@@ -47,12 +47,12 @@ and the synthetic-context warning.
 Example runs:
 
 ```bash
-uv run sirnaforge design \
+pixi run --locked -e dev sirnaforge design \
   tests/data/benchmarks/oligogym/inputs/martinelli_2023_1_len21.fasta \
   --length 21 \
   --output benchmark_results/martinelli_2023_1_len21.csv
 
-uv run sirnaforge design \
+pixi run --locked -e dev sirnaforge design \
   tests/data/benchmarks/oligogym/inputs/shmushkovich_2018_1_len20.fasta \
   --length 20 \
   --output benchmark_results/shmushkovich_2018_1_len20.csv

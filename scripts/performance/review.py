@@ -128,7 +128,7 @@ def inventory(timeout: float) -> dict:
         tools[name] = {"path": executable, "status": "unavailable"}
         if executable:
             tools[name] = {"path": executable, **run([executable, *args], timeout)}
-    paths = ["pyproject.toml", "uv.lock", "environment-dev.yml", "docker/environment-nextflow.yml", "docker/Dockerfile"]
+    paths = ["pyproject.toml", "pixi.toml", "pixi.lock", "docker/Dockerfile"]
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     return {
         "kind": "inventory",

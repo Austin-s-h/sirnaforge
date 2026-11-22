@@ -8,13 +8,13 @@ This reference shows each command with its real `--help` output and working exam
 
 ### Main Help
 
-```{program-output} uv run sirnaforge --help
+```{program-output} sirnaforge --help
 
 ```
 
 ### Version
 
-```{program-output} uv run sirnaforge version
+```{program-output} sirnaforge version
 
 ```
 
@@ -26,7 +26,7 @@ Run complete siRNA design from gene query to scored candidates.
 
 ### Help
 
-```{program-output} uv run sirnaforge workflow --help
+```{program-output} sirnaforge workflow --help
 
 ```
 
@@ -227,7 +227,7 @@ Search gene databases and retrieve transcript sequences.
 
 ### Help
 
-```{program-output} uv run sirnaforge search --help
+```{program-output} sirnaforge search --help
 
 ```
 
@@ -239,19 +239,19 @@ Design siRNA/miRNA candidates from FASTA sequences.
 
 ### Help
 
-```{program-output} uv run sirnaforge design --help
+```{program-output} sirnaforge design --help
 
 ```
 
 ### Example: Design from Sample Data
 
-```{program-output} uv run sirnaforge design ../examples/sample_transcripts.fasta -o /tmp/sirna_example.csv --top-n 5
+```{program-output} sirnaforge design ../examples/sample_transcripts.fasta -o _build/sirna_example.csv --top-n 5
 
 ```
 
 #### Output Preview
 
-```{program-output} head -6 /tmp/sirna_example.csv
+```{program-output} head -6 _build/sirna_example.csv
 :shell:
 ```
 
@@ -278,7 +278,7 @@ See [ZFN Module Guide](zfn_module.md).
 
 ### Help
 
-```{program-output} uv run sirnaforge zfn --help
+```{program-output} sirnaforge zfn --help
 
 ```
 
@@ -319,7 +319,7 @@ patterns exceed the safety limit of 1000000.
 For reproducible `fm_index` runs, prebuild one search-space bundle once, then reuse it across runs:
 
 ```bash
-uv run sirnaforge internal zfn-build-search-index \
+pixi run --locked -e dev sirnaforge internal zfn-build-search-index \
 	--genome-fasta /path/to/hg38.fa \
 	--search-backend fm_index
 ```
@@ -334,13 +334,13 @@ Check FASTA file format and content.
 
 ### Help
 
-```{program-output} uv run sirnaforge validate --help
+```{program-output} sirnaforge validate --help
 
 ```
 
 ### Example: Validate Sample Data
 
-```{program-output} uv run sirnaforge validate ../examples/sample_transcripts.fasta
+```{program-output} sirnaforge validate ../examples/sample_transcripts.fasta
 
 ```
 
@@ -350,7 +350,7 @@ Check FASTA file format and content.
 
 Show default configuration parameters.
 
-```{program-output} uv run sirnaforge config
+```{program-output} sirnaforge config
 
 ```
 
@@ -362,7 +362,7 @@ Manage siRNA sequences and chemical modification metadata.
 
 ### Help
 
-```{program-output} uv run sirnaforge sequences --help
+```{program-output} sirnaforge sequences --help
 
 ```
 
@@ -374,7 +374,7 @@ Manage miRNA database cache for off-target analysis.
 
 ### Help
 
-```{program-output} uv run sirnaforge cache --help
+```{program-output} sirnaforge cache --help
 
 ```
 
@@ -399,7 +399,7 @@ specification.
 
 ### Help
 
-```{program-output} uv run sirnaforge benchmark --help
+```{program-output} sirnaforge benchmark --help
 
 ```
 
@@ -410,7 +410,7 @@ and `manifest.json`. Every measured observation is preserved, including one inco
 requested paired length -- dropping it silently would make a later count unreproducible from the
 panel bytes alone.
 
-```{program-output} uv run sirnaforge benchmark prepare --help
+```{program-output} sirnaforge benchmark prepare --help
 
 ```
 
@@ -426,6 +426,6 @@ superset of what a default run would. The polynucleotide-run requirement (`max_p
 stays active and is recorded in `manifest.json`'s `polynucleotide_run_requirement` block regardless
 of any other option here.
 
-```{program-output} uv run sirnaforge benchmark design --help
+```{program-output} sirnaforge benchmark design --help
 
 ```

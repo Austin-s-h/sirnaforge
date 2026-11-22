@@ -10,8 +10,8 @@ for ``build.pipeline_revision``. That is #100's rule for screening evidence, app
 
 Two corollaries. An **inference** is published with the comparison it rests on, never as the thing it
 approximates: a cache stamp dated after this process started bounds a build to the process, not to a
-run. An absence is **tested for rather than declared**: ``uv.lock`` is missing from the wheel but
-present at a verified dev-worktree root, so its absence must be checked, not assumed.
+run. An absence is **tested for rather than declared**: a lock can be available at a
+verified worktree root or in a locked runtime prefix.
 
 Imports stay stdlib-only apart from ``__version__`` and one leaf cache util, so the manifest builder
 can reach this module without pulling ``sirnaforge.data`` into a fresh import cycle.
@@ -27,6 +27,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Container, Iterable
 from datetime import datetime
@@ -73,13 +74,12 @@ _PIPELINE_TRACKED_FILE = "main.nf"
 #: it feeds is named ``built_in_this_process`` and states its own basis.
 _PROCESS_START = datetime.now()
 
-#: ``uv.lock``: present at a verified repo root, absent from the wheel. Tested for, not declared
-#: permanently absent (see module docstring and ``_lock_identity``).
-_LOCK_FILENAME = "uv.lock"
+_PIXI_LOCK = "pixi.lock"
+_PREFIX_LOCK = Path("share") / "sirnaforge" / _PIXI_LOCK
 
 _DESCRIBE_DISTANCE = re.compile(r"-(\d+)-g[0-9a-f]+")
 _SHA1_HEX = re.compile(r"[0-9a-f]{40}")
-_LOCK_REVISION = re.compile(r"^revision\s*=\s*(\d+)\s*$", re.MULTILINE)
+_PIXI_LOCK_VERSION = re.compile(r"^version\s*:\s*(\d+)\s*$", re.MULTILINE)
 
 #: Ensembl writes the assembly into its own FASTA headers, e.g.
 #: ``>ENST00000632684.1 cdna chromosome:GRCh38:14:22438547:22438554:1``. Reading it there consults the
@@ -382,44 +382,29 @@ def _declared_dependencies() -> list[str]:
 
 
 def _lock_identity(lock_root: Path | None) -> dict[str, dict[str, Any]]:
-    """The resolution lock's digest and revision when it is on disk, or why it is not.
+    """Identify the active lock at a verified worktree root or in the runtime prefix."""
+    prefix = Path(sys.prefix)
+    packaged_lock = prefix / _PREFIX_LOCK
+    if packaged_lock.is_file():
+        lock = packaged_lock
+        state = "runtime_prefix_lock"
+    elif lock_root is not None:
+        lock = lock_root / _PIXI_LOCK
+        state = "repo_worktree_lock"
+    else:
+        unavailable = absent(
+            "no_verified_repo_to_read_a_lock_from",
+            "No lock was present in the runtime prefix and no repository was verified to hold this package",
+        )
+        return {"lock_sha256": unavailable, "lock_revision": dict(unavailable)}
 
-    The absence is conditional (present at a dev-worktree root, absent from the wheel), so the file is
-    tested for rather than declared permanently missing. ``lock_root`` is None whenever no repository
-    could be *verified* to hold this package -- an unverified root's lock is some other project's
-    resolution.
-    """
-    if lock_root is None:
-        return {
-            "lock_sha256": absent(
-                "no_verified_repo_to_read_a_lock_from",
-                f"{_LOCK_FILENAME} is not shipped in the wheel (pyproject packages only src/sirnaforge) and no "
-                "repository was verified to hold this package, so no lock may be attributed to this build",
-            ),
-            "lock_revision": absent(
-                "no_verified_repo_to_read_a_lock_from",
-                f"no verified repository root was available to read {_LOCK_FILENAME} from, so its revision "
-                "cannot be named",
-            ),
-        }
-
-    lock = lock_root / _LOCK_FILENAME
     if not lock.is_file():
-        return {
-            "lock_sha256": absent(
-                "not_packaged",
-                f"{_LOCK_FILENAME} is absent from {lock_root}: it is not shipped in the wheel, because pyproject "
-                "packages only src/sirnaforge",
-            ),
-            "lock_revision": absent(
-                "not_packaged",
-                f"{_LOCK_FILENAME} is not on disk beside this build, so its revision cannot be read at runtime",
-            ),
-        }
+        unavailable = absent("not_packaged", f"{lock} is absent from the verified worktree")
+        return {"lock_sha256": unavailable, "lock_revision": dict(unavailable)}
 
     try:
         digest = file_sha256(lock)
-        revision = _LOCK_REVISION.search(lock.read_text(encoding="utf-8", errors="replace"))
+        revision = _PIXI_LOCK_VERSION.search(lock.read_text(encoding="utf-8", errors="replace"))
     except OSError as exc:
         unreadable = absent(
             "lock_unreadable",
@@ -429,16 +414,16 @@ def _lock_identity(lock_root: Path | None) -> dict[str, dict[str, Any]]:
         return {"lock_sha256": unreadable, "lock_revision": dict(unreadable)}
 
     return {
-        "lock_sha256": present(digest, "repo_worktree_lock", f"sha256 of {lock}, at the verified repo root"),
+        "lock_sha256": present(digest, state, f"sha256 of {lock}"),
         "lock_revision": present(
             revision.group(1),
-            "repo_worktree_lock",
-            f"the `revision` key of {lock}, which is uv's own lock-format revision",
+            state,
+            f"the `version` key of {lock}, which names the lock format",
         )
         if revision
         else absent(
             "revision_not_declared_in_lock",
-            f"{lock} declares no `revision` key, so the lock format it was written in cannot be named",
+            f"{lock} declares no `version` key, so the lock format cannot be named",
         ),
     }
 
@@ -685,8 +670,7 @@ def pipeline_revision_identity(recorded: str | None, *, workflow_dir: Path | Non
         return {
             "commit": absent(
                 "not_a_git_checkout",
-                ".git never enters the image: the Dockerfile copies only pyproject.toml, uv.lock, README, "
-                "LICENSE and src/",
+                "The packaged workflow directory is outside a git checkout",
             ),
             "workflow_dir_fingerprint": f"mtime-{recorded.removeprefix('nogit-')}",
             "repo_verified": False,

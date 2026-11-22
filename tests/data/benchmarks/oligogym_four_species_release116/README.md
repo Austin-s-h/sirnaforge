@@ -24,21 +24,21 @@ To regenerate, obtain the OligoGym extracts using the repository's
 root manifest. For each of human, mouse, rat, and macaque, run:
 
 ```sh
-uv run python scripts/fetch_native_reference_release.py \
+pixi run --locked -e dev python scripts/fetch_native_reference_release.py \
   --release 116 --species human --output work/release116
 ```
 
 Repeat with the other species, then generate the tables:
 
 ```sh
-uv run python scripts/map_oligo_benchmarks_to_ensembl.py \
+pixi run --locked -e dev python scripts/map_oligo_benchmarks_to_ensembl.py \
   --source-dir /path/to/oligogym --output-dir work/mapped116 \
   --species-reference-manifest work/release116/human_manifest.json \
   --species-reference-manifest work/release116/mouse_manifest.json \
   --species-reference-manifest work/release116/rat_manifest.json \
   --species-reference-manifest work/release116/macaque_manifest.json
 
-uv run python scripts/package_four_species_mappings.py \
+pixi run --locked -e dev python scripts/package_four_species_mappings.py \
   --artifact-dir work/mapped116
 ```
 

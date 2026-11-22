@@ -23,12 +23,12 @@ Validated hidden internal CLI commands used by Nextflow modules:
 - `sirnaforge _internal zfn-search-shard`
 - `sirnaforge _internal zfn-aggregate-shards`
 
-All commands were executed with `uv run`.
+The historical verification used uv. The commands below use the current Pixi environment.
 
-## uv invocation guidance
+## Pixi invocation guidance
 
-- From repository root: `uv run sirnaforge ...`
-- From outside the repository (for example, staged Nextflow work dirs under `/tmp`), point `--project`
+- From repository root: `pixi run --locked -e dev sirnaforge ...`
+- From outside the repository (for example, staged Nextflow work dirs under `/tmp`), point `--manifest-path`
   at your clone. Record it once from inside the clone, so nothing is hard-coded to one machine:
 
   ```bash
@@ -36,10 +36,10 @@ All commands were executed with `uv run`.
   export SIRNAFORGE_PROJECT="$(git rev-parse --show-toplevel)"
 
   # anywhere afterwards, e.g. in a Nextflow work dir
-  cd /tmp && uv run --project "$SIRNAFORGE_PROJECT" sirnaforge _internal zfn-make-shards --help
+  cd /tmp && pixi run --locked --manifest-path "$SIRNAFORGE_PROJECT/pixi.toml" -e dev sirnaforge _internal zfn-make-shards --help
   ```
 
-Without `--project` outside the workspace, `uv` cannot resolve the `sirnaforge` entrypoint.
+Use `--manifest-path` inside Nextflow task directories to select the checkout's locked workspace.
 
 ## Fixtures
 
@@ -88,7 +88,7 @@ This confirms global deduplication and deterministic merge behavior over overlap
 Targeted suite after refactor:
 
 ```bash
-uv run python -m pytest -n 0 tests/unit/test_zfn_search_and_design.py tests/unit/test_zfn_workflow_integration.py
+pixi run --locked -e dev python -m pytest -n 0 tests/unit/test_zfn_search_and_design.py tests/unit/test_zfn_workflow_integration.py
 ```
 
 Result: **51 passed**.

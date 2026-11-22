@@ -220,12 +220,12 @@ sirnaforge offtarget \
 Advanced: discover and run the embedded pipeline directly:
 
 ```bash
-PIPELINE_NF=$(uv run python -c "from sirnaforge.pipeline.nextflow.runner import NextflowRunner; print(NextflowRunner().get_main_workflow())")
+PIPELINE_NF=$(pixi run --locked -e dev python -c "from sirnaforge.pipeline.nextflow.runner import NextflowRunner; print(NextflowRunner().get_main_workflow())")
 nextflow run "$PIPELINE_NF" --help
 ```
 
 ## Developer Validation Notes
 
-For maintainers and advanced users validating the internal ZFN Nextflow bridge behavior (including `uv run --project ...` usage outside repository root), see:
+For maintainers and advanced users validating the internal ZFN Nextflow bridge behavior (including `pixi run --locked --manifest-path ... -e dev` usage outside repository root), see:
 
 - [ZFN Nextflow Bridge: Sanity Validation](developer/zfn_nextflow_bridge_validation.md)

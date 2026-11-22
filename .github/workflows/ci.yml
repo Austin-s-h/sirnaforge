@@ -14,198 +14,137 @@ on:
         description: "Main CI workflow completed successfully"
         value: ${{ jobs.final-status.outputs.success }}
 
-env:
-  PYTHON_VERSION: "3.12"
-
 permissions:
   contents: read
   packages: read
 
 jobs:
-  lint-and-security:
-    name: Lint & Security Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: lint
-
-    - name: Install dependencies
-      run: uv sync --group dev
-
-    - name: Lint & format check (Make target)
-      run: make lint
-
-    - name: Security checks (Make target)
-      run: make security
-
-    # #107 broke the docs build (3 -> 39 warnings-as-errors) and blocked `make test-release` at its
-    # first step for most of 0.7.1, because nothing before the release target builds them: docs.yml
-    # runs only on master, and with its own `sphinx-build -W` rather than this target's
-    # `-W --keep-going`. Warm build is 8-14s.
-    - name: Docs build (Make target)
-      run: make docs
-
-    - name: Upload security reports
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: security-reports-${{ github.sha }}
-        path: |
-          bandit-report.json
-          pip-audit-report.json
-        retention-days: 30
-        if-no-files-found: warn
-
   test-matrix:
-    name: Test Python ${{ matrix.python-version }}
+    name: Locked Pixi tests (${{ matrix.environment }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        python-version: [ "3.10", "3.11", "3.12" ]
+        environment: [dev, py310, py311]
+    env:
+      PIXI_ENV: ${{ matrix.environment }}
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: test-${{ matrix.python-version }}
-
-    - name: Install dependencies
-      run: uv sync --group dev
-
-    - name: Run tests (Make target)
-      run: make test-ci
-
-    # `make test-ci` selects 40 tests from hand-written `ci`/`smoke` decorations, the newest of which
-    # predates 0.7.1: none of this release's ~950 new tests carry those markers, so every regression
-    # test for the report, evidence, selection, orthology and benchmark work was first executed by
-    # `make test-release` after merge. The dev tier is where they live (1,786 tests, hermetic - no
-    # network test is in it and conftest gates the rest behind capability probes).
-    #
-    # 3.12 only for now: this tier has never run on 3.10/3.11 in CI, and a first run there may surface
-    # version-specific failures unrelated to the change under review. Widen once it has been green.
-    - name: Run dev tier (Make target)
-      if: matrix.python-version == '3.12'
-      run: make test-dev
-
-    - name: Upload test results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: test-results-py${{ matrix.python-version }}-${{ github.sha }}
-        path: |
-          pytest-report.xml
-          coverage.xml
-        retention-days: 30
-
-  pixi-review:
-    name: Pixi locked environment review
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    # This is an evaluation lane for #121, not the production environment owner.
-    # Exercise the checked-in lock against the host selection used for the local review.
-    - name: Set up Pixi
-      uses: prefix-dev/setup-pixi@v0.10.0
+    - uses: prefix-dev/setup-pixi@v0.10.0
       with:
         pixi-version: v0.76.1
-        manifest-path: scripts/performance/pixi/pixi.toml
+        manifest-path: pixi.toml
         locked: true
         cache: true
-        environments: tests
+        environments: ${{ matrix.environment }}
 
-    - name: Verify locked Pixi runtime
+    - name: Install editable application
+      run: pixi run --locked -e "$PIXI_ENV" install-app
+
+    - name: Check application dependency ownership
+      run: pixi run --locked -e "$PIXI_ENV" python scripts/check_pixi_environment.py
+
+    - name: Run smoke tests
+      run: make test-ci
+
+    - name: Verify native tools and run host release tests
+      if: matrix.environment == 'dev'
       run: |
-        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests python --version
-        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests nextflow -version
-        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests bwa-mem2 version
-        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests bwa-mem3 version
-        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests samtools --version
-        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests RNAfold --version
+        pixi run --locked -e dev nextflow -version
+        pixi run --locked -e dev bwa-mem2 version
+        pixi run --locked -e dev bwa-mem3 version
+        pixi run --locked -e dev samtools --version
+        pixi run --locked -e dev RNAfold --version
+        make lint test-release-host
 
-    - name: Install editable application without dependency overwrites
-      run: pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests install-app
+    - name: Audit locked Python dependencies
+      if: matrix.environment == 'dev'
+      run: make security
 
-    - name: Run Pixi host validation
-      run: >-
-        pixi run --manifest-path scripts/performance/pixi/pixi.toml --environment tests
-        python -m pytest
-        -m '(dev or ci or release) and not runs_in_container and not requires_network'
-        -n 0
+    - name: Upload host test and audit reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: locked-host-reports-${{ matrix.environment }}
+        path: |
+          pytest-report.xml
+          pytest-host-report.xml
+          coverage.xml
+          bandit-report.json
+          pip-audit-report.json
+
+    - name: Build documentation
+      if: matrix.environment == 'dev'
+      run: |
+        pixi run --locked -e docs install-app
+        make docs
+
+    - name: Verify lock remains unchanged
+      run: git diff --exit-code -- pixi.lock
 
   build-package:
-    name: Build Package
+    name: Wheel and container validation
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
+    timeout-minutes: 45
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
+    - uses: prefix-dev/setup-pixi@v0.10.0
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
+        pixi-version: v0.76.1
+        manifest-path: pixi.toml
+        locked: true
+        cache: true
+        environments: dev
 
-    - name: Install uv CLI
-      uses: astral-sh/setup-uv@v6
+    - uses: actions/setup-python@v7
       with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: build
+        python-version: '3.12'
 
-    - name: Install dependencies
-      run: uv sync --group dev
-
-    - name: Build package (Make target)
-      run: make build
-
-    - name: Verify installation
+    - name: Build and verify wheel identity
       run: |
-        # Test basic import and CLI functionality
-        uv run sirnaforge version
-        uv run sirnaforge --help
+        make build
+        pixi run --locked -e dev twine check dist/*
+        python .github/scripts/release_contract.py wheel --version "$(make -s print-version)" --wheel dist/*.whl
 
-    - name: Upload build artifacts
+    - name: Verify the sdist builds with the locked build backend
+      run: |
+        pixi run --locked -e dev python -m pip wheel --no-deps --no-build-isolation \
+          --wheel-dir "$RUNNER_TEMP/sdist-wheel" dist/*.tar.gz
+
+    - name: Smoke-test the wheel outside Pixi
+      run: |
+        python -m venv "$RUNNER_TEMP/sirnaforge-wheel"
+        "$RUNNER_TEMP/sirnaforge-wheel/bin/python" -m pip install dist/*.whl
+        "$RUNNER_TEMP/sirnaforge-wheel/bin/python" -m pip check
+        cd "$RUNNER_TEMP"
+        ./sirnaforge-wheel/bin/sirnaforge version
+        ./sirnaforge-wheel/bin/sirnaforge --help
+
+    - name: Build the runtime with the tested wheel
+      run: make docker-build
+
+    - name: Verify runtime without development tools
+      run: make docker-smoke
+
+    - name: Run candidate container suite offline
+      run: make docker-test DOCKER_TEST_RESOURCE_FLAGS='--network none --cpus 4'
+
+    - name: Upload the tested distribution
       uses: actions/upload-artifact@v4
       with:
         name: python-package-${{ github.sha }}
         path: dist/
+        include-hidden-files: true
         retention-days: 7
 
   final-status:
     name: CI Status Summary
     runs-on: ubuntu-latest
-    needs: [ lint-and-security, test-matrix, pixi-review, build-package ]
+    needs: [test-matrix, build-package]
     if: always()
     outputs:
       success: ${{ steps.status.outputs.success }}
@@ -213,24 +152,15 @@ jobs:
     steps:
     - name: Check status
       id: status
+      env:
+        TEST_STATUS: ${{ needs.test-matrix.result }}
+        BUILD_STATUS: ${{ needs.build-package.result }}
       run: |
-        echo "Checking job statuses..."
-
-        LINT_STATUS="${{ needs.lint-and-security.result }}"
-        TEST_STATUS="${{ needs.test-matrix.result }}"
-        BUILD_STATUS="${{ needs.build-package.result }}"
-        PIXI_STATUS="${{ needs.pixi-review.result }}"
-
-        echo "Lint & Security: $LINT_STATUS"
-        echo "Tests: $TEST_STATUS"
-        echo "Build: $BUILD_STATUS"
-        echo "Pixi review: $PIXI_STATUS"
-
-        if [[ "$LINT_STATUS" == "success" && "$TEST_STATUS" == "success" && "$BUILD_STATUS" == "success" && "$PIXI_STATUS" == "success" ]]; then
-          echo "All CI jobs passed!"
-          echo "success=true" >> $GITHUB_OUTPUT
+        echo "Locked tests: $TEST_STATUS"
+        echo "Wheel, sdist and container: $BUILD_STATUS"
+        if [[ "$TEST_STATUS" == "success" && "$BUILD_STATUS" == "success" ]]; then
+          echo "success=true" >> "$GITHUB_OUTPUT"
         else
-          echo "Some CI jobs failed!"
-          echo "success=false" >> $GITHUB_OUTPUT
+          echo "success=false" >> "$GITHUB_OUTPUT"
           exit 1
         fi

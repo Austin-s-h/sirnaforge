@@ -4,7 +4,7 @@ Tiered testing approach for different development phases and resources.
 
 ## Quick Commands
 
-### Development (Python-only)
+### Development
 
 ```bash
 make test-dev           # Fast marker-based tests (1,788 tests, ~36s) for iteration
@@ -14,9 +14,8 @@ make format             # Auto-format & autofix style issues
 make check              # format + test-dev (mutating quick gate)
 ```
 
-> **Timings below are measured on a 10-core arm64 laptop with warm caches** (uv, mypy, `docs/_build`,
-> and a current `sirnaforge:latest`). They were previously inherited from a 30-test suite and were
-> wrong by up to 9x; if you change a tier's population, re-measure rather than editing the number.
+> Counts and timings in this guide are historical warm-cache measurements.
+> The [development guide](development.md) records the Pixi validation.
 
 > **Note:** `make check` runs `make format` first, so it will modify files to enforce style before executing tests.
 
@@ -40,19 +39,9 @@ make docker-shell       # Interactive debugging
 | `test-requires-nextflow` | Nextflow-specific subset                           | 2 tests  | `requires_nextflow` marker                 | Medium    |
 | `docker-test`            | Container-only tests (`runs_in_container`)         | ~4.7min  | tests/container suite                      | High      |
 
-`test-release` also pays a rebuild whenever the image is stale, because `docker-ensure` rebuilds when
-`sirnaforge:latest` was built from a different version _or_ a different source fingerprint. Two very
-different costs hide behind that:
-
-- **Source-only change** (anything under `src/`, which is the usual case): **~3 minutes**. The conda and
-  bioinformatics-tool layers are cache hits; only the `COPY src` layers and the export re-run. Measured
-  at 3m11s.
-- **Cold cache** (no Docker layer cache, changed `Dockerfile`, changed `uv.lock`): **15-20 minutes**,
-  because the tool stack is rebuilt.
-
-So a full `make test-release` after an ordinary source edit is ~9.5 minutes, not ~25. The two
-`requires_*` subsets are sized in tests rather than seconds because both skip entirely without the
-capability, and neither is a meaningful timing.
+The release gate checks the runtime image version, source fingerprint and
+wheel digest. A source edit rebuilds the wheel and the image layers that
+install it. A lock edit also rebuilds the dependency layer.
 
 There is no `test-requires-docker` target. `-m requires_docker` matches nothing, and pytest exits 0
 on a fully deselected run, so the target was green over an empty set — the worst possible thing to
@@ -71,15 +60,13 @@ executable on `PATH` both lie.
   On the host they are expected to skip; `make test-ci` and `make test-release-host` filter
   them out entirely.
 - **`requires_nextflow`** — skipped unless `nextflow -version` actually exits 0. The launcher on
-  `PATH` is only a shim that fetches the framework JAR into `NXF_HOME` on first use, so
-  `shutil.which("nextflow")` returns a path even on an image where no real invocation can
-  succeed. This probe mirrors `NextflowRunner.validate_installation`, so a test skips exactly
+  `PATH` can contain a launcher whose framework JAR or Java executable is missing. This probe mirrors `NextflowRunner.validate_installation`, so a test skips exactly
   when the pipeline itself would report `nextflow_unavailable`.
   Inside the image, `test_nextflow_available` separately **fails** if this required runtime cannot
   start. The Docker build also runs `nextflow -version` with networking disabled, after pip
   installation, to verify that the launcher matches the bundled framework JAR.
 - **`requires_network`** — local-only and skipped by default, even when the internet works.
-  Use `make test-requires-network` or `uv run pytest --run-network -m requires_network` to opt in.
+  Use `make test-requires-network` or `pixi run --locked -e dev pytest --run-network -m requires_network` to opt in.
   CI rejects `--run-network`; normal CI and both release stages explicitly exclude this marker.
   A default run skips before attempting any live-service probe. With local opt-in, a _verified_
   TLS handshake with `rest.ensembl.org` must still succeed. The probe uses Python's own trust store;
@@ -121,7 +108,7 @@ write into `logger.warning`, so the CLI exits 0 either way: the assertions in
 > independent ways to get a wrong percentage, and the second is the one that actually bites.
 >
 > 1. **A second writer.** `[tool.coverage.run] data_file` is the fixed path `.coverage`, and
->    `make test-ci`, a bare `uv run pytest --cov` and the container stage's `--cov-append` all write it.
+>    `make test-ci`, a bare `pixi run --locked -e dev pytest --cov` and the container stage's `--cov-append` all write it.
 >    A concurrent run in the same checkout rewrites the host stage's data between step 1 and step 3.
 > 2. **A source edit between measurement and report.** `coverage report` stores bare line numbers and
 >    re-parses the source file when it renders, so an edit landing after step 1 makes the recorded lines
@@ -369,22 +356,12 @@ Treat the default backend as rollout-ready only when all of the following hold:
 - `test_nextflow_mirna_batch_path_uses_default_backend` passes and emits aggregated miRNA artifacts through the embedded Nextflow path
 - no new public CLI or workflow backend-selection surface is introduced
 
-### Timeouts and Expectations
-
-- **Never cancel** `uv sync --dev` (can take 60-120s first time)
-- **Docker builds** take ~15-20 minutes first time, much faster subsequently. `docker-ensure`
-  triggers one whenever `src/`, `pyproject.toml`, `uv.lock` or the Dockerfile has changed since the
-  image was built, so `make test-release` after a source edit pays that cost once.
-- **`make test-dev`** should complete in ~36s (1,788 tests) — see the ceiling above
-- **`make test-ci`** completes in ~13s (40 tests) and writes coverage.xml
-- **`make test-release`** completes in ~6.5 minutes when the image is current, ~9.5 with a source rebuild
-
 ## Quick Health Checks
 
 ```bash
 # Local installation verification
-uv run sirnaforge version
-uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv
+pixi run --locked -e dev sirnaforge version
+pixi run --locked -e dev sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv
 
 # Docker environment verification
 docker run --rm sirnaforge:latest sirnaforge version
@@ -412,7 +389,7 @@ validate integration and reporting, not allele-specific biological performance. 
 service checks are retained separately:
 
 ```bash
-uv run pytest tests/integration/test_variant_live.py --run-network -v
+pixi run --locked -e dev pytest tests/integration/test_variant_live.py --run-network -v
 ```
 
 Those tests require working Ensembl/NCBI endpoints, not just a successful TLS handshake. The

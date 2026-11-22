@@ -1,5 +1,9 @@
 # Performance investigations: Pixi and BWA-MEM3
 
+This review records the pre-consolidation evaluation. Its original tool definitions,
+commands and measurements are available in the [evaluation checkout](https://github.com/Austin-s-h/sirnaforge/tree/4b94e66ce3cd730b4d85b3b5aeaf66e980f6fc16).
+Use a detached worktree at that commit to reproduce its measurements.
+
 Status on 2026-10-26: **#121 is closed with Pixi adoption deferred; the #122 evaluation recommends deferring broader adoption. BWA-MEM3 plain mode is available as an optional integration, with BWA-MEM2 still the default.**
 This records the F1/F2 investigation work from #124 for #121/#122.
 Existing package, execution, index and reporting defaults are unchanged.

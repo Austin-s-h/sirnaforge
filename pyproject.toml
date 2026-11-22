@@ -12,7 +12,6 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -24,13 +23,14 @@ license = {file = "LICENSE"}
 name = "sirnaforge"
 readme = "README.md"
 requires-python = ">=3.10, <3.13"
-version = "0.8.0"
+version = "0.8.1"
 
 dependencies = [
   "biopython>=1.84",
   "pandas>=2.3.0",
   "numpy>=1.26.0,<2.5",
   "requests>=2.32.0",
+  "urllib3>=2.8.0,<3",  # Security floor for the Requests transport
   "pysam>=0.23.0",
   "pyahocorasick>=2.1.0",
   "fm-index>=2.3.4",
@@ -53,7 +53,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "uv>=0.4.0",
   "pytest>=8.0",
   "pytest-cov>=6.0",
   "pytest-mock>=3.15",
@@ -70,10 +69,6 @@ dev = [
   "pandas-stubs>=2.1.0",
   "codespell>=2.4.0",
   "bandit[toml]>=1.7.0",
-  # No `safety` here on purpose: the <3.0.0 pin it carried needs pkg_resources, which modern
-  # setuptools no longer ships on 3.12, so every invocation produced an unhandled exception instead
-  # of a scan. `make security` fetches pip-audit on demand (`uv run --with`) rather than pinning a
-  # scanner into the lock for a target that is advisory.
   "sphinx>=7.3.0",
   "sphinx-rtd-theme>=2.0.0",
   "myst-parser>=2.0.0",
@@ -99,9 +94,6 @@ Repository = "https://github.com/austin-s-h/sirnaforge"
 
 [project.scripts]
 sirnaforge = "sirnaforge.cli:app"
-
-[tool.uv]
-default-groups = ["dev"]
 
 [tool.hatch.version]
 path = "src/sirnaforge/__init__.py"
@@ -303,6 +295,7 @@ source = [
   "src/",
   "/workspace/src/",
   "*/sirnaforge/src/",
+  "/opt/sirnaforge/.pixi/envs/*/lib/python*/site-packages/",
 ]
 
 [tool.coverage.report]

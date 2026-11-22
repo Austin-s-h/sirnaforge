@@ -22,7 +22,7 @@ Selection rule, in order, with no tuning against the resulting correlation:
    ``k = max(1, floor(n / target_rows))``, then truncate to ``--target-rows``.
 
 Usage:
-    uv run python scripts/build_accessibility_test_fixture.py \\
+    pixi run --locked -e dev python scripts/build_accessibility_test_fixture.py \\
         --benchmark-csv work/sirna_bench.csv \\
         --transcripts work/bench_tx.fa \\
         --out-dir tests/unit/data

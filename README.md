@@ -5,7 +5,7 @@
 
   [![Release](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/austin-s-h/sirnaforge/actions/workflows/release.yml)
   [![Python 3.10–3.12](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/downloads/)
-  [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+  [![Pixi](https://img.shields.io/badge/Pixi-locked-FFD954)](pixi.toml)
   [![Docker](https://img.shields.io/badge/docker-available-blue?logo=docker)](https://github.com/users/austin-s-h/packages/container/package/sirnaforge)
   [![Documentation](https://img.shields.io/badge/docs-latest-blue.svg)](https://austin-s-h.github.io/sirnaforge)
   [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -58,23 +58,16 @@ Choose your path based on what you need to do:
   docker pull ghcr.io/austin-s-h/sirnaforge:latest
   ```
 
-- **Daily development (Python-only, fast)** — Use uv + managed virtualenv; great for core code and unit tests. Heavy bio/Nextflow tests stay skipped unless you also have Docker/Java.
+- **Develop on Linux x86_64 or WSL2** with [Pixi 0.76.1](https://pixi.prefix.dev/latest/installation/), Git and Make.
   ```bash
-  curl -LsSf https://astral.sh/uv/install.sh | sh
   git clone https://github.com/austin-s-h/sirnaforge && cd sirnaforge
   make dev
-  make check
+  make lint
+  make test-dev
   ```
-
-- **Complete local testing (matches CI)** — Either
-  1) Build and test in Docker (reuses the bundled tools): `make docker-build-test`
-  2) Or use conda to get bio deps + Java locally, then run the full suite:
-  ```bash
-  conda env create -f environment-dev.yml
-  conda activate sirnaforge
-  make test-release
-  ```
-  (Nextflow/Java are required for Nextflow-marked tests; Docker is required for container-marked tests.)
+  Run `make test-release` for the complete gate with Docker.
+- **Install the Python wheel** with `pip install sirnaforge`. For an external toolchain
+  or a remote x86_64 Docker engine on macOS and ARM, see the [installation guide](docs/installation.md).
 
 ---
 
@@ -89,7 +82,7 @@ docker run -v $(pwd):/workspace -w /workspace \
   sirnaforge workflow TP53 --output-dir results
 
 # Local
-uv run sirnaforge workflow TP53 --output-dir results
+pixi run --locked -e dev sirnaforge workflow TP53 --output-dir results
 ```
 
 **What you get:**
@@ -355,7 +348,7 @@ make test-requires-nextflow # Tests requiring Nextflow
 ```
 
 For a targeted live check, use
-`uv run pytest tests/integration/test_variant_live.py --run-network -v`.
+`pixi run --locked -e dev pytest tests/integration/test_variant_live.py --run-network -v`.
 Normal runs skip live-service tests, both release stages exclude them, and CI rejects
 `--run-network`. See the [testing guide](docs/developer/testing_guide.md) for local Docker opt-in.
 

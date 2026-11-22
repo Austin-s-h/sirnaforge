@@ -393,7 +393,7 @@ def prepare(source_dir: Path, output_dir: Path, cdna_fasta: Path, datasets: tupl
                 continue
             length = int(length_key)
             commands[f"{dataset}_len{length}"] = (
-                f"uv run sirnaforge workflow benchmark_oligogym_{dataset} "
+                f"pixi run --locked -e dev sirnaforge workflow benchmark_oligogym_{dataset} "
                 f"--input-fasta {length_summary['native_input_fasta']} --length {length} "
                 f"--run-mode exploratory --design-mode sirna --database ensembl "
                 f"--species human,mouse,rat,macaque --query-species human "

@@ -1,0 +1,9 @@
+**
+!pixi.toml
+!pixi.lock
+!dist/*.whl
+!docker/entrypoint.sh
+!docker/conda-shim.sh
+!docker/micromamba-activate.sh
+!scripts/check_pixi_environment.py
+!docker/conda-path.sh

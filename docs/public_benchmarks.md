@@ -39,9 +39,9 @@ the manifest uses upstream bytes.
 | [TxBench public repository](https://github.com/latchbio/txbench-oligo-discovery) | Public snapshot | Four example prompts, released trajectories, paper/source, and notices. Preserve its canary and training-use restrictions. |
 
 ```bash
-uv run python scripts/fetch_public_benchmarks.py --dataset oligogym
-uv run python scripts/fetch_public_benchmarks.py --dataset aso_atlas_2
-uv run python scripts/fetch_public_benchmarks.py --dataset txbench_oligo_discovery
+pixi run --locked -e dev python scripts/fetch_public_benchmarks.py --dataset oligogym
+pixi run --locked -e dev python scripts/fetch_public_benchmarks.py --dataset aso_atlas_2
+pixi run --locked -e dev python scripts/fetch_public_benchmarks.py --dataset txbench_oligo_discovery
 # Omit --dataset to fetch everything. Verify selected local files with --verify-only.
 ```
 
@@ -65,10 +65,10 @@ of a fully complementary 21-nt duplex; the artifact guide records its mixed geom
 Use isolated output directories for comparison before replacing checked-in fixtures:
 
 ```bash
-uv run python scripts/prepare_oligo_benchmarks.py \
+pixi run --locked -e dev python scripts/prepare_oligo_benchmarks.py \
   --output-dir benchmark_results/rebuilt_oligogym
 
-uv run python scripts/build_review_benchmarks.py \
+pixi run --locked -e dev python scripts/build_review_benchmarks.py \
   --source-dir tests/data/benchmarks/ml_reviews \
   --existing-records-csv tests/data/benchmarks/oligogym/records.csv \
   --out-dir benchmark_results/rebuilt_ml_reviews
@@ -91,7 +91,7 @@ Pin an Ensembl release and record fresh checksums for new experiments.
 Assuming reference files at `/ref/human.fa`, `/ref/mouse.fa`, `/ref/rat.fa`, and `/ref/macaque.fa`:
 
 ```bash
-uv run python scripts/prepare_native_design_benchmarks.py \
+pixi run --locked -e dev python scripts/prepare_native_design_benchmarks.py \
   --cdna-fasta /ref/human.fa \
   --output-dir benchmark_results/native_design
 ```
@@ -106,7 +106,7 @@ them. Review an isolated build first.
 
 ```bash
 for species in human mouse rat macaque; do
-  uv run python scripts/prepare_representative_ensembl_transcriptomes.py \
+  pixi run --locked -e dev python scripts/prepare_representative_ensembl_transcriptomes.py \
   --input-fasta "/ref/${species}.fa" \
   --mapping-path tests/data/benchmarks/oligogym_native_design/mappings.csv \
   --output-fasta "tests/data/benchmarks/oligogym_native_design/references/representative/${species}_protein_coding_gene_representatives.fa" \
@@ -127,7 +127,7 @@ each transcript once; new checksums must remain separate from historical manifes
 Offline mappings for the established fixtures are tracked. To refresh an Ichihara mapping:
 
 ```bash
-uv run python scripts/build_panel_ortholog_mapping.py \
+pixi run --locked -e dev python scripts/build_panel_ortholog_mapping.py \
   --mapping-path tests/data/benchmarks/oligogym_native_design/mappings.csv \
   --dataset ichihara_2007_1 \
   --query-key benchmark_oligogym_ichihara_2007_1 \
@@ -187,7 +187,7 @@ The runner emits `ichihara_2007_1_len19`, `ichihara_2007_2_len19`, and
 `martinelli_2023_1_len21` directories, matching the linker's expectations:
 
 ```bash
-uv run python scripts/link_native_design_candidates.py \
+pixi run --locked -e dev python scripts/link_native_design_candidates.py \
   --workflow-root workflow_results/oligogym_native_design_preproduction_v1
 ```
 
@@ -196,7 +196,7 @@ For analysis, supply the actual weights used to create source CSV score componen
 This example applies only to source runs with weights 0.25/0.10/0.30/0.35:
 
 ```bash
-uv run python scripts/analyze_oligogym_scoring.py \
+pixi run --locked -e dev python scripts/analyze_oligogym_scoring.py \
   --workflow-root workflow_results/oligogym_native_design_preproduction_v1 \
   --run ichihara_2007_1=ichihara_2007_1_len19 \
   --run ichihara_2007_2=ichihara_2007_2_len19 \
@@ -214,7 +214,7 @@ labels; review captions against source profiles for new experiments.
 Recreate historical figures without workflow outputs:
 
 ```bash
-uv run python scripts/render_oligogym_scoring_report.py \
+pixi run --locked -e dev python scripts/render_oligogym_scoring_report.py \
   --analysis docs/_data/oligogym_scoring_analysis_historical.json
 ```
 

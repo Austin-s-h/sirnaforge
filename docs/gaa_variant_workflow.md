@@ -30,7 +30,7 @@ export SIRNAFORGE_GENCODE_GTF=/data/pinned/gencode.v49.annotation.gtf.gz
 export SIRNAFORGE_GENCODE_FASTA=/data/pinned/gencode.v49.transcripts.fa.gz
 export SIRNAFORGE_GENCODE_ASSEMBLY=GRCh38
 
-uv run sirnaforge workflow GAA \
+pixi run --locked -e dev sirnaforge workflow GAA \
   --database gencode \
   --snp-file /data/pinned/gaa_c1935c_a.vcf \
   --variant-mode both \

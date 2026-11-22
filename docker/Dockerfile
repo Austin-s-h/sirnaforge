@@ -1,180 +1,61 @@
-# Comprehensive Docker image for siRNAforge
-# Includes all dependencies: Python, bioinformatics tools, and workflow management
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
-ARG VERSION=0.0.0+local
-ENV BUILD_VERSION=${VERSION}
+# Linux x86_64 release candidate. The wheel comes from the caller's tested dist/.
+FROM ghcr.io/prefix-dev/pixi:0.76.1@sha256:540414f50b96439a6ba1475b79b2e2dd2208e86ebef33e2fbf2a176a8f037d31 AS locked-runtime
+ARG PIXI_ENV=runtime
+WORKDIR /opt/sirnaforge
+COPY pixi.toml pixi.lock ./
+RUN pixi install --locked -e "$PIXI_ENV"
 
-# Ensure we start as root to install system packages and create a non-root user
-USER root
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
+ARG PIXI_ENV=runtime
+ARG VERSION
+ARG SRC_FINGERPRINT
+ARG WHEEL_SHA256
+ENV BUILD_VERSION="${VERSION}" \
+    BUILD_SRC_FINGERPRINT="${SRC_FINGERPRINT}" \
+    BUILD_WHEEL_SHA256="${WHEEL_SHA256}" \
+    CONDA_PREFIX="/opt/sirnaforge/.pixi/envs/${PIXI_ENV}" \
+    HOME="/home/sirnauser/.nextflow" \
+    NXF_HOME="/home/sirnauser/.nextflow" \
+    MAMBA_ROOT_PREFIX="/home/sirnauser/.nextflow/mamba" \
+    NXF_CONDA_CLI="micromamba" \
+    NXF_DISABLE_CHECK_LATEST="true"
+ENV PATH="${CONDA_PREFIX}/bin:${PATH}" \
+    JAVA_HOME="${CONDA_PREFIX}/lib/jvm" \
+    NXF_DIST="${CONDA_PREFIX}/share/nextflow/dist" \
+    LD_LIBRARY_PATH="${CONDA_PREFIX}/lib"
 
-# Install system dependencies for building
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    wget \
-    ca-certificates \
-    git \
-    curl \
-    unzip \
-    # openjdk removed from builder to avoid unnecessary download; runtime will
-    # provide Java via conda (openjdk) in the runtime environment.
-    \
-    zlib1g-dev \
-    libbz2-dev \
-    liblzma-dev \
-    libncurses5-dev \
-    libncursesw5-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends procps ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd -m -s /bin/bash -u 1000 sirnauser && \
+    mkdir -p "$MAMBA_ROOT_PREFIX" && chmod -R a+rwX "$NXF_HOME" && \
+    ln -s "$CONDA_PREFIX" /opt/conda && \
+    ln -s "$CONDA_PREFIX/bin/micromamba" /usr/local/bin/micromamba
 
-# Create a non-root user early and ensure /app is owned by them so build
-# artifacts are not owned by root.
-RUN useradd -m -s /bin/bash -u 1000 sirnauser && mkdir -p /app && chown -R sirnauser:sirnauser /app /home/sirnauser
-
-# Switch to the non-root user for subsequent build steps so outputs are
-# created with the correct ownership.
-USER sirnauser
-WORKDIR /app
-
-# Copy uv configuration and dependencies as the non-root user
-COPY --chown=sirnauser:sirnauser pyproject.toml uv.lock README.md LICENSE ./
-
-# Install Python dependencies with uv (runs as sirnauser)
-RUN uv sync --frozen --no-dev
-
-# Copy source code as the non-root user
-COPY --chown=sirnauser:sirnauser src/ ./src/
-
-# Build the package (as sirnauser)
-RUN uv build
-
-# Conda builder stage: create the conda environment in a separate stage so we
-# can copy it into the runtime image without an expensive recursive chown.
-FROM mambaorg/micromamba:bookworm-slim AS conda-builder
-# Copy environment and install into /opt/conda in this stage
-COPY docker/environment-nextflow.yml /tmp/environment.yml
-RUN micromamba install --prefix /opt/conda --file /tmp/environment.yml -y && \
-    micromamba clean --all --yes
-
-# Unit test stage (fast) - runs unit tests using the builder image
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS unit-test
-ARG VERSION=0.0.0+local
-ENV BUILD_VERSION=${VERSION}
-# A digest of the sources baked in, so `make docker-ensure` can tell a stale image from a current one.
-# BUILD_VERSION alone cannot: it stays 0.7.1 across every commit of an unreleased version, so a
-# version-only check certifies code the image does not contain -- which is how a three-day-old image
-# passed the guard while ~180 commits landed. See the Makefile's SRC_FINGERPRINT.
-ARG SRC_FINGERPRINT=unknown
-ENV BUILD_SRC_FINGERPRINT=${SRC_FINGERPRINT}
-USER root
-
-# Create non-root user and prepare home; we must create the user before COPY
-# so COPY --chown can resolve the user/group name.
-RUN useradd -m -s /bin/bash -u 1000 sirnauser && mkdir -p /home/sirnauser
-
-# Install runtime utilities required by Nextflow (ps for task metrics).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    procps \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy the pre-built conda prefix from the conda-builder stage and set ownership
-# to the non-root user at layer creation time (fast, avoids recursive chown).
-COPY --from=conda-builder --chown=sirnauser:sirnauser /opt/conda /opt/conda
-
-# Provide micromamba/conda shims so Nextflow can materialize per-process envs.
-COPY --from=conda-builder /usr/bin/micromamba /usr/local/bin/micromamba
+COPY --from=locked-runtime /opt/sirnaforge/.pixi/envs/${PIXI_ENV}/ /opt/sirnaforge/.pixi/envs/${PIXI_ENV}/
+COPY --from=locked-runtime /opt/sirnaforge/pixi.lock /opt/sirnaforge/.pixi/envs/${PIXI_ENV}/share/sirnaforge/pixi.lock
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/conda-shim.sh /usr/local/bin/conda
-COPY docker/micromamba-activate.sh /opt/conda/bin/activate
-RUN chmod 755 /usr/local/bin/conda /opt/conda/bin/activate
-
-# Switch to non-root user and install the application wheel into the conda
-# prefix (pip will satisfy pure-Python deps from wheels).
-USER sirnauser
-WORKDIR /home/sirnauser
-
-# Copy and install the application wheel
-COPY --from=builder --chown=sirnauser:sirnauser /app/dist/*.whl /tmp/
-# The PyPI nextflow dependency also installs a launcher. Its version can be newer
-# than conda's bundled framework JAR, forcing a runtime download even with NXF_DIST
-# set. Keep the conda launcher and JAR together while installing the Python package.
-RUN cp /opt/conda/bin/nextflow /tmp/nextflow-conda && \
-    /opt/conda/bin/pip install --no-cache-dir /tmp/*.whl && \
-    cp /tmp/nextflow-conda /opt/conda/bin/nextflow && \
-    rm -f /tmp/nextflow-conda /tmp/*.whl
-
-# Switch to the non-root user for installing the application wheel so files
-# created during installation are owned by sirnauser.
-USER sirnauser
-WORKDIR /home/sirnauser
-
-# Set environment variables
-# Ensure conda/micromamba binaries are on PATH so installed tools (nextflow,
-# bwa-mem2, bwa-mem3, samtools, ViennaRNA, and the installed sirnaforge entrypoint) are
-# available to healthchecks and the default CMD which run via /bin/sh.
-ENV PATH="/opt/conda/bin:/opt/conda/condabin:/usr/local/bin:$PATH"
-ENV JAVA_HOME="/opt/conda/lib/jvm"
-# A numeric UID without an /etc/passwd entry otherwise gets HOME=/; micromamba
-# then cannot write its ~/.conda environment registry. Reuse the writable
-# Nextflow cache directory as HOME for that image launch style.
-ENV HOME="/home/sirnauser/.nextflow"
-ENV NXF_HOME="/home/sirnauser/.nextflow"
-# The conda `nextflow` package already ships the framework JAR under
-# share/nextflow/dist, but the launcher only looks in $NXF_HOME/framework and
-# otherwise tries to download it from nextflow.io. That download fails on any
-# air-gapped or TLS-intercepting network, so `nextflow -version` exited 1 in a
-# fully provisioned image and every off-target run recorded
-# {"status": "skipped", "reason": "nextflow_unavailable"}. Point the launcher at
-# the JAR that is already here; no network required.
-ENV NXF_DIST="/opt/conda/share/nextflow/dist"
-# Configure uv to use the existing conda environment instead of creating its own venv
-ENV UV_SYSTEM_PYTHON=1
-ENV UV_PYTHON="/opt/conda/bin/python"
-ENV VIRTUAL_ENV="/opt/conda"
-ENV MAMBA_ROOT_PREFIX="/home/sirnauser/.nextflow/mamba"
-ENV NXF_CONDA_CLI="micromamba"
-
-# Ensure Nextflow home is created and writable by the non-root user so Nextflow
-# does not attempt to create runtime directories under /usr/local/bin.
-#
-# World-writable on purpose: the documented way to run this image without root-owned
-# outputs on a bind mount is `--user $(id -u):$(id -g)`, which is a UID that exists in
-# no image group. Nextflow writes tmp/, plugins/ and its cache under NXF_HOME on every
-# run, so a mode that only satisfies sirnaforge:sirnaforge fails immediately with
-# `mkdir: cannot create directory '/home/sirnauser/.nextflow/tmp'`.
-RUN mkdir -p /home/sirnauser/.nextflow "$MAMBA_ROOT_PREFIX" && \
-    chown -R sirnauser:sirnauser /home/sirnauser/.nextflow && \
-    chmod -R a+rwX /home/sirnauser/.nextflow
-
-# A launcher on PATH is insufficient: prove the installed runtime starts using
-# only the packaged JAR, after pip has finished modifying the environment.
-RUN --network=none nextflow -version
-
-# Copy and setup entrypoint script
-COPY --chown=sirnauser:sirnauser docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-USER root
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# Install conda-path.sh to /etc/profile.d/ to preserve PATH in login shells
 COPY docker/conda-path.sh /etc/profile.d/conda-path.sh
-RUN chmod 644 /etc/profile.d/conda-path.sh
+COPY docker/micromamba-activate.sh /opt/sirnaforge/.pixi/envs/${PIXI_ENV}/bin/activate
+COPY scripts/check_pixi_environment.py /tmp/check_pixi_environment.py
+COPY dist/*.whl /tmp/wheels/
+RUN --network=none set -eu; \
+    set -- /tmp/wheels/*.whl; test "$#" -eq 1; \
+    echo "$WHEEL_SHA256  $1" | sha256sum --check; \
+    python -m pip install --no-deps --no-build-isolation --no-cache-dir "$1"; \
+    python /tmp/check_pixi_environment.py --wheel-only; \
+    python -c 'import sys; from importlib.metadata import version; assert version("sirnaforge") == sys.argv[1]' "$VERSION"; \
+    rm -rf /tmp/wheels /tmp/check_pixi_environment.py; \
+    chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/conda "$CONDA_PREFIX/bin/activate"
 
 USER sirnauser
-
-# Health check - verify all major components
+WORKDIR /home/sirnauser
+RUN --network=none nextflow -version
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD sirnaforge version && \
-        nextflow -version && \
-        bwa-mem2 version && \
-        bwa-mem3 version && \
-        samtools --version && \
-        RNAfold --version || exit 1
-
-# Set entrypoint and default command
+    CMD sirnaforge version && nextflow -version && bwa-mem2 version && bwa-mem3 version && samtools --version && RNAfold --version
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD []
-
-# Metadata
-LABEL org.opencontainers.image.title="siRNAforge"
-LABEL org.opencontainers.image.description="siRNAforge - Multi-species gene to siRNA design, off-target prediction, and ranking. Comprehensive siRNA design toolkit for gene silencing."
-LABEL org.opencontainers.image.version="${VERSION}"
-LABEL org.opencontainers.image.authors="Austin S. Hovland"
-LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.source="https://github.com/austin-s-h/sirnaforge"
+LABEL org.opencontainers.image.title="siRNAforge" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.source="https://github.com/austin-s-h/sirnaforge"

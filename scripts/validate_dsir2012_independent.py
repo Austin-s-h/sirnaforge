@@ -8,7 +8,7 @@ unintended-repression liability, and it never fits or promotes weights.
 
 Run from the repository root with the project environment:
 
-    .venv/bin/python scripts/validate_dsir2012_independent.py
+    pixi run --locked -e dev python scripts/validate_dsir2012_independent.py
 """
 
 from __future__ import annotations

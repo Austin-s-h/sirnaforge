@@ -52,7 +52,7 @@ endpoint, group uncertainty by source accession, and report these limitations.
 See the [primary paper](https://doi.org/10.1186/1471-2105-7-65), Results section.
 
 A fixed, exploratory check of the shipped GC feature is reproducible with
-`uv run python scripts/validate_shabalina_independent.py`. At scoring version
+`pixi run --locked -e dev python scripts/validate_shabalina_independent.py`. At scoring version
 4.1.0, the default design GC score has a pooled Spearman ρ of −0.215 against
 residual expression (the expected direction is negative), but its accession
 fixed-effect slope is +12.47 residual-expression percentage points per score
@@ -72,7 +72,7 @@ comparison against the extracted Shabalina 653-guide training panel finds no
 overlap. This does not establish non-overlap with every model training set used
 in the Wang paper or with all external collections.
 
-Run `uv run python scripts/validate_wang2009_independent.py` to reproduce a
+Run `pixi run --locked -e dev python scripts/validate_wang2009_independent.py` to reproduce a
 fixed, exploratory comparison of guide A/U(1–5), shipped duplex asymmetry, and
 the shipped GC feature on the 19-nt cores. The script reports pooled associations
 and a leave-one-target-out comparison of A/U alone, asymmetry alone, and both
@@ -113,7 +113,7 @@ selection and range restriction. Its sequences have no 19-nt core or full
 21-nt guide match in the tracked source extracts or OligoGym files audited by
 the script; this does not prove separation from every external training corpus.
 
-Run `uv run python scripts/validate_dsir2012_independent.py` for the fixed
+Run `pixi run --locked -e dev python scripts/validate_dsir2012_independent.py` for the fixed
 within-target rank check. Across ten target groups, mean per-target Spearman ρ
 against residual expression was −0.022 for asymmetry calculated on the verified
 19-nt paired core (95% target-cluster bootstrap interval [−0.177, 0.145]) and
@@ -160,7 +160,7 @@ source-file checksums, row counts, license, and these limits are recorded in
 From the source checkout, using its supported Python environment:
 
 ```bash
-uv run python scripts/build_review_benchmarks.py \
+pixi run --locked -e dev python scripts/build_review_benchmarks.py \
   --source-dir tests/data/benchmarks/ml_reviews \
   --existing-records-csv tests/data/benchmarks/oligogym/records.csv \
   --out-dir /path/to/rebuilt-review-data

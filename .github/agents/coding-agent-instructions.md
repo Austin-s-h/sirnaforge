@@ -11,9 +11,9 @@
 - Examples and documentation leverage `examples/*.py` and `examples/modification_patterns/*.json`; prefer reusing these assets (also mirrored in `docs/usage_examples.md`).
 
 ## Developer Environment
-- Bootstrap once with `make dev` (wraps `uv sync --dev` and installs pre-commit). Do not bypass this—Ruff/mypy hooks rely on the managed `.venv`.
-- Daily commands run through `uv`: `uv run sirnaforge workflow TP53 --output-dir results`, `uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv`.
-- Packaging is Hatchling-only (`pyproject.toml`, `uv.lock`); avoid introducing `setup.py` or ad-hoc requirements files.
+- Bootstrap once with `make dev` to install the locked Pixi dev and docs environments. Use `.pixi/envs/dev/bin/python` in the editor.
+- Run daily commands through Pixi. `pixi run --locked -e dev sirnaforge workflow TP53 --output-dir results`, `pixi run --locked -e dev sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv`.
+- Packaging is Hatchling-only (`pyproject.toml`, `pixi.lock`); avoid introducing `setup.py` or ad-hoc requirements files.
 
 ## CI & Make Commands
 - `make lint` runs Ruff check/format (check-only) plus mypy; `make format` applies Ruff format/fixes. `make check` chains `format` then `test-dev`, so expect unstaged formatting edits.
@@ -38,5 +38,5 @@
 - `examples/complete_workflow_example.py` and `docs/tutorials/python_api.md` are the canonical references for end-to-end usage—keep them updated when signatures change.
 
 ## Manual Verification
-- Host sanity check: `uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv` (completes in ~2s and produces a CSV).
+- Host sanity check: `pixi run --locked -e dev sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv` (completes in ~2s and produces a CSV).
 - Container/pipeline check: `make docker-run GENE=TP53` or `sirnaforge workflow TP53 --output-dir tp53_workflow_debug` and inspect `tp53_workflow_debug/orf_reports/*.txt` plus the summary CSVs.

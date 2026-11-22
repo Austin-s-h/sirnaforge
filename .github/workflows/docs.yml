@@ -7,8 +7,6 @@ on:
     branches: [ master ]
   workflow_dispatch:
 
-env:
-  PYTHON_VERSION: "3.12"
 
 permissions:
   contents: read
@@ -25,7 +23,7 @@ jobs:
 
     steps:
     - name: 📥 Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: � Normalize repository identifiers
       id: repo
@@ -38,24 +36,20 @@ jobs:
         echo "owner=$OWNER_LOWER" >> "$GITHUB_OUTPUT"
         echo "name=$NAME_LOWER" >> "$GITHUB_OUTPUT"
 
-    - name: �🐍 Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
+    - name: Install locked documentation environment
+      uses: prefix-dev/setup-pixi@v0.10.0
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
+        pixi-version: v0.76.1
+        locked: true
+        cache: true
+        environments: docs
 
-    - name: ⚡ Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: docs
-
-    - name: 📦 Install dependencies
-      run: uv sync --group dev
+    - name: Install the local package
+      run: pixi run --locked -e docs install-app
 
     - name: 🏗️ Build documentation
       run: |
-        uv run --group dev sphinx-build -W -b html docs docs/_build/html
+        make docs
         touch docs/_build/html/.nojekyll
 
     - name: 📤 Upload documentation artifact

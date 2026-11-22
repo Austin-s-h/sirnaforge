@@ -190,7 +190,7 @@ def prepare(source_dir: Path, output_dir: Path, datasets: tuple[str, ...]) -> di
         key = f"{dataset}_len{length}"
         input_counts[key] = len(entries)
         commands[key] = (
-            f"uv run sirnaforge design {_relative_or_absolute(path)} --length {length} --output benchmark_results/{key}.csv"
+            f"pixi run --locked -e dev sirnaforge design {_relative_or_absolute(path)} --length {length} --output benchmark_results/{key}.csv"
         )
 
     manifest = {

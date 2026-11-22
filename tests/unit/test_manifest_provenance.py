@@ -38,6 +38,7 @@ import importlib
 import json
 import re
 import subprocess
+import sys
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -1587,20 +1588,31 @@ def test_index_authorship_is_a_dated_inference_not_a_claim_about_this_run(tmp_pa
 
 @pytest.mark.unit
 def test_the_lock_is_digested_when_it_is_actually_there(tmp_path):
-    """``lock_sha256`` was a PERMANENT absence -- "uv.lock is not shipped in the wheel".
-
-    True of a wheel or container run, and false of the dev worktree the manifest under review came
-    from: the lock sits at the repo root this module already verified. A permanent excuse for a
-    conditional absence is its own kind of fabrication.
-    """
-    lock = REPO_ROOT / "uv.lock"
-    assert lock.is_file(), "fixture guard: this suite runs from a worktree that has the lock"
+    """A verified editable worktree records the active dependency lock."""
+    lock = REPO_ROOT / "pixi.lock"
+    assert lock.is_file(), "fixture guard: this suite runs from a worktree that has the active lock"
 
     dependencies = _provenance(_qualified_workflow(tmp_path, "lock"))["build"]["dependencies"]
 
     assert dependencies["lock_sha256"]["value"] == _sha256(lock)
     assert dependencies["lock_sha256"]["state"] == "repo_worktree_lock"
     assert re.fullmatch(r"\d+", dependencies["lock_revision"]["value"])
+
+
+@pytest.mark.unit
+def test_runtime_prefix_lock_identifies_the_container_closure(tmp_path, monkeypatch):
+    """The runtime records the lock that was used in the image build."""
+    module = _provenance_module()
+    lock = tmp_path / "share" / "sirnaforge" / "pixi.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("version: 7\nenvironments: {}\n")
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+
+    identity = module._lock_identity(None)
+
+    assert identity["lock_sha256"]["value"] == _sha256(lock)
+    assert identity["lock_sha256"]["state"] == "runtime_prefix_lock"
+    assert identity["lock_revision"]["value"] == "7"
 
 
 @pytest.mark.unit
@@ -1613,7 +1625,7 @@ def test_an_unverified_repository_supplies_no_lock(tmp_path, monkeypatch):
     module = _provenance_module()
     foreign = tmp_path / "not_sirnaforge"
     foreign.mkdir()
-    (foreign / "uv.lock").write_text("version = 1\nrevision = 99\n")
+    (foreign / "pixi.lock").write_text("version: 7\n")
     monkeypatch.setattr(module, "_package_repo_root", lambda: foreign)
     module.build_identity.cache_clear()
 
