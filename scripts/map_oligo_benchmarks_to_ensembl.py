@@ -33,6 +33,13 @@ from typing import Any, TextIO
 
 import ahocorasick
 
+from scripts.native_mapping_generator import (
+    NativeMappingInputError,
+    file_sha256,
+    load_reference_manifests,
+    write_species_sidecars,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_DIR = ROOT / "tests" / "data" / "external" / "oligogym"
 DEFAULT_OUTPUT_DIR = ROOT / "tests" / "data" / "benchmarks" / "oligogym_native"
@@ -423,16 +430,81 @@ def prepare(source_dir: Path, output_dir: Path, cdna_fasta: Path, datasets: tupl
     return manifest
 
 
+def prepare_four_species(
+    source_dir: Path,
+    output_dir: Path,
+    reference_manifests: tuple[Path, ...],
+    datasets: tuple[str, ...],
+) -> dict[str, Any]:
+    """Generate exact native/projection mappings from four caller-pinned references."""
+    references = load_reference_manifests(reference_manifests)
+    rows_by_dataset = {dataset: _read_observations(source_dir, dataset) for dataset in datasets}
+    source_rows = [row for dataset in datasets for row in rows_by_dataset[dataset]]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / "assay_observations.csv").open("w", encoding="utf-8", newline="") as handle:
+        fields = list(source_rows[0]) if source_rows else []
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(source_rows)
+    species_summary = write_species_sidecars(source_rows, references, output_dir / "species")
+    manifest = json.loads((output_dir / "species" / "manifest.json").read_text())
+    if not isinstance(manifest, dict):
+        raise ValueError("multi-species sidecar writer returned a malformed manifest")
+    manifest.update(
+        {
+            "description": "Exact paired-target mapping of human OligoGym assays against four caller-pinned cDNA references",
+            "source_directory": _relative_or_absolute(source_dir),
+            "datasets": {
+                dataset: {
+                    "observation_count": len(rows),
+                    "paired_lengths": sorted({int(row["paired_length"]) for row in rows}),
+                    "source_file": _relative_or_absolute(source_dir / f"{dataset}.csv.gz"),
+                    "source_sha256": file_sha256(source_dir / f"{dataset}.csv.gz"),
+                }
+                for dataset, rows in rows_by_dataset.items()
+            },
+            "assay_observations_csv": {
+                "path": "assay_observations.csv",
+                "sha256": file_sha256(output_dir / "assay_observations.csv"),
+                "rows": len(source_rows),
+            },
+            "species": species_summary,
+        }
+    )
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest
+
+
 def main() -> None:
     """Parse command-line arguments and write the requested benchmark artifacts."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--cdna-fasta", type=Path, required=True, help="Native Ensembl cDNA FASTA to search")
+    parser.add_argument("--cdna-fasta", type=Path, help="Legacy single human Ensembl cDNA FASTA to search")
+    parser.add_argument(
+        "--species-reference-manifest",
+        type=Path,
+        action="append",
+        default=[],
+        help="Pinned JSON reference declaration; pass once for each human, mouse, rat, and macaque FASTA",
+    )
     parser.add_argument("--dataset", action="append", choices=sorted(DATASETS), dest="datasets")
     args = parser.parse_args()
     selected = tuple(args.datasets or DATASETS)
-    print(json.dumps(prepare(args.source_dir, args.output_dir, args.cdna_fasta, selected), indent=2))
+    if args.species_reference_manifest:
+        if args.cdna_fasta is not None:
+            parser.error("--species-reference-manifest cannot be combined with --cdna-fasta")
+        try:
+            result = prepare_four_species(
+                args.source_dir, args.output_dir, tuple(args.species_reference_manifest), selected
+            )
+        except NativeMappingInputError as exc:
+            parser.error(str(exc))
+    else:
+        if args.cdna_fasta is None:
+            parser.error("provide --cdna-fasta or all four --species-reference-manifest declarations")
+        result = prepare(args.source_dir, args.output_dir, args.cdna_fasta, selected)
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

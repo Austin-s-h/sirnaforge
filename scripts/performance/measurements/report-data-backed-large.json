@@ -1,0 +1,46 @@
+{
+  "scope": "synthetic_resource_stress_only",
+  "interpretation": "Native OligoGym guide strings; candidate, hit, and miRNA rows are synthetic.",
+  "machine": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.11.13",
+    "git_revision": "6f044d01998f8f9bbb7face066f8ab6c09c642ed"
+  },
+  "guide_source": {
+    "path": "tests/data/benchmarks/oligogym_native_design/observations.csv",
+    "sha256": "fcd0527b89e57e4e8753bc265872e949e02a23ba6246fb476abfbf748e0e77b1",
+    "observation_rows": 4113,
+    "distinct_guides": 3395
+  },
+  "inputs": {
+    "candidate_rows": 29605,
+    "off_target_rows": 254487,
+    "mirna_rows": 118559,
+    "distinct_guides": 3395,
+    "source_input_bytes": 78525452
+  },
+  "outputs": {
+    "html_bytes": 61489,
+    "sidecar_bytes": 164910569,
+    "normalized_artifact_bytes": 3600247,
+    "detail_shards": 27,
+    "guide_index_bytes": 7656229
+  },
+  "budgets": {
+    "html_bytes_lt": 10000000,
+    "process_lifetime_peak_rss_bytes_lt": 1000000000,
+    "detail_sidecars_exceed_entrypoint": true
+  },
+  "diagnostics": {
+    "wall_seconds": 18.67644360900158,
+    "peak_rss_bytes": 528814080,
+    "peak_memory_scope": "process_lifetime",
+    "phases_seconds": {
+      "projected_input_staging": 0.5335368569940329,
+      "normalized_table_build": 8.18746440699033,
+      "detail_shard_write": 9.61531478499819,
+      "guide_index_write": 0.0659184389951406,
+      "html_render_and_write": 0.0008095860102912411
+    }
+  }
+}

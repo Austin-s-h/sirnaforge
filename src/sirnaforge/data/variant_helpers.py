@@ -1,10 +1,220 @@
-"""Helper functions for generating sequence contexts with variant alleles."""
+"""Helpers for applying genomic variants to transcript-oriented siRNA design."""
 
-from sirnaforge.models.sirna import SiRNACandidate
-from sirnaforge.models.variant import VariantRecord
+from collections.abc import Callable, Mapping, Sequence
+
+from Bio.Seq import Seq
+
+from sirnaforge.data.base import TranscriptInfo
+from sirnaforge.data.variant_resolution_helpers import normalize_chromosome
+from sirnaforge.models.sirna import (
+    DesignResult,
+    SiRNACandidate,
+    ranking_order_key,
+    unique_guide_representatives,
+)
+from sirnaforge.models.transcript_annotation import TranscriptAnnotation
+from sirnaforge.models.variant import VariantMode, VariantRecord
+from sirnaforge.utils.ensembl_ids import strip_version
 from sirnaforge.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def map_variant_to_transcript(
+    variant: VariantRecord,
+    annotation: TranscriptAnnotation,
+) -> int | None:
+    """Map a genomic SNV to a zero-based cDNA index using transcript exons.
+
+    Returns ``None`` when chromosome or exon membership does not match. A genomic
+    coordinate is never used directly as an index into transcript sequence.
+    """
+    if len(variant.ref) != 1 or len(variant.alt) != 1:
+        raise ValueError(f"Only SNVs are supported for allele-specific design: {variant.to_vcf_style()}")
+    if variant.assembly != "GRCh38":
+        raise ValueError(f"Unsupported variant assembly {variant.assembly!r}: {variant.to_vcf_style()}")
+    if annotation.strand not in {-1, 1}:
+        raise ValueError(f"Unknown transcript strand for {annotation.transcript_id}")
+    reference = (annotation.reference_choice or "").upper()
+    if not reference.startswith("GRCH38"):
+        raise ValueError(
+            f"Unknown or unsupported annotation assembly {annotation.reference_choice!r} for {annotation.transcript_id}"
+        )
+
+    variant_chromosome = normalize_chromosome(variant.chr)
+    annotation_chromosome = normalize_chromosome(annotation.chr)
+    if variant_chromosome is None or annotation_chromosome is None or variant_chromosome != annotation_chromosome:
+        return None
+
+    exons = [exon for exon in annotation.exons if exon.strand in {None, annotation.strand}]
+    if not exons:
+        raise ValueError(f"Transcript {annotation.transcript_id} has no usable exon annotation")
+    exons.sort(key=lambda exon: exon.start, reverse=annotation.strand == -1)
+
+    offset = 0
+    for exon in exons:
+        if exon.start <= variant.pos <= exon.end:
+            within_exon = variant.pos - exon.start if annotation.strand == 1 else exon.end - variant.pos
+            return offset + within_exon
+        offset += exon.end - exon.start + 1
+    return None
+
+
+def _transcript_allele(allele: str, strand: int) -> str:
+    """Convert a genomic allele to transcript orientation."""
+    return allele.upper() if strand == 1 else str(Seq(allele.upper()).reverse_complement())
+
+
+def apply_variant_to_transcript_sequence(
+    sequence: str,
+    variant: VariantRecord,
+    annotation: TranscriptAnnotation,
+) -> tuple[str, int | None]:
+    """Apply a strictly mapped GRCh38 variant to cDNA, returning its cDNA position.
+
+    A non-overlapping transcript is returned unchanged with ``None``. Mapped variants must match
+    the transcript-oriented reference base; this function never treats a genomic coordinate as a
+    sequence offset.
+    """
+    position = map_variant_to_transcript(variant, annotation)
+    if position is None:
+        return sequence.upper().replace("U", "T"), None
+    normalized = sequence.upper().replace("U", "T")
+    if position >= len(normalized):
+        raise ValueError(
+            f"Mapped variant {variant.to_vcf_style()} exceeds transcript sequence "
+            f"{annotation.transcript_id} length ({len(normalized)})"
+        )
+    ref = _transcript_allele(variant.ref, annotation.strand)
+    actual = normalized[position : position + 1]
+    if actual != ref:
+        raise ValueError(
+            f"Reference mismatch for {variant.to_vcf_style()} on {annotation.transcript_id} at cDNA index "
+            f"{position}: annotation maps {ref}, sequence contains {actual}"
+        )
+    edited = normalized[:position] + _transcript_allele(variant.alt, annotation.strand) + normalized[position + 1 :]
+    return edited, position
+
+
+def apply_variant_workflow(  # noqa: PLR0912
+    design_result: DesignResult,
+    variants: Sequence[VariantRecord],
+    transcripts: Sequence[TranscriptInfo],
+    annotations: Mapping[str, TranscriptAnnotation],
+    mode: str | VariantMode,
+    design_sequence: Callable[[str, str], DesignResult],
+) -> DesignResult:
+    """Filter reference guides and add allele-specific SNV guides to a design result.
+
+    ``avoid`` removes candidates overlapping mapped SNVs. ``target`` replaces
+    overlapping reference candidates with alternate-allele designs. ``both`` keeps
+    overlapping reference designs and adds alternate-allele designs. A variant that
+    cannot be mapped to any annotated exon fails with an explicit unknown-mapping
+    error instead of silently interpreting its genomic position as cDNA.
+    """
+    mode = mode.value if isinstance(mode, VariantMode) else mode.lower()
+    if mode not in {"avoid", "target", "both"}:
+        raise ValueError(f"Invalid variant mode: {mode}")
+
+    transcript_by_id = {str(t.transcript_id): t for t in transcripts}
+    mapped: dict[str, list[tuple[VariantRecord, int]]] = {}
+    for variant in variants:
+        count = 0
+        for transcript_id, transcript in transcript_by_id.items():
+            annotation = annotations.get(transcript_id) or annotations.get(strip_version(transcript_id))
+            if annotation is None:
+                annotation = next(
+                    (a for key, a in annotations.items() if strip_version(key) == strip_version(transcript_id)),
+                    None,
+                )
+            if annotation is None:
+                raise ValueError(
+                    f"Variant mapping is unknown for {variant.to_vcf_style()}: "
+                    f"transcript {transcript_id} has no genomic annotation"
+                )
+            position = map_variant_to_transcript(variant, annotation)
+            if position is None:
+                continue
+            if not transcript.sequence:
+                raise ValueError(f"Transcript sequence is unknown for variant mapping: {transcript_id}")
+            sequence = transcript.sequence.upper().replace("U", "T")
+            if position >= len(sequence):
+                raise ValueError(
+                    f"Mapped variant {variant.to_vcf_style()} exceeds transcript sequence "
+                    f"{transcript_id} length ({len(sequence)})"
+                )
+            ref = _transcript_allele(variant.ref, annotation.strand)
+            actual = sequence[position : position + 1]
+            if actual != ref:
+                raise ValueError(
+                    f"Reference mismatch for {variant.to_vcf_style()} on {transcript_id} at cDNA index "
+                    f"{position}: annotation maps {ref}, sequence contains {actual}"
+                )
+            mapped.setdefault(transcript_id, []).append((variant, position))
+            count += 1
+        if count == 0:
+            raise ValueError(
+                f"Variant mapping is unknown for {variant.to_vcf_style()}: no annotated transcript exon overlaps it"
+            )
+
+    def overlaps(candidate: SiRNACandidate, position: int) -> bool:
+        start = candidate.position - 1
+        return start <= position < start + candidate.length
+
+    original = list(design_result.candidates)
+    if mode == "avoid":
+        retained = [
+            candidate
+            for candidate in original
+            if not any(overlaps(candidate, position) for _, position in mapped.get(candidate.transcript_id, []))
+        ]
+        design_result.candidates = retained
+    elif mode == "target":
+        # Target mode is variant-specific: return only alternate-allele guides
+        # spanning a mapped variant, never generic guides from the reference pool.
+        design_result.candidates = []
+    else:
+        for candidate in original:
+            for variant, position in mapped.get(candidate.transcript_id, []):
+                if overlaps(candidate, position):
+                    annotate_candidate_with_variant(candidate, variant, "ref", mode)
+        design_result.candidates = original
+
+    if mode in {"target", "both"}:
+        for transcript_id, transcript in transcript_by_id.items():
+            variant_positions = mapped.get(transcript_id, [])
+            if not variant_positions:
+                continue
+            assert transcript.sequence is not None
+            sequence = transcript.sequence.upper().replace("U", "T")
+            for variant, position in variant_positions:
+                annotation = annotations.get(transcript_id) or next(
+                    a for key, a in annotations.items() if strip_version(key) == strip_version(transcript_id)
+                )
+                edited, applied_position = apply_variant_to_transcript_sequence(sequence, variant, annotation)
+                if applied_position != position:
+                    raise RuntimeError("variant position changed during strict transcript edit")
+                # Score this allele on its own full transcript context. Combining nearby
+                # variants here would invent a haplotype the input did not specify.
+                alt_result = design_sequence(edited, transcript_id)
+                for candidate in alt_result.candidates:
+                    if not overlaps(candidate, position):
+                        continue
+                    candidate.id = f"{candidate.id}_ALT_{variant.chr}_{variant.pos}"
+                    annotate_candidate_with_variant(candidate, variant, "alt", mode)
+                    design_result.candidates.append(candidate)
+
+    # Re-rank the actual output pool and keep its summary counters coherent.
+    design_result.candidates.sort(key=ranking_order_key)
+    passing = [
+        candidate
+        for candidate in design_result.candidates
+        if candidate.passes_filters is True or candidate.passes_filters == SiRNACandidate.FilterStatus.PASS
+    ]
+    design_result.top_candidates = unique_guide_representatives(passing)[: design_result.parameters.top_n]
+    design_result.total_candidates = len(design_result.candidates)
+    design_result.filtered_candidates = len(passing)
+    return design_result
 
 
 def generate_contexts_for_variant(

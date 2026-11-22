@@ -1,0 +1,14 @@
+{
+  "species": "mouse",
+  "assembly": "GRCm39",
+  "release": "116",
+  "fasta": "/tmp/sirnaforge-ensembl-release116/mouse.fa",
+  "sha256": "e9e7bd40712e5bddb30316d3215eff3d93daed9c09ce7a3a725f5d3b5336dbee",
+  "source_url": "https://ftp.ensembl.org/pub/release-116/fasta/mus_musculus/cdna/Mus_musculus.GRCm39.cdna.all.fa.gz",
+  "download_sha256": "6084ad63885ae147c8670c5f85ec540dfe34b8bb34035a6ca427e737d01fc20e",
+  "upstream_unix_sum": [
+    "49905",
+    "124643"
+  ],
+  "retrieved_at": "2026-10-24T18:53:37.409778+00:00"
+}

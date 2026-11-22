@@ -40,9 +40,9 @@ process ZFN_MAKE_SHARDS {
       --output zfn_shards.tsv
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+END_VERSIONS
     """
 
     stub:
@@ -51,8 +51,8 @@ process ZFN_MAKE_SHARDS {
     echo -e "chr3:1-1000\tchr3\t1\t1000\t1\t1000\t1" >> zfn_shards.tsv
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+END_VERSIONS
     """
 }

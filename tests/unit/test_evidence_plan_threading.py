@@ -233,14 +233,16 @@ def test_the_subworkflow_aborts_when_neither_screening_channel_can_run():
     """
     text = _SUBWORKFLOW.read_text()
 
-    guard = text.split("if (!ch_mirna_species_list) {", 1)
-    assert len(guard) == 2, "the both-channels-off guard must be keyed on the resolved species list"
+    guard = text.split("if (!ch_mirna_species_list && !ch_transcript_seed_species_list) {", 1)
+    assert len(guard) == 2, "the no-screen guard must include the independent transcript-seed channel"
     guard_block = guard[1].split("OFFTARGET_ANALYSIS(", 1)[0]
     assert "ifEmpty" in guard_block, "the guard must fire on an empty alignment-input channel"
     assert "error(" in guard_block, "the guard must abort the run, not warn"
     assert "Nothing to screen" in guard_block
     # The guard must sit upstream of the process it protects, or the run reaches aggregation first.
-    assert text.index("if (!ch_mirna_species_list) {") < text.index("OFFTARGET_ANALYSIS(\n")
+    assert text.index("if (!ch_mirna_species_list && !ch_transcript_seed_species_list) {") < text.index(
+        "OFFTARGET_ANALYSIS(\n"
+    )
 
 
 # ---------------------------------------------------------------------------

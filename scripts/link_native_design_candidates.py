@@ -220,7 +220,10 @@ def link(native_dir: Path, workflow_root: Path) -> dict[str, object]:
         "workflow_root": str(workflow_root),
         "mapping_source": str(mapping_path),
         "coordinate_join": "candidate position is matched as 1-based first, with a 0-based fallback",
-        "offtarget_note": "No off-target result is inferred; all workflow runs were design_only.",
+        "offtarget_note": (
+            "This table links native transcript sites only; screening status and evidence "
+            "must be read from each workflow's logs/workflow_summary.json."
+        ),
         "candidate_benchmark_link_rows": link_count,
         "candidate_native_transcript_rows": transcript_count,
         "datasets": {

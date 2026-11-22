@@ -13,7 +13,7 @@ from the model instead of restating it.
 
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from sirnaforge.utils.typed_decorators import field_serializer_typed
 
@@ -121,6 +121,7 @@ DECLARED_FILTER_IDS: tuple[str, ...] = (
     "max_transcriptome_hits_1mm",
     "max_transcriptome_hits_2mm",
     "max_transcriptome_seed_perfect",
+    "max_transcript_seed_sites",
     "max_mirna_perfect_seed",
     "max_mirna_1mm_seed",
     "fail_on_high_risk_mirna",
@@ -212,7 +213,7 @@ class SettingProvenance(BaseModel):
     """
 
     key: str = Field(min_length=1, description="Stable setting name")
-    value: bool | int | float | str | None = Field(description="Resolved value; None means no value applies")
+    value: JsonValue = Field(description="Resolved JSON-compatible setting value; None means no value applies")
     source: SettingSource = Field(description="Authority that supplied the value")
     detail: str | None = Field(default=None, description="Why this source won, when that is not obvious")
 
@@ -285,6 +286,7 @@ class FilterScope(BaseModel):
     Attributes:
         species: Canonical species names counted. Empty means every screened species.
         max_mismatches: Highest guide-level mismatch count in scope. ``None`` means no ceiling.
+        exact_mismatches: Exact guide-level mismatch stratum, when the counter is not cumulative.
         hit_classes: ``HitClass`` values counted (``core/hit_classification.py``), held as strings
             so this contract stays a leaf module and #101 can add members without editing it.
             Empty means every class, including on-target isoform and repeat alignments.
@@ -292,6 +294,7 @@ class FilterScope(BaseModel):
 
     species: frozenset[str] = Field(default=frozenset(), description="Species counted; empty means all screened")
     max_mismatches: int | None = Field(default=None, ge=0, description="Mismatch ceiling in scope; None means no cap")
+    exact_mismatches: int | None = Field(default=None, ge=0, description="Exact mismatch stratum; None means any")
     hit_classes: frozenset[str] = Field(
         default=frozenset(), description="HitClass values counted; empty means every class"
     )
@@ -301,6 +304,8 @@ class FilterScope(BaseModel):
     @model_validator(mode="after")
     def no_blank_members(self) -> "FilterScope":
         """Reject a blank species or hit class, which would silently narrow a scope to nothing real."""
+        if self.exact_mismatches is not None and self.max_mismatches is not None:
+            raise ValueError("exact_mismatches and max_mismatches are mutually exclusive")
         for axis, values in (("species", self.species), ("hit_classes", self.hit_classes)):
             if any(not value.strip() for value in values):
                 raise ValueError(f"{axis} contains a blank entry; omit the axis instead of naming an empty value")

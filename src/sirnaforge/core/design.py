@@ -29,7 +29,8 @@ from sirnaforge.models.sirna import (
     DesignParameters,
     DesignResult,
     SiRNACandidate,
-    ranking_score,
+    ranking_order_key,
+    unique_guide_representatives,
 )
 from sirnaforge.models.sirna import SiRNACandidate as _ModelCandidate
 
@@ -171,16 +172,16 @@ class SiRNADesigner:
             all_candidates.extend(scored_candidates)
 
         # Sort by design_score (descending); composite_score does not exist until screening.
-        all_candidates.sort(key=ranking_score, reverse=True)
+        all_candidates.sort(key=ranking_order_key)
 
-        # Get top candidates only from those passing filters; fallback to all if none pass
+        # Failed candidates remain available in the full result but never enter the shortlist.
         passing = [
             c
             for c in all_candidates
             if (c.passes_filters is True)
             or (hasattr(_ModelCandidate, "FilterStatus") and c.passes_filters == _ModelCandidate.FilterStatus.PASS)
         ]
-        top_candidates = (passing or all_candidates)[: self.parameters.top_n]
+        top_candidates = unique_guide_representatives(passing)[: self.parameters.top_n]
 
         processing_time = max(0.0, time.perf_counter() - start_time)  # Ensure non-negative
         # Compute transcript hit metrics for each candidate (how many input transcripts contain the guide)
@@ -232,16 +233,16 @@ class SiRNADesigner:
         scored_candidates = self._score_candidates(filtered_candidates, sequence)
 
         # Sort by design_score (descending); composite_score does not exist until screening.
-        scored_candidates.sort(key=ranking_score, reverse=True)
+        scored_candidates.sort(key=ranking_order_key)
 
-        # Get top candidates only from those passing filters; fallback to all if none pass
+        # Failed candidates remain available in the full result but never enter the shortlist.
         passing = [
             c
             for c in scored_candidates
             if (c.passes_filters is True)
             or (hasattr(_ModelCandidate, "FilterStatus") and c.passes_filters == _ModelCandidate.FilterStatus.PASS)
         ]
-        top_candidates = (passing or scored_candidates)[: self.parameters.top_n]
+        top_candidates = unique_guide_representatives(passing)[: self.parameters.top_n]
 
         processing_time = max(0.0, time.perf_counter() - start_time)
         # For single-sequence runs, transcript hit metrics are trivial (hits=1, fraction=1.0)

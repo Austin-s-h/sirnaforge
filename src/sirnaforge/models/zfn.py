@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -13,6 +14,8 @@ from sirnaforge.utils.logging_utils import get_logger
 from sirnaforge.utils.typed_decorators import field_validator_typed
 
 logger = get_logger(__name__)
+
+ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION = "zfn_candidate_summary.v2"
 
 
 class Strand(str, Enum):
@@ -112,7 +115,7 @@ class ZFNSpacerConstraints(BaseModel):
     )
     require_opposite_strands: bool = Field(
         default=True,
-        description="Require half-sites on opposite strands in canonical ZFN configuration",
+        description="Require inward-facing half-sites on opposite strands (+...-) in canonical ZFN configuration",
     )
 
     @field_validator_typed("allowed_spacer_lengths")
@@ -492,6 +495,14 @@ class ZFNOffTargetSite(BaseModel):
     left_aligned: str = Field(description="Alignment string for left half-site")
     right_aligned: str = Field(description="Alignment string for right half-site")
 
+    def to_csv_record(self) -> dict[str, Any]:
+        """Return the lossless canonical CSV representation used by both executors."""
+        row = self.model_dump(mode="json")
+        row["left_mismatch_positions"] = ",".join(str(pos) for pos in self.left_mismatch_positions)
+        row["right_mismatch_positions"] = ",".join(str(pos) for pos in self.right_mismatch_positions)
+        row["score_components"] = json.dumps(self.score_components, sort_keys=True)
+        return row
+
 
 class ZFNCandidate(BaseModel):
     """A ZFN pair candidate with summary metrics and composite score."""
@@ -505,8 +516,12 @@ class ZFNCandidate(BaseModel):
     predicted_sites_total: int = Field(default=0, ge=0)
     predicted_sites_exonic: int = Field(default=0, ge=0)
     predicted_sites_promoter: int = Field(default=0, ge=0)
-    worst_site_score: float | None = Field(default=None, ge=0, le=100)
-    best_offtarget_score: float | None = Field(default=None, ge=0, le=100)
+    worst_site_score: float | None = Field(
+        default=None, ge=0, le=100, description="Maximum concerning off-target score: highest predicted risk"
+    )
+    best_offtarget_score: float | None = Field(
+        default=None, ge=0, le=100, description="Minimum concerning off-target score: lowest predicted risk"
+    )
     passes_offtarget_filters: bool | str = Field(default=True, description="PASS if within thresholds, else reason")
     component_scores: dict[str, float] = Field(default_factory=dict)
     composite_score: float = Field(ge=0, le=100, description="Overall design score")
@@ -527,35 +542,9 @@ class ZFNDesignResult(BaseModel):
 
     def save_offtargets_csv(self, filepath: str) -> pd.DataFrame:
         """Save off-target site table to CSV."""
-        rows: list[dict[str, Any]] = []
-        for site in self.off_target_sites:
-            rows.append(
-                {
-                    "site_id": site.site_id,
-                    "chrom": site.chrom,
-                    "start_1based": site.start_1based,
-                    "end_1based": site.end_1based,
-                    "strand": site.strand.value,
-                    "orientation": site.orientation.value,
-                    "spacer_len": site.spacer_len,
-                    "sequence": site.sequence,
-                    "left_mismatches": site.left_mismatches,
-                    "right_mismatches": site.right_mismatches,
-                    "left_seed_mismatches": site.left_seed_mismatches,
-                    "right_seed_mismatches": site.right_seed_mismatches,
-                    "left_mismatch_positions": ",".join(str(pos) for pos in site.left_mismatch_positions),
-                    "right_mismatch_positions": ",".join(str(pos) for pos in site.right_mismatch_positions),
-                    "total_mismatches": site.total_mismatches,
-                    "score": site.score,
-                    "dimer_compatible": site.dimer_compatible,
-                    "score_components": site.score_components,
-                    "region": site.region,
-                    "nearest_gene": site.nearest_gene,
-                    "left_aligned": site.left_aligned,
-                    "right_aligned": site.right_aligned,
-                }
-            )
-        df: pd.DataFrame = pd.DataFrame(rows)
+        rows = [site.to_csv_record() for site in self.off_target_sites]
+        # Explicit columns preserve the contract even when no sites were found.
+        df: pd.DataFrame = pd.DataFrame(rows, columns=ZFN_OFFTARGET_CSV_COLUMNS)
         df.to_csv(filepath, index=False)
         return df
 
@@ -568,3 +557,29 @@ class ZFNDesignResult(BaseModel):
             "algorithm": self.parameters.algorithm.value,
             "search_space_reference": self.parameters.search_space_reference,
         }
+
+
+ZFN_OFFTARGET_CSV_COLUMNS = (
+    "site_id",
+    "chrom",
+    "start_1based",
+    "end_1based",
+    "strand",
+    "orientation",
+    "spacer_len",
+    "sequence",
+    "left_mismatches",
+    "right_mismatches",
+    "left_seed_mismatches",
+    "right_seed_mismatches",
+    "left_mismatch_positions",
+    "right_mismatch_positions",
+    "total_mismatches",
+    "score",
+    "dimer_compatible",
+    "score_components",
+    "region",
+    "nearest_gene",
+    "left_aligned",
+    "right_aligned",
+)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import jsonschema
@@ -278,11 +279,42 @@ def _fake_write_report(payload: ReportPayload, out: Path | str) -> Path:
     return out_path
 
 
+def _fake_write_report_from_run(_run_dir: Path | str, out: Path | str, **_kwargs: Any) -> Any:
+    path = _fake_write_report(_payload(), out)
+    diagnostics_path = path.with_suffix(".diagnostics.json")
+    diagnostics_path.write_text('{"peak_rss_bytes": 123}')
+    return SimpleNamespace(
+        output=path,
+        mode="compact_single_file",
+        manifest={
+            "summary": {
+                "guides": 1,
+                "candidate_rows": 1,
+                "status_counts": {"pass": 1, "warn": 0, "unknown": 0, "fail": 0},
+            }
+        },
+        diagnostics={"peak_rss_bytes": 123, "caveats": []},
+        diagnostics_path=diagnostics_path,
+    )
+
+
 @pytest.mark.unit
 def test_cli_skips_quilt_summarize_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``sirnaforge report`` does not write ``quilt_summarize.json`` unless requested."""
-    monkeypatch.setattr("sirnaforge.cli.build_payload", lambda _run_dir: _payload())
-    monkeypatch.setattr("sirnaforge.cli.write_report", _fake_write_report)
+    build_calls: list[dict[str, Any]] = []
+
+    def fake_build_payload(_run_dir: Path | str, **kwargs: Any) -> ReportPayload:
+        build_calls.append(kwargs)
+        payload = _payload()
+        payload.diagnostics = {
+            "phases_seconds": {"build_payload": 1.25},
+            "peak_rss_bytes": 123,
+            "peak_memory_scope": "process_lifetime",
+        }
+        return payload
+
+    monkeypatch.setattr("sirnaforge.cli.build_payload", fake_build_payload)
+    monkeypatch.setattr("sirnaforge.cli.write_report_from_run", _fake_write_report_from_run)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     output = tmp_path / "out" / "report.html"
@@ -290,14 +322,18 @@ def test_cli_skips_quilt_summarize_by_default(tmp_path: Path, monkeypatch: pytes
     result = CliRunner().invoke(app, ["report", str(run_dir), "-o", str(output)])
 
     assert result.exit_code == 0, result.output
+    assert build_calls == []
+    diagnostics_path = output.with_suffix(".diagnostics.json")
+    assert json.loads(diagnostics_path.read_text())["peak_rss_bytes"] == 123
+    assert output.read_text() == "<html></html>"
     assert not (output.parent / "quilt_summarize.json").exists()
 
 
 @pytest.mark.unit
 def test_cli_no_quilt_summarize_skips_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The opt-out flag actually opts out, rather than the option being decorative."""
-    monkeypatch.setattr("sirnaforge.cli.build_payload", lambda _run_dir: _payload())
-    monkeypatch.setattr("sirnaforge.cli.write_report", _fake_write_report)
+    monkeypatch.setattr("sirnaforge.cli.build_payload", lambda _run_dir, **_kwargs: _payload())
+    monkeypatch.setattr("sirnaforge.cli.write_report_from_run", _fake_write_report_from_run)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     output = tmp_path / "out" / "report.html"
@@ -311,8 +347,8 @@ def test_cli_no_quilt_summarize_skips_it(tmp_path: Path, monkeypatch: pytest.Mon
 @pytest.mark.unit
 def test_cli_recognises_the_quilt_summarize_option(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``--quilt-summarize`` is a real option, not the ``exit(2) no such option`` of an unpatched CLI."""
-    monkeypatch.setattr("sirnaforge.cli.build_payload", lambda _run_dir: _payload())
-    monkeypatch.setattr("sirnaforge.cli.write_report", _fake_write_report)
+    monkeypatch.setattr("sirnaforge.cli.build_payload", lambda _run_dir, **_kwargs: _payload())
+    monkeypatch.setattr("sirnaforge.cli.write_report_from_run", _fake_write_report_from_run)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     output = tmp_path / "report.html"

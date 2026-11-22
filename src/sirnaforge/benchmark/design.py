@@ -56,6 +56,7 @@ from sirnaforge.benchmark.artifact import (
     CANDIDATES_ALL_FILENAME,
     DESIGN_INPUTS_FASTA_FILENAME,
     MANIFEST_FILENAME,
+    NATIVE_MAPPINGS_FILENAME,
     OBSERVATIONS_FILENAME,
     BenchmarkAccountingRow,
     BenchmarkArtifactManifest,
@@ -67,6 +68,7 @@ from sirnaforge.benchmark.artifact import (
     ManifestOutputEntry,
     PolynucleotideRunRequirementBlock,
     read_manifest,
+    read_native_mappings,
     read_observations,
     write_accounting,
     write_manifest,
@@ -201,6 +203,37 @@ def _count_fasta_records(path: Path) -> int:
         return 0
     with path.open("r") as handle:
         return sum(1 for line in handle if line.startswith(">"))
+
+
+def _validate_native_mapping_sidecar(
+    artifact_path: Path, manifest: BenchmarkArtifactManifest, observations: Sequence[BenchmarkObservation]
+) -> None:
+    """Verify imported all-hit evidence before extending a native artifact with design results."""
+    output = manifest.outputs.native_mappings_csv
+    if output is None:
+        return
+    path = artifact_path / NATIVE_MAPPINGS_FILENAME
+    if not output.exists or not path.is_file():
+        raise ValueError("manifest declares native_mappings.csv but the sidecar is missing")
+    if file_sha256(path) != output.sha256:
+        raise ValueError("native_mappings.csv checksum differs from manifest")
+    mappings = read_native_mappings(path)
+    if len(mappings) != output.rows:
+        raise ValueError("native_mappings.csv row count differs from manifest")
+    observation_by_id = {row.observation_id: row for row in observations}
+    counts: dict[str, int] = {}
+    for mapping in mappings:
+        observation = observation_by_id.get(mapping.observation_id)
+        if observation is None:
+            raise ValueError(f"native mapping references unknown observation {mapping.observation_id!r}")
+        if manifest.native_reference is None or mapping.assembly != manifest.native_reference.assembly:
+            raise ValueError(f"native mapping {mapping.source_mapping_id} assembly differs from manifest")
+        if mapping.end_1based - mapping.start_1based + 1 != observation.paired_length:
+            raise ValueError(f"native mapping {mapping.source_mapping_id} span differs from paired length")
+        counts[mapping.observation_id] = counts.get(mapping.observation_id, 0) + 1
+    for observation in observations:
+        if counts.get(observation.observation_id, 0) != observation.native_mapping_count:
+            raise ValueError(f"native mapping count differs for observation {observation.observation_id!r}")
 
 
 def _match_candidate(
@@ -422,6 +455,7 @@ def design_artifact(
     manifest_path = artifact_path / MANIFEST_FILENAME
     manifest = read_manifest(manifest_path)
     observations = read_observations(artifact_path / OBSERVATIONS_FILENAME)
+    _validate_native_mapping_sidecar(artifact_path, manifest, observations)
     fasta_path = artifact_path / DESIGN_INPUTS_FASTA_FILENAME
 
     benchmark_policy, default_policy = _resolve_policies(

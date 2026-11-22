@@ -275,6 +275,41 @@ def test_offtarget_selection_includes_dirty_controls(tmp_path):
     assert len(selected) == 2
 
 
+@pytest.mark.unit
+def test_post_screen_shortlist_uses_one_conservative_row_per_guide(tmp_path):
+    """Top candidates are unique guides; all transcript contexts remain in the candidate rows."""
+    params = DesignParameters(top_n=2)
+    workflow = SiRNAWorkflow(
+        WorkflowConfig(output_dir=tmp_path / "out_unique", gene_query="tp53", design_params=params)
+    )
+    workflow._completed_evidence_pairs = frozenset({("transcriptome", "human")})
+    repeated = "ATGCGATGCGATGCGATGCGC"
+    lower_context = _make_candidate("repeat_low", repeated)
+    lower_context.transcript_id = "ENST2"
+    lower_context.composite_score = 60.0
+    lower_context.scored_after_screening = True
+    lower_context.off_target_screened = True
+    higher_context = _make_candidate("repeat_high", repeated)
+    higher_context.transcript_id = "ENST1"
+    higher_context.composite_score = 90.0
+    higher_context.scored_after_screening = True
+    higher_context.off_target_screened = True
+    distinct = _make_candidate("distinct", "TTGCGATGCGATGCGATGCGA")
+    distinct.composite_score = 70.0
+    distinct.scored_after_screening = True
+    distinct.off_target_screened = True
+    candidates = [higher_context, distinct, lower_context]
+
+    shortlist = workflow._apply_selection(candidates)
+
+    assert [candidate.id for candidate in shortlist] == ["distinct", "repeat_low"]
+    assert len(candidates) == 3
+    assert {candidate.id for candidate in candidates} == {"repeat_high", "repeat_low", "distinct"}
+    assert workflow._selection_summary["eligible_candidates"] == 3
+    assert workflow._selection_summary["shortlistable_unique_guides"] == 2
+    assert workflow._selection_summary["top_candidates"] == 2
+
+
 def _on_target_workflow(tmp_path, out_name: str):
     """Build a workflow with a synthetic two-species index around a TP53 query gene."""
     config = WorkflowConfig(

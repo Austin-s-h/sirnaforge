@@ -28,12 +28,9 @@ so the site span these rows carry (1-based 71..91 for the 21 nt guides, 71..90 f
 an exact coordinate **in a fabricated context**. The guide/passenger sequences and the labels are as
 measured; the coordinates are not native.
 
-That is why the target-identity vocabulary gained a third value rather than stretching an existing
-one: `synthetic_context_local`. `panel_local` would read as a coordinate in the panel's own measured
-target, and there is no `confirmed` member at all — `panels.TargetIdentityStatus` has exactly
-`unavailable | panel_local | synthetic_context_local`, so #109 structurally cannot emit a native
-claim. Native mapping is [#110](https://github.com/Austin-s-h/sirnaforge/issues/110)'s, and #109
-reads its Ensembl-mapped counterpart `tests/data/benchmarks/oligogym_native_design/` nowhere at all.
+That is why these contexts remain `synthetic_context_local`. They cannot be promoted to a native
+claim by the coordinates in this table. Native identity can only enter through the separately
+checksummed Ensembl mapping assets described below.
 
 **Read every tally on this page accordingly.** A `default_pass` count over an OligoGym-derived panel
 is evidence about design enumeration and filter behaviour. It is not an accessibility result, and
@@ -55,7 +52,7 @@ each selecting its own rows out of the one shared table by `dataset`.
 | ----------------- | -------------- | ------------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------- |
 | `huesken_subset`  | `true`         | `tests/unit/data/sirna_efficacy_subset.csv`      | 180                                                     | paired core 19 + overhang                         |
 | `ichihara`        | `true`         | `tests/data/benchmarks/oligogym/records.csv`     | 2,850 (`ichihara_2007_1` 2,431 + `ichihara_2007_2` 419) | paired core 19 + overhang (21/19 nt)              |
-| `martinelli`      | `true`         | same table                                       | 907 (`martinelli_2023_1`)                               | paired core 19 + overhang (21/21 nt)              |
+| `martinelli`      | `true`         | same table                                       | 907 (`martinelli_2023_1`)                               | mixed measured 19-nt and 21-nt pairing; see native import |
 | `shmushkovich`    | `true`         | same table                                       | 356 (`shmushkovich_2018_1`)                             | **asymmetric** (20/15 nt) — all incompatible      |
 | `oligogym`        | `true`         | same table                                       | all 4,113 — **refused**, `aggregate_of` the three above | mixed; see below                                  |
 | `huesken_full`    | `false`        | none — `work/sirna_bench.csv` is untracked here  | —                                                       | paired core 19 + overhang                         |
@@ -65,11 +62,10 @@ each selecting its own rows out of the one shared table by `dataset`.
 `vendored_csv`, a validator enforces `data_present` ⇔ a named path, and a test asserts every claimed
 path exists on disk. 2,850 + 907 + 356 = 4,113, and the three selectors are checked disjoint.
 
-The geometries are re-derived from the bytes rather than from the issue prose, and in one case the
-bytes contradicted it: #109 assumed Martinelli was a fully-complementary 21-mer, but of its 907 rows
-858 are a 19 nt paired core with a 2 nt 3′ overhang on each strand, 18 are blunt over the full 21 nt,
-and 31 match neither exactly. Declaring `FULLY_COMPLEMENTARY`/21 would have written
-`guide_3p_overhang: ""` — "measured, and blunt" — for 889 rows whose bytes say otherwise.
+The native observations refine Martinelli's mixed measured geometry: 858 rows have a 19-nt paired
+core with a measured 2-nt 3′ tail on each strand, 18 are fully complementary 21-mers, 30 are
+noncomplementary, and one has only an unresolved 1-nt pairing. The optional native import partitions
+those into fixed-length 19- and 21-nt artifacts and retains the other 31 as review-only rows.
 
 `oligogym` is `data_present: true` and still not ingestible: its one table spans three geometries
 (3,708 rows on the paired-core-19 geometry; the other 405 are Martinelli's 49 non-core rows plus all
@@ -194,6 +190,109 @@ prevent.
 :::
 
 (your-own-table)=
+
+## Importing native mapping evidence
+
+`benchmark prepare` can import the checksummed native observations and all-hit mapping table emitted
+for `tests/data/benchmarks/oligogym_native_design/`. Pass the three native inputs together:
+
+```sh
+uv run sirnaforge benchmark prepare --panel ichihara --paired-length 19 \\
+  --native-observations-csv tests/data/benchmarks/oligogym_native_design/observations.csv \\
+  --native-mappings-csv tests/data/benchmarks/oligogym_native_design/mappings.csv \\
+  --native-reference-manifest work/native/human.json --out-dir work/bench
+```
+
+The reference manifest declares `species`, `assembly`, `release`, and the SHA-256 of the reference
+FASTA. `--native-reference-fasta` is optional; when supplied, its bytes must match that checksum.
+These fields are caller-declared mapping provenance; the importer checks observations and mappings
+against the declaration, but cannot independently recover a reference release from a mapping CSV.
+The vendored OligoGym target mappings identify human GRCh38 only. The four human, mouse, rat, and
+macaque manifests under `references/representative/` describe a separate off-target reference set;
+they do not establish native target mappings in all four species, and they do not contain Ensembl
+release labels. Do not infer those labels from the representative FASTA checksums.
+A separate full-release mapping set is now available under
+`tests/data/benchmarks/oligogym_four_species_release116/`. Its `references/` directory
+preserves checksummed Ensembl release-116 acquisition records for human GRCh38,
+mouse GRCm39, rat GRCr8, and macaque Mmul_10. The four tables contain 66,204,
+18,624, 2,782, and 5,150 exact transcript sites respectively. Every mapped interval
+and oriented query was checked against its checksummed full cDNA FASTA. Human
+assays remain human observations: other species are explicitly sequence projections,
+with no transferred efficacy labels. See that directory's README for regeneration. Generated CSVs can be deterministically
+compressed and re-manifested with `scripts/package_four_species_mappings.py`.
+The release-116 tables are stored as deterministic `.csv.gz` files. For human
+native imports, decompress `species/human/observations.csv.gz` and concatenate
+the numbered human mapping gzip parts before decompression. Use the resulting CSVs
+with `references/human.json`. The manifests record SHA-256 for the complete
+compressed stream and decompressed CSV bytes.
+
+The artifact checksums each native input, retains all exact transcript hits in
+`native_mappings.csv`, and records 1-based transcript coordinates, gene/transcript IDs, strand, and
+reference provenance. One exact hit is `confirmed`; multiple exact hits are `ambiguous`; missing or
+unusable evidence stays `unavailable`. `counts.mapped_native` and `counts.mapped_native_ambiguous`
+count those first two states separately.
+
+Martinelli is partitioned by measured pairing state. A 19-nt paired core with the measured 2-nt
+overhangs enters a `__len19` artifact; a fully complementary 21-nt duplex enters `__len21`. The other
+30 noncomplementary and one short partial pairing stay in the observation table as review-only rows.
+When a longer native passenger hit contains the exact paired-core prefix, the imported mapping keeps
+the transcript hit and records the core's shorter end coordinate. A hit with a mismatching query,
+span, reference assembly, or measured duplex geometry is refused before it can be labeled native.
+
+Shmushkovich's 15/20 asymmetric records remain review-only. They are preserved without padding,
+trimming, or entry into the fixed-length design FASTA. `paired_length` on each observation records
+the measured pairing; `requested_length` in the manifest records the fixed design length for that
+artifact.
+
+Artifact schema 1.0 predates per-observation measured duplex geometry and native mapping provenance.
+Readers reject it with a migration message; re-run `benchmark prepare` from the original panel and
+native sidecars to produce schema 1.1 rather than silently filling missing geometry or provenance.
+
+### Generating projections for four species
+
+`scripts/map_oligo_benchmarks_to_ensembl.py` also supports a four-species exact-mapping mode. Supply
+one JSON reference manifest for each of `human`, `mouse`, `rat`, and `macaque`:
+
+```json
+{
+  "species": "human",
+  "assembly": "GRCh38",
+  "release": "Ensembl 113",
+  "fasta": "/references/Homo_sapiens.GRCh38.cdna.all.fa",
+  "sha256": "<64-character SHA-256 of those exact FASTA bytes>"
+}
+```
+
+Then run the mapper with all four declarations:
+
+```sh
+uv run python -m scripts.map_oligo_benchmarks_to_ensembl \
+  --source-dir tests/data/external/oligogym \
+  --output-dir work/oligogym_four_species \
+  --species-reference-manifest work/references/human.json \
+  --species-reference-manifest work/references/mouse.json \
+  --species-reference-manifest work/references/rat.json \
+  --species-reference-manifest work/references/macaque.json
+```
+
+The command verifies every FASTA checksum before scanning and requires all four species declarations;
+missing references stop the run instead of looking like no exact target. It writes one observations
+and all-hit mappings CSV per species. Mapping statuses distinguish `mapped`, `no_exact_site` in a
+searched reference, and `unavailable_unsupported_geometry` for rows with no supported paired query.
+Coordinates are 1-based inclusive within the transcript FASTA. Each hit carries transcript and gene
+IDs, transcript coordinates, transcript orientation, genomic strand/contig parsed from the Ensembl
+header, assembly, release, and reference checksum. The manifest checksums the compressed assay
+inputs, labeled assay-observation table, and generated species sidecars.
+
+Only human rows are `measured_species_native`. Mouse, rat, and macaque results are
+`cross_species_sequence_projection`; their observation sidecars intentionally omit efficacy columns,
+and the root manifest states that labels were not transferred. The measured human assay labels stay in
+`assay_observations.csv` and are not outcomes measured in the other species.
+
+Four cDNA files are present in the local cache, but their recorded sources use mutable `current_fasta`
+URLs and do not establish an Ensembl release. They are not sufficient to produce reproducibly pinned
+four-species benchmark results. Use reference manifests for archived releases and preserve the exact
+FASTA checksums; all-four real-reference mappings remain pending until those pinned inputs are supplied.
 
 ## Your own table: the `user_supplied_*` ids
 

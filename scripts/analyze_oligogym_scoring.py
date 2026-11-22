@@ -109,7 +109,9 @@ def load_linked(
     linked: pd.DataFrame = pd.concat(rows, ignore_index=True)
     for term, column, weight in zip(TERMS, COMPONENT_COLUMNS, source_weights, strict=True):
         linked[f"component_{term}"] = pd.to_numeric(linked[column], errors="coerce") / weight
-    linked["current_score"] = linked[[f"component_{term}" for term in TERMS]].mul(source_weights).sum(axis=1)
+    # Use the score the workflow actually published. Summing available contributions
+    # silently turns an unscored candidate into zero (or a partial score).
+    linked["current_score"] = pd.to_numeric(linked["composite_score"], errors="coerce")
     return linked
 
 
@@ -385,7 +387,7 @@ def main() -> None:
             ],
         },
         "candidate_profiles": {
-            "current": profile_result(median, [0.25, 0.30, 0.25, 0.20]),
+            "current": profile_result(median, source_weights.tolist()),
             "fixed_off_target_rounded": profile_result(median, [0.25, 0.10, 0.30, 0.35]),
             "unconstrained_rounded": profile_result(median, [0.10, 0.20, 0.30, 0.40]),
         },

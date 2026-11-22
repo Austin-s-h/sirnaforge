@@ -23,6 +23,11 @@ siRNAforge Documentation
    zfn_module
    gene_search
    annotation_providers
+   mirna_references
+   variant_resolution
+   gaa_variant_workflow
+   target_intent_resolution
+   transcript_seed_sites
    scoring
    zfn_ranking
    ccr5_zfn_benchmark
@@ -36,6 +41,7 @@ siRNAforge Documentation
    api
    api_reference
    models_and_scoring
+   scientific_sources
    modification_annotation_spec
    changelog
    glossary

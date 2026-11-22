@@ -1,0 +1,19 @@
+# Docker only needs the application source, package metadata, and docker/ assets.
+# Keep local environments, benchmark artifacts, browser dependencies, and Git
+# history out of the build context.
+.git
+.github
+.venv
+**/.pixi
+**/node_modules
+.pytest_cache
+.coverage*
+pytest-*.xml
+coverage*.xml
+htmlcov
+.dev
+benchmark_results
+workflow_results
+tests
+docs
+scripts

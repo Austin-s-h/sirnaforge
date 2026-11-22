@@ -1,0 +1,14 @@
+{
+  "species": "rat",
+  "assembly": "GRCr8",
+  "release": "116",
+  "fasta": "/tmp/sirnaforge-ensembl-release116/rat.fa",
+  "sha256": "14ad668039a84a3ffaf787944dd09194488392848574b20c484d50df56b07477",
+  "source_url": "https://ftp.ensembl.org/pub/release-116/fasta/rattus_norvegicus/cdna/Rattus_norvegicus.GRCr8.cdna.all.fa.gz",
+  "download_sha256": "4f83911b79031aada477d5b6f1d820777c5f0402c594cc1dbb52ac5d0b0fb3c7",
+  "upstream_unix_sum": [
+    "27575",
+    "34912"
+  ],
+  "retrieved_at": "2026-10-24T18:50:02.097161+00:00"
+}

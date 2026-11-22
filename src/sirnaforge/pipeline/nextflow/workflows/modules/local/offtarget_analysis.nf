@@ -44,7 +44,8 @@ result = offtarget_analysis_cli(
     bwa_k=${bwa_k},
     bwa_T=${bwa_T},
     seed_start=${seed_start},
-    seed_end=${seed_end}
+    seed_end=${seed_end},
+    aligner='${params.aligner ?: 'bwa-mem2'}'
 )
 
 print(f"Batch analysis for ${species}: {result['status']}")
@@ -53,10 +54,10 @@ if result.get('error'):
 PYEOF
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        bwa-mem2: \$(bwa-mem2 version 2>&1 | head -n1 | sed 's/.*bwa-mem2-//' || echo 'not available')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    ${params.aligner ?: 'bwa-mem2'}: \$(if [ "${params.aligner ?: 'bwa-mem2'}" = "bwa-mem3" ]; then bwa-mem3 version 2>/dev/null | head -n1; else bwa-mem2 version 2>&1 | tail -n1 || echo 'not available'; fi)
+END_VERSIONS
     """
 
     stub:
@@ -92,12 +93,12 @@ PYEOF
         "detail": "stub run: no aligner executed"
       }
     }
-    EVIDENCE
+EVIDENCE
 
     cat <<-END_VERSIONS > versions.yml
-    "${task.process}":
-        python: \$(python --version | sed 's/Python //g')
-        bwa-mem2: \$(bwa-mem2 version 2>&1 | head -n1 | sed 's/.*bwa-mem2-//' || echo 'not available')
-    END_VERSIONS
+"${task.process}":
+    python: \$(python --version | sed 's/Python //g')
+    ${params.aligner ?: 'bwa-mem2'}: \$(if [ "${params.aligner ?: 'bwa-mem2'}" = "bwa-mem3" ]; then bwa-mem3 version 2>/dev/null | head -n1; else bwa-mem2 version 2>&1 | tail -n1 || echo 'not available'; fi)
+END_VERSIONS
     """
 }

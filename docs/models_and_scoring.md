@@ -115,7 +115,7 @@ class DesignParameters(BaseModel):
 
     # Sequence parameters
     sirna_length: int = 21     # Duplex length (19-23 nt)
-    top_n: int | None = None   # Candidates to report (None = all, the default)
+    top_n: int | None = None   # Distinct guides to shortlist (None = all, the default)
 
     # Quality control
     filters: FilterCriteria    # Threshold parameters
@@ -126,6 +126,10 @@ class DesignParameters(BaseModel):
     modification_pattern: str = "standard_2ome"
     default_overhang: str = "dTdT"
 ```
+
+Shortlists contain at most one row per normalized guide sequence. When a guide occurs in multiple
+eligible transcript contexts, its shortlist representative is the context with the minimum ranking
+score; full candidate outputs retain all context rows and their independent filter states.
 
 ### 1.3 FilterCriteria
 
@@ -174,9 +178,9 @@ Specialized filtering for off-target analysis results, applied after screening:
 class OffTargetFilterCriteria(BaseModel):
     """Off-target analysis filtering criteria."""
 
-    # Genuine off-target count (on-target, ortholog and repeat hits excluded).
-    # None means "no gate", which is what --filter-action <id>=off sets.
-    max_off_target_count: int | None = 15
+    # Optional query-species genuine liabilities with <=2 mismatches.
+    # None disables this aggregate ceiling pending calibration.
+    max_off_target_count: int | None = None
 
     # Transcriptome GENUINE off-targets (mismatch tolerance)
     max_transcriptome_hits_0mm: int | None = 1    # Perfect matches
@@ -197,8 +201,8 @@ class OffTargetFilterCriteria(BaseModel):
 > record puts the clip on guide positions 16-21 and leaves guide positions 2-8 pairing perfectly:
 > it carries `nm = 6`, so it is counted in `transcriptome_hits_seed_0mm`,
 > `transcriptome_hits_total` and `off_target_count`, but in **none** of `_0mm`/`_1mm`/`_2mm`. Two
-> such hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`. With stock defaults
-> the only thing gating them is `max_off_target_count` (15), so a run of them can pass. Set
+> such hits report `0mm=0 1mm=0 2mm=0 seed_0mm=2 total=2 off_target_count=2`. They are excluded from
+> `max_off_target_count`, which is scoped to query-species liabilities with `nm<=2`. Set
 > `max_transcriptome_seed_perfect` to gate them directly — it is enforced (verdict
 > `TRANSCRIPTOME_SEED_PERFECT`) but ships as `None` because no ceiling has been calibrated against
 > truth data. Unlike the three mismatch thresholds it is **not** species-split: it is compared
@@ -260,7 +264,9 @@ API for combining them and no runtime arithmetic on their values. `off_target` c
 until off-target screening has run, so the design stage scores `design_experimental_v1` into `design_score` and
 `composite_score` stays `None`. The two fields are **different vectors over different term sets and
 are not comparable**; `ranking_score(candidate)` is the single place that decides which number a
-candidate currently has.
+candidate currently has. When ranking scores tie, rows sort by normalized guide sequence (uppercase
+DNA, U converted to T), transcript ID, position, and candidate ID. This makes tie order independent
+of input iteration order; it does not combine or deduplicate transcript-context rows.
 
 `empirical`, `isoform_coverage` and `conservation` appear in no vector. They are still computed and
 reported (§2.7); removing them from scoring is what makes "no renormalisation" reachable, since the
@@ -298,7 +304,7 @@ keys in `features` are ignored, since `component_scores` also carries diagnostic
 
 ### 2.2 Thermodynamic Asymmetry Score
 
-**Research basis**: Khvorova et al. (2003), Schwarz et al. (2003)
+**Research basis**: Khvorova et al. (2003), [“Functional siRNAs and miRNAs exhibit strand bias”](https://pubmed.ncbi.nlm.nih.gov/14567918/); Schwarz et al. (2003), [“Asymmetry in the assembly of the RNAi enzyme complex”](https://pubmed.ncbi.nlm.nih.gov/14567917/). These studies support a role for duplex-end asymmetry in strand selection in the tested systems. They do not calibrate this implementation's 7-nt windows, linear normalization, 0.65 filter threshold, or efficacy weights. See [scientific_sources.md](scientific_sources.md) for scope and limitations.
 
 RISC preferentially loads the strand with the less thermodynamically stable 5' end. The asymmetry score measures this preference:
 
@@ -330,7 +336,9 @@ before folding — ViennaRNA's `&` cofold notation pairs two 5'->3' strands anti
 itself. Reverse-complementing the passenger folded the guide against itself, which pinned
 `asymmetry_score` to exactly 0.5 for every 21 nt candidate (fixed in 0.5.2).
 
-**Interpretation**:
+The following 0–1 transform is a bounded ranking feature, not a probability of guide loading. The bins below are descriptive labels only; they are not experimentally calibrated efficacy or strand-selection categories. The default 0.65 gate remains an experimental policy threshold.
+
+**Descriptive score bands**:
 
 | Score    | Interpretation                           |
 | -------- | ---------------------------------------- |
@@ -631,7 +639,7 @@ Applied once transcriptome/miRNA screening has run, against `OffTargetFilterCrit
 | `MIRNA_PERFECT_SEED`          | perfect miRNA seed hits > `max_mirna_perfect_seed`                               | miRNA-mimicry risk                                 |
 | `HIGH_RISK_MIRNA`             | perfect seed + `offtarget_score` < 5.0                                           | Strong-binding miRNA mimicry                       |
 | `TOTAL_OFFTARGETS`            | combined transcriptome + miRNA hits > `max_total_offtarget_hits`                 | Aggregate specificity                              |
-| `EXCESS_OFF_TARGETS`          | genuine off-target count > `max_off_target_count`                                | Overall genuine-off-target ceiling                 |
+| `EXCESS_OFF_TARGETS`          | query-species genuine liabilities with `nm<=2` > `max_off_target_count`          | Optional scoped aggregate ceiling                  |
 
 Six of these seven verdicts previously existed only as raw strings assembled in `workflow.py`
 (`TRANSCRIPTOME_SEED_PERFECT` is new); they are all now members of `FilterStatus` (see 3.4), and
@@ -970,9 +978,9 @@ class ChemicalModification(BaseModel):
 
 ## 9. References
 
-1. **Khvorova A, Reynolds A, Jayasena SD** (2003). Functional siRNAs and miRNAs exhibit strand bias. _Cell_ 115(2):209-216.
+1. **Khvorova A, Reynolds A, Jayasena SD** (2003). [Functional siRNAs and miRNAs exhibit strand bias](https://pubmed.ncbi.nlm.nih.gov/14567918/). _Cell_ 115(2):209-216. DOI: [10.1016/S0092-8674(03)00801-8](https://doi.org/10.1016/S0092-8674(03)00801-8).
 
-2. **Schwarz DS, Hutvágner G, Du T, Xu Z, Aronin N, Bhatt DP** (2003). Asymmetry in the assembly of the RNAi enzyme complex. _Cell_ 115(2):199-208.
+2. **Schwarz DS, Hutvágner G, Du T, Xu Z, Aronin N, Bhatt DP** (2003). [Asymmetry in the assembly of the RNAi enzyme complex](https://pubmed.ncbi.nlm.nih.gov/14567917/). _Cell_ 115(2):199-208. DOI: [10.1016/S0092-8674(03)00759-1](https://doi.org/10.1016/S0092-8674(03)00759-1).
 
 3. **Reynolds A, Leake D, Boese Q, Scaringe S, Marshall WS, Khvorova A** (2004). Rational siRNA design for RNA interference. _Nature Biotechnology_ 22(3):326-330.
 
@@ -1013,9 +1021,9 @@ Target-site accessibility settings (see 2.5), on `DesignParameters.target_access
 `mfe_min`, `mfe_max`, `duplex_stability_min`, `duplex_stability_max`, `melting_temp_min`,
 `melting_temp_max`, `delta_dg_end_min` and `delta_dg_end_max` were removed from `FilterCriteria`
 in issue #80: they were declared but never enforced by `SiRNADesigner`, and re-deriving correct
-windows against truth data is deliberately out of scope. `max_off_target_count` (default `15`,
-range `0+`, justification: specificity) moved to `OffTargetFilterCriteria`, where it is enforced
-post-screen against the genuine off-target count (see 1.4 and 3.3).
+windows against truth data is deliberately out of scope. `max_off_target_count` (default `None`,
+range `0+`, query-species liabilities with at most two mismatches; disabled pending calibration)
+moved to `OffTargetFilterCriteria` (see 1.4 and 3.3).
 
 ## Appendix B: Scoring Weight Defaults
 

@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from sirnaforge.core.aligner_backend import aligner_identity, normalize_aligner
 from sirnaforge.utils.cache_utils import (
     ARTIFACT_STAMP_SUFFIX,
     ARTIFACT_TRANSCRIPTOME_INDEX,
@@ -53,7 +54,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
     # superset of what off_target.validate_index_files() requires: `.0123` is not needed
     # to *use* an index but bwa-mem2 does write it (see modules/local/build_bwa_index.nf),
     # and it is one of the largest files, so cleanup must cover it.
-    INDEX_SUFFIXES = (".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")
+    INDEX_SUFFIXES = (".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac", ".bwt", ".sa")
 
     # Appended to the base download URL to give a filtered artifact its own cache
     # identity. Filtering is a subset operation, so a filtered FASTA must never be
@@ -79,6 +80,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         cache_subdir: str = "transcriptomes",
         sources: dict[str, TranscriptomeSource] | None = None,
         source_label: str | None = None,
+        aligner: str = "bwa-mem2",
     ):
         """Initialize the transcriptome database manager.
 
@@ -86,6 +88,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             cache_dir: Directory for caching transcriptomes (default: ~/.cache/sirnaforge/transcriptomes)
             cache_ttl_days: Cache time-to-live in days (default: 90 days for large files)
             auto_build_indices: Automatically build BWA-MEM2 indices when missing
+            aligner: Index backend; BWA-MEM2 remains the default.
             local_content_dedupe: Reuse cached local files by content hash across different input paths
             cache_subdir: Cache subdirectory override for composable manager reuse
             sources: Optional source dictionary override
@@ -93,6 +96,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         """
         super().__init__(cache_subdir=cache_subdir, cache_dir=cache_dir, cache_ttl_days=cache_ttl_days)
         self.auto_build_indices = auto_build_indices
+        self.aligner = normalize_aligner(aligner)
         self.local_content_dedupe = local_content_dedupe
         self.sources: dict[str, TranscriptomeSource] = dict(sources or self.SOURCES)
         self.source_label = source_label or self.SOURCE_LABEL
@@ -195,8 +199,19 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         """Create CacheMetadata with TranscriptomeSource."""
         return CacheMetadata.from_dict(data, source_class=TranscriptomeSource)
 
+    def _index_prefix_for(self, base: Path) -> Path:
+        """Backend-isolated prefix, preserving the historical MEM2 prefix."""
+        suffix = "_index" if self.aligner == "bwa-mem2" else f"_{self.aligner.replace('-', '_')}_index"
+        return base.parent / f"{base.name}{suffix}"
+
     def _get_index_path(self, meta: CacheMetadata) -> Path | None:
         """Get index path from metadata's extra field."""
+        backend_paths = (meta.extra or {}).get("index_paths")
+        if isinstance(backend_paths, dict) and isinstance(backend_paths.get(self.aligner), str):
+            return Path(backend_paths[self.aligner])
+        # The legacy single path described only the BWA-MEM2 artifact. Never let MEM3 adopt it.
+        if self.aligner != "bwa-mem2":
+            return None
         if meta.extra and "index_path" in meta.extra:
             return Path(meta.extra["index_path"])
         return None
@@ -205,8 +220,15 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         """Set index path in metadata's extra field."""
         if meta.extra is None:
             meta.extra = {}
-        meta.extra["index_path"] = str(index_path)
-        meta.extra["index_built_at"] = datetime.now().isoformat()
+        paths = meta.extra.setdefault("index_paths", {})
+        if isinstance(paths, dict):
+            paths[self.aligner] = str(index_path)
+        if self.aligner == "bwa-mem2":
+            meta.extra["index_path"] = str(index_path)
+            meta.extra["index_built_at"] = datetime.now().isoformat()
+        built_at = meta.extra.setdefault("index_built_at_by_aligner", {})
+        if isinstance(built_at, dict):
+            built_at[self.aligner] = datetime.now().isoformat()
 
     @staticmethod
     def _cache_dir_is_writable(cache_dir: Path) -> bool:
@@ -258,7 +280,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             # Late import to avoid circular dependency
             from sirnaforge.core.off_target import validate_index_files  # noqa: PLC0415
 
-            return validate_index_files(index_prefix, tool="bwa-mem2")
+            return validate_index_files(index_prefix, tool=self.aligner)
         except Exception as e:
             logger.debug(f"Index validation failed: {e}")
             return False
@@ -279,15 +301,14 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             if path.is_file() and not path.name.endswith(ARTIFACT_STAMP_SUFFIX)
         )
 
-    @staticmethod
-    def _index_inputs(meta: CacheMetadata) -> dict[str, str]:
+    def _index_inputs(self, meta: CacheMetadata) -> dict[str, Any]:
         """Fingerprint of the content an index must have been built from.
 
         Uses the checksum already recorded for the cached FASTA rather than hashing
         it again: a transcriptome is tens of GB and the digest is computed anyway
         when the file is cached.
         """
-        return {"fasta": meta.checksum}
+        return {"fasta": meta.checksum, "aligner": aligner_identity(self.aligner)}
 
     def _index_is_trustworthy(self, meta: CacheMetadata, index_path: Path) -> bool:
         """Whether an existing index may be reused for the currently cached content.
@@ -299,7 +320,23 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         inputs = self._index_inputs(meta)
         if read_artifact_stamp(index_path) is not None:
             # Stamped: the stamp is the whole answer (and logs the mismatch itself).
-            return is_artifact_stamp_current(ARTIFACT_TRANSCRIPTOME_INDEX, index_path, inputs=inputs)
+            if is_artifact_stamp_current(ARTIFACT_TRANSCRIPTOME_INDEX, index_path, inputs=inputs):
+                return True
+            # Before backend identity was included, the default MEM2 stamp recorded only the FASTA
+            # checksum. Its historical prefix is still MEM2-only, and validate_index_files has
+            # already established a complete index, so verify the old output fingerprints before
+            # upgrading the stamp. MEM3 never considers this legacy path.
+            if self.aligner == "bwa-mem2" and is_artifact_stamp_current(
+                ARTIFACT_TRANSCRIPTOME_INDEX, index_path, inputs={"fasta": meta.checksum}
+            ):
+                write_artifact_stamp(
+                    ARTIFACT_TRANSCRIPTOME_INDEX,
+                    index_path,
+                    inputs=inputs,
+                    outputs=self._index_outputs(index_path),
+                )
+                return True
+            return False
 
         # Unstamped index from an older siRNAforge. Rebuilding a human transcriptome
         # index costs an hour of CPU, so do not force that on everyone; our own
@@ -307,7 +344,10 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         # the cached content was written must have been built from that content
         # (_record_cache_entry rewrites downloaded_at whenever content is replaced),
         # so adopt it and stamp it. Anything we cannot date is discarded.
-        built_at = (meta.extra or {}).get("index_built_at")
+        built_at_by_aligner = (meta.extra or {}).get("index_built_at_by_aligner")
+        built_at = built_at_by_aligner.get(self.aligner) if isinstance(built_at_by_aligner, dict) else None
+        if built_at is None and self.aligner == "bwa-mem2":
+            built_at = (meta.extra or {}).get("index_built_at")
         if isinstance(built_at, str) and built_at >= meta.downloaded_at:
             write_artifact_stamp(
                 ARTIFACT_TRANSCRIPTOME_INDEX,
@@ -340,7 +380,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             from sirnaforge.core.off_target import build_bwa_index as _build_bwa_index  # noqa: PLC0415
 
             logger.info(f"🔨 Building BWA-MEM2 index for {fasta_path.name}...")
-            _build_bwa_index(fasta_path, index_prefix)
+            _build_bwa_index(fasta_path, index_prefix, aligner=self.aligner)
             self._last_index_build_exception = None
             return True
         except Exception as e:
@@ -396,9 +436,13 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             return
 
         stale_prefixes = {index_prefix}
-        previous_index = self._get_index_path(previous) if previous is not None else None
-        if previous_index is not None:
-            stale_prefixes.add(previous_index)
+        if previous is not None:
+            previous_paths = (previous.extra or {}).get("index_paths")
+            if isinstance(previous_paths, dict):
+                stale_prefixes.update(Path(value) for value in previous_paths.values() if isinstance(value, str))
+            previous_index = (previous.extra or {}).get("index_path")
+            if isinstance(previous_index, str):
+                stale_prefixes.add(Path(previous_index))
 
         for prefix in stale_prefixes:
             if self._is_index_complete(prefix):
@@ -422,6 +466,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
             # Belt and braces: an index_path carried in from anywhere must not outlive
             # the content it described.
             current.extra.pop("index_path", None)
+            current.extra.pop("index_paths", None)
 
     def _unremovable_index_blocks_reuse(self, meta: CacheMetadata) -> bool:
         """Whether this entry's index prefix is quarantined leftovers we must not serve.
@@ -471,7 +516,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         source = self.sources[source_name]
         cache_key = self._cache_key_for_remote_uri(source.url) or source.cache_key()
         cache_file = self._resolve_remote_cache_file(cache_key)
-        index_prefix = self.cache_dir / f"{cache_key}_index"
+        index_prefix = self._index_prefix_for(self.cache_dir / cache_key)
 
         # Use cached version if valid
         if not force_refresh and self._is_cache_valid(cache_key):
@@ -543,7 +588,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
         cache_key = self._cache_key_for_remote_uri(url) or source.cache_key()
         cache_file = self._resolve_remote_cache_file(cache_key)
-        index_prefix = self.cache_dir / f"{cache_key}_index"
+        index_prefix = self._index_prefix_for(self.cache_dir / cache_key)
 
         # Check cache
         if self._is_cache_valid(cache_key):
@@ -580,7 +625,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         # the file's contents are not, so a rewritten FASTA sitting in the cache dir
         # would otherwise get handed the previous content's index, silently surfacing
         # as hits with the previous content's IDs (see `_index_is_trustworthy`).
-        index_prefix = file_path.parent / f"{cache_key}_index"
+        index_prefix = self._index_prefix_for(file_path.parent / cache_key)
 
         # Re-record on every call. The recorded checksum is what tells us whether the
         # index still matches these bytes, and with dedupe disabled the cache key is
@@ -609,12 +654,14 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
                 known_path = Path(known_meta.file_path)
                 if known_path.exists():
                     logger.info("✅ Reusing local cached transcriptome by content hash: %s", known_path)
-                    index_prefix = self._get_index_path(known_meta) or (known_path.parent / f"{known_path.stem}_index")
+                    index_prefix = self._get_index_path(known_meta) or self._index_prefix_for(
+                        known_path.with_suffix("")
+                    )
                     return self._prepare_result_with_index(known_path, index_prefix, known_cache_key, build_index)
 
             cache_key = hashlib.md5(f"local_content_{content_hash}".encode()).hexdigest()[:12]
             cache_file = self.cache_dir / f"{cache_key}.fa"
-            index_prefix = self.cache_dir / f"{cache_key}_index"
+            index_prefix = self._index_prefix_for(self.cache_dir / cache_key)
             extra = {"local_content_hash": content_hash}
             self.local_content_index[content_hash] = cache_key
             # The cache file is content-addressed, so an existing copy holds these bytes.
@@ -622,7 +669,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         else:
             cache_key = hashlib.md5(f"local_{cache_name}_{input_path}".encode()).hexdigest()[:12]
             cache_file = self.cache_dir / f"{cache_name}_{cache_key}.fa"
-            index_prefix = self.cache_dir / f"{cache_name}_{cache_key}_index"
+            index_prefix = self._index_prefix_for(self.cache_dir / f"{cache_name}_{cache_key}")
             # Here the cache key is derived from the *path*, so the cached copy can be an
             # older revision of it. Existence alone would pin the first version we ever
             # saw and ignore every later edit to the user's FASTA.
@@ -691,7 +738,7 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
         filter_spec = "+".join(sorted(filters))
         filtered_cache_key = f"{source.cache_key()}_{filter_spec}"
         filtered_fasta = self.cache_dir / f"{filtered_cache_key}.fa"
-        filtered_index = self.cache_dir / f"{filtered_cache_key}_index"
+        filtered_index = self._index_prefix_for(self.cache_dir / filtered_cache_key)
 
         # A filtered FASTA is derived, so its identity is the base bytes it was cut from.
         # The Ensembl URL is release-agnostic, so a new release reuses the base cache key
@@ -859,14 +906,14 @@ class TranscriptomeManager(ReferenceManager[TranscriptomeSource]):
 
     def _clean_extra_files(self, meta: CacheMetadata) -> None:
         """Remove BWA index files associated with a cached transcriptome entry."""
-        index_path = self._get_index_path(meta)
-        if index_path is None:
-            return
-
-        # `_remove_index_files` covers `.0123` (which bwa-mem2 writes), builds paths by
-        # concatenation so dotted prefixes work where `with_suffix` would silently
-        # fail, and guards each unlink because this runs on the hot path of every
-        # re-download.
-        self._remove_index_files(index_path)
-        # Leave no stamp behind to vouch for an index that is gone.
-        discard_artifact_stamp(index_path)
+        paths: set[Path] = set()
+        backend_paths = (meta.extra or {}).get("index_paths")
+        if isinstance(backend_paths, dict):
+            paths.update(Path(value) for value in backend_paths.values() if isinstance(value, str))
+        legacy_path = (meta.extra or {}).get("index_path")
+        if isinstance(legacy_path, str):
+            paths.add(Path(legacy_path))
+        for index_path in paths:
+            # `_remove_index_files` builds names by concatenation so dotted prefixes work.
+            self._remove_index_files(index_path)
+            discard_artifact_stamp(index_path)

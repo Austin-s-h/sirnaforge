@@ -104,7 +104,7 @@ def _generate_installation_section(version: str, registry: str, repo_lower: str)
         "",
         "### Docker (recommended)",
         "```bash",
-        "# Pull the latest release",
+        "# Pull this versioned release",
         f"docker pull {registry}/{repo_lower}:{version}",
         "",
         "# Quick test - should complete in ~2 seconds",
@@ -222,18 +222,17 @@ def _generate_resources_section(
         f"- [**Full documentation**](https://{owner_lower}.github.io/{name_lower}) - Complete user guide",
         f"- [**Quick start**](https://github.com/{repo_lower}#-quick-start) - Get running in minutes",
         f"- [**API reference**](https://{owner_lower}.github.io/{name_lower}/api) - Python API documentation",
-        f"- [**Development guide**](https://github.com/{repo_lower}/blob/main/CONTRIBUTING.md) - Contributing instructions",
+        f"- [**Development guide**](https://github.com/{repo_lower}/blob/master/CONTRIBUTING.md) - Contributing instructions",
         "",
         "### Container images",
         f"- **Versioned:** `{registry}/{repo_lower}:{version}`",
-        f"- **Latest:** `{registry}/{repo_lower}:latest`",
-        f"- **Registry:** [{registry}/{repo_lower}]({registry}/{repo_lower})",
+        f"- **Registry:** `{registry}/{repo_lower}`",
         "",
         "### Support",
         f"- [**Source code**](https://github.com/{repo_lower})",
         f"- [**Issues**](https://github.com/{repo_lower}/issues) - Bug reports & feature requests",
         f"- [**Discussions**](https://github.com/{repo_lower}/discussions) - Community support",
-        f"- [**Changelog**](https://github.com/{repo_lower}/blob/main/CHANGELOG.md) - Version history",
+        f"- [**Changelog**](https://github.com/{repo_lower}/blob/master/CHANGELOG.md) - Version history",
         f"- [**All releases**](https://github.com/{repo_lower}/releases) - Previous versions",
         "",
     ]
@@ -294,8 +293,7 @@ def main() -> None:
 
     # Add all major sections
     lines.extend(_generate_installation_section(version, registry, repo_lower))
-    lines.extend(_generate_usage_examples(version, registry, repo_lower))
-    lines.extend(_generate_key_features(version))
+    # Do not synthesize scientific or CLI feature claims independent of the reviewed changelog.
     lines.extend(_generate_testing_section())
     lines.extend(_generate_resources_section(registry, repo_lower, owner_lower, name_lower, version))
     lines.extend(_generate_verification_section(version, registry, repo_lower))

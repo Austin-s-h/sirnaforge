@@ -65,6 +65,7 @@ from sirnaforge.config.run_policy import (
     switchable_filter_ids,
 )
 from sirnaforge.core.design import SiRNADesigner
+from sirnaforge.core.target_intent import TargetIntentRequest
 from sirnaforge.data.base import DatabaseType, FastaUtils, TranscriptInfo
 from sirnaforge.data.gene_search import (
     GeneSearcher,
@@ -79,8 +80,10 @@ from sirnaforge.models.sirna import (
     DesignMode,
     ranking_score,
 )
+from sirnaforge.models.transcript_seed import TranscriptSequenceScope
 from sirnaforge.models.variant import VariantMode
 from sirnaforge.models.zfn import (
+    ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION,
     DimerMode,
     GenomicAnnotationConfig,
     ZFNAlgorithm,
@@ -97,13 +100,22 @@ from sirnaforge.models.zfn import (
 )
 from sirnaforge.modifications import merge_metadata_into_fasta, parse_header
 from sirnaforge.pipeline.nextflow.config import DEFAULT_SIRNAFORGE_DOCKER_IMAGE
-from sirnaforge.reporting import ReportInputError, build_payload, write_quilt_summarize, write_report
+from sirnaforge.reporting import (
+    ReportInputError,
+    ReportMode,
+    ReportModeThresholds,
+    build_payload,
+    write_quilt_summarize,
+    write_quilt_summarize_from_run,
+    write_report_from_run,
+)
 from sirnaforge.utils.cli_inputs import extract_declared_species_from_indices, resolve_species_inputs
 from sirnaforge.utils.logging_utils import configure_logging
 from sirnaforge.utils.parsing import parse_csv
 from sirnaforge.utils.typed_decorators import command_decorator_typed
 from sirnaforge.workflow import describe_shortfall_reasons, run_offtarget_only_workflow, run_sirna_workflow
 from sirnaforge.zfn import emit_zfn_experimental_warning
+from sirnaforge.zfn.design import ZFNDesigner
 from sirnaforge.zfn.nextflow_bridge import (
     aggregate_zfn_shard_results,
     make_zfn_shard_manifest,
@@ -1103,6 +1115,47 @@ def workflow(  # noqa: PLR0912
             "given on the command line. Unknown setting names are rejected, not ignored."
         ),
     ),
+    target_intent_config: Path | None = typer.Option(
+        None,
+        "--target-intent-config",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="JSON declaration of pan-isoform or isoform-selective target intent, resolved against full annotations.",
+    ),
+    transcript_seed_species: str | None = typer.Option(
+        None,
+        "--transcript-seed-species",
+        help="Comma-separated species to scan for canonical siRNA seed sites using resolved full transcriptome FASTAs.",
+    ),
+    transcript_seed_required_species: str | None = typer.Option(
+        None,
+        "--transcript-seed-required-species",
+        help="Subset of --transcript-seed-species required for candidate qualification; remaining species are exploratory.",
+    ),
+    transcript_seed_scope: TranscriptSequenceScope = typer.Option(
+        TranscriptSequenceScope.FULL_CDNA,
+        "--transcript-seed-scope",
+        help="Transcript sequence region scanned: full_cdna or three_prime_utr (requires explicit UTR annotation).",
+    ),
+    report_mode: str = typer.Option(
+        "auto", "--report-mode", help="Report mode: auto, compact_single_file, paged_single_file, data_backed."
+    ),
+    aligner: str = typer.Option("bwa-mem2", "--aligner", help="Transcriptome aligner: bwa-mem2 or bwa-mem3."),
+    max_transcript_seed_sites: int | None = typer.Option(
+        None,
+        "--max-transcript-seed-sites",
+        min=0,
+        help="Optional per-guide site ceiling across required transcript-seed species.",
+    ),
+    species_liability_limits: str | None = typer.Option(
+        None,
+        "--species-liability-limits",
+        help=(
+            "JSON object keyed by species, with one or more ceilings and an action (fail or warn), e.g. "
+            '\'{"human":{"transcriptome_hits_0mm":0,"transcript_seed_genes":5,"action":"fail"}}\'.'
+        ),
+    ),
     filter_action: list[str] = typer.Option(
         [],
         "--filter-action",
@@ -1188,7 +1241,7 @@ def workflow(  # noqa: PLR0912
         "-n",
         min=1,
         help=(
-            "Cap how many top-ranked candidates are reported (default: no cap, report all). "
+            "Cap how many distinct guide sequences are shortlisted (default: no cap, report all). "
             "Screening and enumeration always cover every candidate, so this only truncates the "
             "reported set -- leave it unset to keep the full design space."
         ),
@@ -1220,6 +1273,14 @@ def workflow(  # noqa: PLR0912
         "mirgenedb",
         "--mirna-db",
         help="miRNA reference: mirgenedb (default), mirbase, or mirgenedb+mirbase (mature-only union)",
+    ),
+    mirna_reference_manifest: Path | None = typer.Option(
+        None,
+        "--mirna-reference-manifest",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="JSON manifest of pinned local miRNA FASTAs with source, species, release and SHA-256.",
     ),
     mirna_species: str | None = typer.Option(
         None,
@@ -1400,9 +1461,9 @@ def workflow(  # noqa: PLR0912
         "--max-off-targets",
         min=0,
         help=(
-            f"Reject a candidate above this many genuine off-target sites (default: "
-            f"{default_for('max_off_target_count')}). Counts only hits left after on-target, "
-            "ortholog and repeat classification. Unlike --max-hits this changes the "
+            f"Reject a candidate above this many query-species genuine off-target sites with at most "
+            f"2 mismatches (default: {default_for('max_off_target_count')}; disabled until calibrated). "
+            "Unlike --max-hits this changes the "
             "PASS/EXCESS_OFF_TARGETS gate, not how many hits are recorded."
         ),
     ),
@@ -1494,12 +1555,35 @@ def workflow(  # noqa: PLR0912
     reference policies, designs candidates, and then runs off-target analysis on
     the selected top candidates.
     """
+    if aligner not in {"bwa-mem2", "bwa-mem3"}:
+        _fail_with_config_error("--aligner must be bwa-mem2 or bwa-mem3")
+    if report_mode not in {"auto", "compact_single_file", "paged_single_file", "data_backed"}:
+        _fail_with_config_error("--report-mode must be auto, compact_single_file, paged_single_file, or data_backed")
     # Resolve and validate the biological policy BEFORE anything creates a directory or a log file:
     # an invalid bound or an incompatible mode must cost nothing.
     try:
         actions = _parse_filter_actions(filter_action)
     except RunPolicyError as exc:
         _fail_with_config_error(str(exc))
+    try:
+        target_intent_request = (
+            TargetIntentRequest.model_validate_json(target_intent_config.read_text())
+            if target_intent_config is not None
+            else None
+        )
+        seed_species = parse_csv(transcript_seed_species) if transcript_seed_species else []
+        required_seed_species = parse_csv(transcript_seed_required_species) if transcript_seed_required_species else []
+        parsed_species_limits = json.loads(species_liability_limits) if species_liability_limits else None
+        if parsed_species_limits is not None and not isinstance(parsed_species_limits, dict):
+            raise ValueError("--species-liability-limits must be a JSON object keyed by species")
+        if required_seed_species and not seed_species:
+            raise ValueError("--transcript-seed-required-species requires --transcript-seed-species")
+        if set(required_seed_species) - set(seed_species):
+            raise ValueError("--transcript-seed-required-species must be a subset of --transcript-seed-species")
+        if max_transcript_seed_sites is not None and not seed_species:
+            raise ValueError("--max-transcript-seed-sites requires --transcript-seed-species")
+    except (OSError, ValueError, ValidationError) as exc:
+        _fail_with_config_error(f"Invalid target-intent or transcript-seed configuration: {exc}")
     stated = _stated_settings(
         ctx,
         {
@@ -1510,6 +1594,8 @@ def workflow(  # noqa: PLR0912
             "default_overhang": ("overhang", overhang),
             "top_n": ("top_n_candidates", top_n_candidates),
             "max_off_target_count": ("max_off_targets", max_off_targets),
+            "max_transcript_seed_sites": ("max_transcript_seed_sites", max_transcript_seed_sites),
+            "species_liability_limits": ("species_liability_limits", parsed_species_limits),
             "min_asymmetry_score": ("min_asymmetry", min_asymmetry),
             "max_paired_fraction": ("max_paired_fraction", max_paired_fraction),
             "min_empirical_score": ("min_empirical", min_empirical),
@@ -1543,6 +1629,8 @@ def workflow(  # noqa: PLR0912
     )
     mode_enum = policy.design_mode
     resolved_filters = policy.design_parameters.filters
+    if policy.design_parameters.offtarget_filters.max_transcript_seed_sites is not None and not seed_species:
+        _fail_with_config_error("max_transcript_seed_sites requires --transcript-seed-species")
 
     log_destination = Path(log_file) if log_file else output_dir / "logs" / "sirnaforge.log"
     log_destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1724,7 +1812,15 @@ def workflow(  # noqa: PLR0912
                     transcriptome_indices=transcriptome_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
+                    mirna_reference_manifest=mirna_reference_manifest,
+                    target_intent_request=target_intent_request,
+                    transcript_seed_species=seed_species if transcript_seed_species is not None else None,
+                    transcript_seed_required_species=required_seed_species,
+                    transcript_seed_scope=transcript_seed_scope,
+                    max_transcript_seed_sites=max_transcript_seed_sites,
                     transcriptome_fasta=transcriptome_fasta,
+                    aligner=aligner,
+                    report_mode=cast(ReportMode, report_mode),
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
                     ortholog_mapping_file=ortholog_mapping,
@@ -1839,7 +1935,7 @@ def workflow(  # noqa: PLR0912
 
 
 @app_command()
-def offtarget(
+def offtarget(  # noqa: PLR0912
     run_mode: str | None = typer.Option(
         None,
         "--run-mode",
@@ -1908,6 +2004,14 @@ def offtarget(
         "--mirna-db",
         help="miRNA reference: mirgenedb (default), mirbase, or mirgenedb+mirbase (mature-only union)",
     ),
+    mirna_reference_manifest: Path | None = typer.Option(
+        None,
+        "--mirna-reference-manifest",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="JSON manifest of pinned local miRNA FASTAs with source, species, release and SHA-256.",
+    ),
     mirna_species: str | None = typer.Option(
         None,
         "--mirna-species",
@@ -1943,6 +2047,7 @@ def offtarget(
             "index was built from must be readable beside the prefix so hits can be resolved to genes."
         ),
     ),
+    aligner: str = typer.Option("bwa-mem2", "--aligner", help="Transcriptome aligner: bwa-mem2 or bwa-mem3."),
     ortholog_mapping: Path | None = typer.Option(
         None,
         "--ortholog-mapping",
@@ -1975,6 +2080,8 @@ def offtarget(
         - ``--offtarget-indices`` can override the indices used for alignment
           using ``species:/abs/path/index_prefix`` entries.
     """
+    if aligner not in {"bwa-mem2", "bwa-mem3"}:
+        _fail_with_config_error("--aligner must be bwa-mem2 or bwa-mem3")
     # Policy first: an invalid threshold must not cost a FASTA read, a download or a directory.
     try:
         actions = _parse_filter_actions(filter_action)
@@ -2090,6 +2197,7 @@ def offtarget(
                     transcriptome_indices=transcriptome_indices,
                     mirna_database=source_normalized,
                     mirna_species=mirna_species_list,
+                    mirna_reference_manifest=mirna_reference_manifest,
                     transcriptome_fasta=transcriptome_fasta,
                     transcriptome_filter=transcriptome_filter,
                     transcriptome_selection=transcriptome_selection,
@@ -2097,6 +2205,7 @@ def offtarget(
                     log_file=effective_log,
                     nextflow_docker_image=nextflow_docker_image,
                     resolved_policy=policy,
+                    aligner=aligner,
                 )
             )
 
@@ -2931,6 +3040,12 @@ def benchmark_prepare(
         "--panel-transcripts",
         help="Optional FASTA of panel transcripts. Enables design_context_source=panel_transcript.",
     ),
+    native_observations_csv: Path | None = typer.Option(None, "--native-observations-csv", exists=True, dir_okay=False),
+    native_mappings_csv: Path | None = typer.Option(None, "--native-mappings-csv", exists=True, dir_okay=False),
+    native_reference_manifest: Path | None = typer.Option(
+        None, "--native-reference-manifest", exists=True, dir_okay=False
+    ),
+    native_reference_fasta: Path | None = typer.Option(None, "--native-reference-fasta", exists=True, dir_okay=False),
     paired_length: int | None = typer.Option(
         None,
         "--paired-length",
@@ -2971,6 +3086,10 @@ def benchmark_prepare(
             panel_id=panel,
             panel_csv=panel_csv,
             panel_transcripts=panel_transcripts,
+            native_observations_csv=native_observations_csv,
+            native_mappings_csv=native_mappings_csv,
+            native_reference_manifest=native_reference_manifest,
+            native_reference_fasta=native_reference_fasta,
             paired_length=paired_length,
             out_dir=out_dir,
             overwrite=overwrite,
@@ -3415,6 +3534,53 @@ def internal_zfn_search_shard(
     )
 
 
+@internal_command("zfn-search-full")
+def internal_zfn_search_full(
+    genome_fasta: Path = typer.Option(..., "--genome-fasta", exists=True, file_okay=True, dir_okay=False),
+    design_params_json: Path = typer.Option(..., "--design-params-json", exists=True, file_okay=True, dir_okay=False),
+    annotation_config_json: Path | None = typer.Option(None, "--annotation-config-json"),
+    search_space_index: Path | None = typer.Option(None, "--search-space-index"),
+    annotation_file: Path | None = typer.Option(None, "--annotation-file"),
+    output_sites_csv: Path = typer.Option(Path("offtarget_sites.csv"), "--output-sites-csv"),
+    output_summary_json: Path = typer.Option(Path("candidate_summary.json"), "--output-summary-json"),
+) -> None:
+    """Run one full-reference ZFN search for the public Nextflow workflow route."""
+    params = ZFNDesignParameters.model_validate_json(design_params_json.read_text(encoding="utf-8"))
+    updates: dict[str, Any] = {
+        "search_space_fasta": str(genome_fasta),
+        "search_space_reference": None,
+        "search_space_index": str(search_space_index) if search_space_index else None,
+    }
+    params = params.model_copy(update=updates, deep=True)
+    annotation = (
+        GenomicAnnotationConfig.model_validate_json(annotation_config_json.read_text(encoding="utf-8"))
+        if annotation_config_json is not None and annotation_config_json.name != "NO_ANNOTATION_CONFIG"
+        else None
+    )
+    if annotation is not None and annotation_file is not None and annotation_file.name != "NO_ANNOTATION":
+        annotation = annotation.model_copy(update={"annotation_path": str(annotation_file)}, deep=True)
+    result = ZFNDesigner().evaluate_pair(params, annotation)
+    output_sites_csv.parent.mkdir(parents=True, exist_ok=True)
+    result.save_offtargets_csv(str(output_sites_csv))
+    candidate_payloads = [candidate.model_dump(mode="json") for candidate in result.candidates]
+    for candidate, payload in zip(result.candidates, candidate_payloads, strict=True):
+        payload["on_target_result"] = candidate.component_scores.get("on_target_quality")
+    output_summary_json.parent.mkdir(parents=True, exist_ok=True)
+    output_summary_json.write_text(
+        json.dumps(
+            {
+                "schema_version": ZFN_CANDIDATE_SUMMARY_SCHEMA_VERSION,
+                "search_contract": params.canonical_search_contract().model_dump(mode="json"),
+                "candidates": candidate_payloads,
+                "summary": result.get_summary(),
+            },
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+
+
 @internal_command("zfn-aggregate-shards")
 def internal_zfn_aggregate_shards(
     shard_csv_glob: str = typer.Option("offtarget_sites_*.csv", "--shard-csv-glob"),
@@ -3433,14 +3599,31 @@ def internal_zfn_aggregate_shards(
 def report(
     run_dir: Path = typer.Argument(..., help="A completed run output directory"),
     output: Path = typer.Option(Path("report.html"), "--output", "-o", help="Where to write the report"),
+    diagnostics_json: Path | None = typer.Option(
+        None,
+        "--diagnostics-json",
+        help="Builder diagnostics JSON (default: beside the HTML report).",
+    ),
     quilt_summarize: bool = typer.Option(
         False,
         "--quilt-summarize/--no-quilt-summarize",
         help="Also write quilt_summarize.json beside the report, registering it and its evidence "
         "files so a published package renders the report in its package view",
     ),
+    mode: str = typer.Option(
+        "auto", "--mode", help="Report mode: auto, compact_single_file, paged_single_file, data_backed."
+    ),
+    artifact_dir: Path | None = typer.Option(
+        None, "--artifact-dir", help="Directory for projected report data (defaults beside the HTML)."
+    ),
+    compact_max_input_bytes: int = typer.Option(64 * 1024 * 1024, "--compact-max-input-bytes", min=0),
+    compact_max_candidate_rows: int = typer.Option(50_000, "--compact-max-candidate-rows", min=0),
+    compact_max_guides: int = typer.Option(5_000, "--compact-max-guides", min=0),
+    paged_max_input_bytes: int = typer.Option(512 * 1024 * 1024, "--paged-max-input-bytes", min=0),
+    paged_max_candidate_rows: int = typer.Option(500_000, "--paged-max-candidate-rows", min=0),
+    paged_max_guides: int = typer.Option(50_000, "--paged-max-guides", min=0),
 ) -> None:
-    """Build a single self-contained HTML report over a finished run.
+    """Build a compact, paged, or data-backed HTML report over a finished run.
 
     Works on any finished or archived run: it reads candidates_all.csv, the aggregated hit tables and
     manifest.json, and needs no live pipeline state. The report classifies nothing and applies no
@@ -3448,30 +3631,56 @@ def report(
     published table -- so it cannot disagree with the run it describes.
     """
     try:
-        payload = build_payload(run_dir)
-    except ReportInputError as exc:
+        if mode not in {"auto", "compact_single_file", "paged_single_file", "data_backed"}:
+            raise typer.BadParameter("mode must be auto, compact_single_file, paged_single_file, or data_backed")
+        thresholds = ReportModeThresholds(
+            compact_max_input_bytes=compact_max_input_bytes,
+            compact_max_candidate_rows=compact_max_candidate_rows,
+            compact_max_guides=compact_max_guides,
+            paged_max_input_bytes=paged_max_input_bytes,
+            paged_max_candidate_rows=paged_max_candidate_rows,
+            paged_max_guides=paged_max_guides,
+        )
+        result = write_report_from_run(
+            run_dir, output, mode=cast(ReportMode, mode), artifact_dir=artifact_dir, thresholds=thresholds
+        )
+    except (ReportInputError, ValueError) as exc:
         console.print(f"❌ [red]{exc}[/red]")
         raise typer.Exit(1) from exc
-
-    written = write_report(payload, output)
+    written = result.output
+    diagnostics_path = diagnostics_json or result.diagnostics_path
+    if diagnostics_path != result.diagnostics_path:
+        diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_path.write_text(json.dumps(result.diagnostics, indent=2) + "\n")
     summarize_line = ""
     if quilt_summarize:
-        summarize_path = write_quilt_summarize(payload, written, run_dir)
+        if result.mode == "compact_single_file":
+            payload = build_payload(run_dir, max_guides=None, diagnostics=False)
+            summarize_path = write_quilt_summarize(payload, written, run_dir)
+        else:
+            summarize_path = write_quilt_summarize_from_run(
+                written, run_dir, result.manifest.get("summary", {}), (result.manifest.get("mode_facts") or {})
+            )
         summarize_line = f"🧵 [bold blue]{summarize_path}[/bold blue]\n"
-
-    counts = payload.run["status_counts"]
+    summary = result.manifest.get("summary", {})
+    counts = summary.get("status_counts", {})
+    facts = result.manifest.get("mode_facts") or {}
+    counts = {key: counts.get(key, 0) for key in ("pass", "warn", "unknown", "fail")}
+    guides = summary.get("guides", facts.get("distinct_guides", 0))
+    candidate_rows = summary.get("candidate_rows", facts.get("candidate_rows", 0))
+    gene_query = summary.get("gene_query", result.manifest.get("source_run_label", run_dir.name))
     console.print(
         Panel.fit(
-            f"📄 [bold blue]{written}[/bold blue]  ({written.stat().st_size / 1e6:.1f} MB, self-contained)\n"
+            f"📄 [bold blue]{written}[/bold blue]  ({written.stat().st_size / 1e6:.1f} MB, {result.mode})\n"
             f"{summarize_line}"
-            f"{payload.run['guides']:,} guides from {payload.run['candidate_rows']:,} candidate rows\n"
+            f"{guides:,} guides from {candidate_rows:,} candidate rows\n"
             f"[green]{counts['pass']} pass[/green] · "
             f"[yellow]{counts['warn']} pass with a warning[/yellow] · "
             f"[yellow]{counts['unknown']} not established[/yellow] · [red]{counts['fail']} fail[/red]",
-            title=f"Report — {payload.run['gene_query']}",
+            title=f"Report — {gene_query}",
         )
     )
-    for caveat in payload.caveats:
+    for caveat in result.diagnostics.get("caveats", []):
         console.print(f"   ⚠️  {caveat}")
 
 

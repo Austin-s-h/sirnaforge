@@ -218,8 +218,9 @@ def build_dataset(source_dir: Path, out_dir: Path, existing_records_csv: Path | 
         "inputs": inputs,
         "outputs": {
             name: hashlib.sha256((out_dir / name).read_bytes()).hexdigest()
-            for name in ("observations.jsonl", "excluded.jsonl", "records.csv")
+            for name in ("excluded.jsonl", "records.csv")
         },
+        "rebuildable_outputs": ["observations.jsonl"],
         "interpretation": "Source rows are overlapping assay views, not independent new measurements. No validation split assigned.",
         "existing_sequence_overlap_rows": sum(row["existing_sequence_overlap"] for row in accepted),
     }

@@ -17,7 +17,8 @@ make docker-shell
 The build verifies `nextflow -version` with networking disabled. `make docker-test` exercises the
 installed package and embedded pipeline; the chromosome 21 fixture bounds CI reference indexing.
 Live Ensembl tests are excluded from the default gate; opt in with
-`make docker-test DOCKER_TEST_MARKERS=runs_in_container`. `make docker-ensure` checks both the version
+`make docker-test DOCKER_TEST_MARKERS=runs_in_container DOCKER_TEST_PYTEST_ARGS=--run-network`
+on a local machine. CI rejects this opt-in. `make docker-ensure` checks both the version
 and source fingerprint before running container tests.
 
 ## Choose the deployment mode

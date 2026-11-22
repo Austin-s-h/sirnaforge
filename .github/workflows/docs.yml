@@ -12,8 +12,6 @@ env:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 jobs:
   build-docs:
@@ -61,8 +59,9 @@ jobs:
         touch docs/_build/html/.nojekyll
 
     - name: 📤 Upload documentation artifact
-      uses: actions/upload-pages-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
+        name: docs-preview
         path: docs/_build/html
 
     - name: 📝 Record documentation summary
@@ -70,32 +69,5 @@ jobs:
         {
           echo "## Documentation Build"
           echo "- Repository: https://github.com/${{ steps.repo.outputs.repository }}"
-          echo "- Pages URL: https://${{ steps.repo.outputs.owner }}.github.io/${{ steps.repo.outputs.name }}"
-        } >> "$GITHUB_STEP_SUMMARY"
-
-  deploy-docs:
-    name: 🚀 Deploy to GitHub Pages
-    runs-on: ubuntu-latest
-    needs: build-docs
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    env:
-      REPOSITORY_LOWER: ${{ needs.build-docs.outputs.repository-lower }}
-      OWNER_LOWER: ${{ needs.build-docs.outputs.owner-lower }}
-      NAME_LOWER: ${{ needs.build-docs.outputs.name-lower }}
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-    - name: 🚀 Deploy to GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@v4
-
-    - name: 📝 Confirm deployment summary
-      if: steps.deployment.outcome == 'success'
-      run: |
-        {
-          echo "## Documentation Deployment"
-          echo "- Source Repository: https://github.com/${{ env.REPOSITORY_LOWER }}"
-          echo "- Published URL: https://${{ env.OWNER_LOWER }}.github.io/${{ env.NAME_LOWER }}"
+          echo "- Preview: docs-preview artifact; Pages deploys from the release workflow only"
         } >> "$GITHUB_STEP_SUMMARY"

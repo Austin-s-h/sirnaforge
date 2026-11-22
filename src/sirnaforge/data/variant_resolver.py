@@ -4,16 +4,21 @@ import asyncio
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import aiohttp
 import pysam
 
 from sirnaforge.data.variant_cache import VariantParquetCache
+from sirnaforge.data.variant_resolution_helpers import (
+    GRCH38_ACCESSIONS,
+    VariantResolutionAmbiguity,
+    exact_query_match,
+    normalize_chromosome,
+    unique_variant,
+)
 from sirnaforge.models.variant import (
     ClinVarSignificance,
-    ClinVarVariationResponse,
-    EnsemblVariationResponse,
     VariantQuery,
     VariantQueryType,
     VariantRecord,
@@ -75,6 +80,7 @@ class VariantResolver:
             VariantSource.DBSNP,
         ]
         self.timeout = timeout
+        self._hgvs_normalizations: dict[str, VariantRecord] = {}
 
         # Import VariantMode for filtering
 
@@ -122,7 +128,9 @@ class VariantResolver:
         if coord_match:
             chr_prefix, chrom, pos, ref, alt = coord_match.groups()
             # Normalize chromosome to 'chrN' format
-            normalized_chr = f"chr{chrom}" if not chr_prefix else f"chr{chrom}"
+            normalized_chr = normalize_chromosome(chrom)
+            if normalized_chr is None:
+                raise ValueError(f"Unsupported human primary chromosome: {chrom}")
             return VariantQuery(
                 raw_input=input_str,
                 query_type=VariantQueryType.COORDINATE,
@@ -148,7 +156,7 @@ class VariantResolver:
             "Supported formats: rsID (rs12345), coordinate (chr17:7577121:G:A), HGVS (NM_000546.6:c.215C>G)"
         )
 
-    async def resolve_variant(self, query: VariantQuery) -> VariantRecord | None:
+    async def resolve_variant(self, query: VariantQuery) -> VariantRecord | None:  # noqa: PLR0911, PLR0912
         """Resolve a variant query to a VariantRecord.
 
         Tries sources in priority order: ClinVar -> Ensembl -> dbSNP
@@ -164,9 +172,18 @@ class VariantResolver:
         # Check cache first
         cache_key = self._get_cache_key(query)
         cached = self._get_from_cache(cache_key)
-        if cached:
+        if cached and exact_query_match(cached, query) and self._passes_filters(cached):
             logger.info(f"Cache hit for variant: {query.raw_input}")
             return cached
+
+        try:
+            normalized_query = await self._coordinate_query(query)
+        except VariantResolutionAmbiguity as exc:
+            logger.error("Variant query is ambiguous: %s", exc)
+            return None
+        if normalized_query is None:
+            return None
+        query = normalized_query
 
         # Try sources in priority order
         variant: VariantRecord | None = None
@@ -179,9 +196,15 @@ class VariantResolver:
                 elif source == VariantSource.DBSNP:
                     variant = await self._query_dbsnp(query)
 
+                if variant and not exact_query_match(variant, query):
+                    logger.warning("Ignoring %s response that does not match %s", source.value, query.raw_input)
+                    variant = None
                 if variant:
                     logger.info(f"Found variant in {source.value}: {query.raw_input}")
                     break
+            except VariantResolutionAmbiguity as exc:
+                logger.error("Variant query is ambiguous: %s", exc)
+                return None
             except Exception as e:
                 logger.warning(f"Error querying {source.value} for {query.raw_input}: {e}")
                 continue
@@ -195,286 +218,430 @@ class VariantResolver:
             logger.info(f"Variant filtered out: {query.raw_input}")
             return None
 
+        if query.hgvs:
+            variant.provenance["hgvs_normalization"] = {
+                "input": query.hgvs,
+                "source": "Ensembl VEP HGVS API",
+                "resolved": variant.to_vcf_style(),
+                "assembly": self.assembly,
+            }
+
         # Cache the result
         self._put_to_cache(cache_key, variant)
         return variant
 
-    async def _query_clinvar(self, query: VariantQuery) -> VariantRecord | None:  # noqa: PLR0911, PLR0912
-        """Query ClinVar for variant information.
+    async def _request_json(self, url: str, params: dict[str, str] | None = None) -> Any:
+        """Read one bounded public API response; adapters validate biological identity."""
+        async with (
+            aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=True) as session,
+            session.get(url, params=params, headers={"Accept": "application/json"}) as response,
+        ):
+            response.raise_for_status()
+            return await response.json()
 
-        Uses ClinVar E-utilities API for GRCh38.
+    async def _coordinate_query(self, query: VariantQuery) -> VariantQuery | None:
+        """Resolve HGVS once to an unambiguous GRCh38 allele before source selection."""
+        if query.assembly != self.assembly:
+            raise ValueError(f"Variant query assembly must be {self.assembly}")
+        if query.query_type != VariantQueryType.HGVS:
+            return query
+        variant = await self._resolve_hgvs(query)
+        if variant is None:
+            return None
+        return query.model_copy(
+            update={
+                "query_type": VariantQueryType.COORDINATE,
+                "chr": variant.chr,
+                "pos": variant.pos,
+                "ref": variant.ref,
+                "alt": variant.alt,
+            }
+        )
 
-        Args:
-            query: Parsed variant query
+    async def _resolve_hgvs(self, query: VariantQuery) -> VariantRecord | None:  # noqa: PLR0912
+        """Use Ensembl's documented HGVS endpoint with ambiguity exposed, never hidden.
 
-        Returns:
-            VariantRecord if found, None otherwise
+        https://rest.ensembl.org/documentation/info/vep_hgvs_get
+        ``ambiguous_hgvs=1`` requests all protein-HGVS mappings so a protein
+        description cannot silently select the server's most likely transcript.
         """
-        # ClinVar E-utilities base URL
-        base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+        if not query.hgvs:
+            return None
+        if query.hgvs in self._hgvs_normalizations:
+            return self._hgvs_normalizations[query.hgvs].model_copy(deep=True)
+        url = f"https://rest.ensembl.org/vep/human/hgvs/{quote(query.hgvs, safe='')}"
+        try:
+            data = await self._request_json(url, {"vcf_string": "1", "ambiguous_hgvs": "1"})
+            records = []
+            for item in data if isinstance(data, list) else []:
+                if item.get("assembly_name") != self.assembly or item.get("input") != query.hgvs:
+                    continue
+                chrom = normalize_chromosome(str(item.get("seq_region_name", "")))
+                if chrom is None:
+                    continue
+                vcf = item.get("vcf_string")
+                if isinstance(vcf, str) and len(vcf.split("-")) == 4:
+                    vcf_chr, vcf_pos, ref, alt = vcf.split("-")
+                    if normalize_chromosome(vcf_chr) != chrom:
+                        continue
+                    pos = int(vcf_pos)
+                else:
+                    alleles = str(item.get("allele_string", "")).split("/")
+                    if len(alleles) != 2 or item.get("strand") != 1:
+                        continue
+                    ref, alt = alleles
+                    pos = int(item["start"])
+                    if int(item["end"]) - pos + 1 != len(ref):
+                        continue
+                if not all(re.fullmatch(r"[ACGT]+", allele) for allele in (ref, alt)) or ref == alt:
+                    continue
+                records.append(
+                    VariantRecord(
+                        id=query.hgvs,
+                        chr=chrom,
+                        pos=pos,
+                        ref=ref,
+                        alt=alt,
+                        sources=[VariantSource.ENSEMBL],
+                        annotations={"vep_hgvs_data": item},
+                        provenance={"source": "Ensembl VEP HGVS API", "query": query.hgvs, "endpoint": url},
+                    )
+                )
+            result = unique_variant(records, query)
+            if result is not None:
+                self._hgvs_normalizations[query.hgvs] = result.model_copy(deep=True)
+            else:
+                logger.warning("HGVS %s has no verified GRCh38 nucleotide allele", query.hgvs)
+            return result
+        except VariantResolutionAmbiguity:
+            raise
+        except Exception as exc:
+            logger.warning("HGVS normalization failed for %s: %s", query.hgvs, exc)
+            return None
 
-        # Build query based on type
-        search_term = None
+    async def _query_clinvar(self, query: VariantQuery) -> VariantRecord | None:  # noqa: PLR0912
+        """Match every bounded ClinVar hit against explicit GRCh38 locus and alleles.
+
+        Alleles come from a GRCh38 SequenceLocation or its matching canonical
+        chromosome SPDI, never from the input's guessed reference/alternate.
+        https://www.ncbi.nlm.nih.gov/clinvar/docs/programmatic_access/
+        """
+        normalized_query = await self._coordinate_query(query)
+        if normalized_query is None:
+            return None
+        query = normalized_query
         if query.query_type == VariantQueryType.RSID and query.rsid:
-            search_term = query.rsid
+            search_term = query.rsid.lower()
         elif query.query_type == VariantQueryType.COORDINATE and query.chr and query.pos:
-            # ClinVar coordinate search format
-            chrom_num = query.chr.replace("chr", "")
-            search_term = f"{chrom_num}[chr] AND {query.pos}[chrpos37]"  # Use chrpos38 for GRCh38
+            search_term = f"{query.chr.removeprefix('chr')}[chr] AND {query.pos}[chrpos38]"
         else:
             return None
-
-        if not search_term:
-            return None
-
+        base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
         try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=True
-            ) as session:
-                # Search ClinVar
-                search_url = f"{base_url}/esearch.fcgi"
-                params: dict[str, str] = {"db": "clinvar", "term": search_term, "retmode": "json", "retmax": "1"}
-
-                async with session.get(search_url, params=params) as response:
-                    if response.status != 200:
-                        logger.warning(f"ClinVar search failed: HTTP {response.status}")
-                        return None
-
-                    data = await response.json()
-                    id_list = data.get("esearchresult", {}).get("idlist", [])
-
-                    if not id_list:
-                        return None
-
-                    # Fetch variant details
-                    clinvar_id = id_list[0]
-                    fetch_url = f"{base_url}/esummary.fcgi"
-                    params2: dict[str, str] = {"db": "clinvar", "id": clinvar_id, "retmode": "json"}
-
-                    async with session.get(fetch_url, params=params2) as fetch_response:
-                        if fetch_response.status != 200:
-                            return None
-
-                        summary_data = await fetch_response.json()
-                        result = summary_data.get("result", {}).get(clinvar_id, {})
-
-                        # Validate and parse response with Pydantic model
-                        try:
-                            clinvar_response = ClinVarVariationResponse(**result)
-                        except Exception as e:
-                            logger.warning(f"Failed to parse ClinVar response: {e}")
-                            return None
-
-                        # Extract clinical significance
-                        clinical_significance = None
-                        if clinvar_response.germline_classification:
-                            clinical_significance = clinvar_response.germline_classification.get("description")
-
-                        # Map to ClinVarSignificance enum
-                        try:
-                            sig_enum = ClinVarSignificance(clinical_significance) if clinical_significance else None
-                        except ValueError:
-                            sig_enum = ClinVarSignificance.OTHER
-
-                        # Extract coordinates from variation_set if available
-                        chr_val = query.chr or "unknown"
-                        pos_val = query.pos or 0
-                        ref_val = query.ref or ""
-                        alt_val = query.alt or ""
-
-                        # Try to extract from variation_set
-                        if clinvar_response.variation_set:
-                            for var_set in clinvar_response.variation_set:
-                                if "variation_loc" in var_set:
-                                    for loc in var_set["variation_loc"]:
-                                        if loc.get("assembly_name") == "GRCh38":
-                                            chr_val = f"chr{loc.get('chr', chr_val)}"
-                                            pos_val = int(loc.get("start", pos_val))
-                                            break
-                                    break
-
-                        return VariantRecord(
-                            id=query.rsid or f"clinvar_{clinvar_response.uid}",
-                            chr=chr_val,
-                            pos=pos_val,
-                            ref=ref_val,
-                            alt=alt_val,
-                            assembly=self.assembly,
-                            sources=[VariantSource.CLINVAR],
-                            clinvar_significance=sig_enum,
-                            annotations={"clinvar_data": clinvar_response.model_dump()},
-                            provenance={"clinvar_id": clinvar_response.uid, "source": "ClinVar E-utilities"},
+            search = await self._request_json(
+                f"{base_url}/esearch.fcgi",
+                {
+                    "db": "clinvar",
+                    "term": search_term,
+                    "retmode": "json",
+                    "retmax": "100",
+                },
+            )
+            search_result = search.get("esearchresult", {})
+            ids = search_result.get("idlist", [])
+            if int(search_result.get("count", len(ids))) > len(ids):
+                raise VariantResolutionAmbiguity("ClinVar search exceeded its complete 100-hit query budget")
+            if not ids:
+                return None
+            summary = await self._request_json(
+                f"{base_url}/esummary.fcgi",
+                {
+                    "db": "clinvar",
+                    "id": ",".join(str(uid) for uid in ids),
+                    "retmode": "json",
+                },
+            )
+            if any(str(uid) not in summary.get("result", {}) for uid in ids):
+                raise ValueError("ClinVar summary omitted one or more requested records")
+            records = []
+            for uid in ids:
+                item = summary.get("result", {}).get(str(uid), {})
+                significance = item.get("germline_classification", {}).get("description")
+                try:
+                    sig_enum = ClinVarSignificance(significance) if significance else None
+                except ValueError:
+                    sig_enum = ClinVarSignificance.OTHER
+                for variation in item.get("variation_set") or []:
+                    if query.rsid and not any(
+                        str(xref.get("db_source", "")).lower() == "dbsnp"
+                        and str(xref.get("db_id", "")).removeprefix("rs") == query.rsid.lower().removeprefix("rs")
+                        for xref in variation.get("variation_xrefs", [])
+                    ):
+                        continue
+                    for loc in variation.get("variation_loc") or []:
+                        if loc.get("assembly_name") != self.assembly:
+                            continue
+                        chrom = normalize_chromosome(str(loc.get("chr", "")))
+                        if chrom is None:
+                            continue
+                        pos = int(loc.get("start", 0))
+                        ref, alt = loc.get("ref", ""), loc.get("alt", "")
+                        if not ref or not alt:
+                            spdi = str(variation.get("canonical_spdi", "")).split(":")
+                            if len(spdi) != 4 or GRCH38_ACCESSIONS.get(spdi[0]) != chrom:
+                                continue
+                            accession, offset, ref, alt = spdi
+                            if int(offset) + 1 != pos:
+                                continue
+                        if (
+                            not all(
+                                isinstance(allele, str) and re.fullmatch(r"[ACGT]+", allele) for allele in (ref, alt)
+                            )
+                            or ref == alt
+                        ):
+                            continue
+                        if int(loc.get("stop") or pos + len(ref) - 1) != pos + len(ref) - 1:
+                            continue
+                        records.append(
+                            VariantRecord(
+                                id=query.rsid or f"clinvar_{uid}",
+                                chr=chrom,
+                                pos=pos,
+                                ref=ref,
+                                alt=alt,
+                                sources=[VariantSource.CLINVAR],
+                                clinvar_significance=sig_enum,
+                                annotations={"clinvar_data": item},
+                                provenance={
+                                    "clinvar_id": str(uid),
+                                    "source": "ClinVar E-utilities",
+                                    "query": search_term,
+                                },
+                            )
                         )
-
-        except Exception as e:
-            logger.warning(f"ClinVar query failed: {e}")
+            result = unique_variant(records, query)
+            if result is not None:
+                matching = [record for record in records if record.to_vcf_style() == result.to_vcf_style()]
+                result.provenance["clinvar_ids"] = sorted({record.provenance["clinvar_id"] for record in matching})
+                if len({record.clinvar_significance for record in matching}) > 1:
+                    result.clinvar_significance = ClinVarSignificance.CONFLICTING
+                    result.provenance["classification_conflict"] = [record.clinvar_significance for record in matching]
+            return result
+        except VariantResolutionAmbiguity:
+            raise
+        except Exception as exc:
+            logger.warning("ClinVar query failed: %s", exc)
             return None
+
+    @staticmethod
+    def _ensembl_records(data: dict[str, Any], query: VariantQuery) -> list[VariantRecord]:
+        """Parse every primary GRCh38 mapping and keep frequencies allele-specific."""
+        records = []
+        for mapping in data.get("mappings", []):
+            if mapping.get("assembly_name") != "GRCh38":
+                continue
+            chrom = normalize_chromosome(str(mapping.get("seq_region_name", "")))
+            alleles = str(mapping.get("allele_string", "")).split("/")
+            if chrom is None or len(alleles) < 2 or mapping.get("strand") not in {-1, 1}:
+                continue
+            if not all(re.fullmatch(r"[ACGT]+", allele) for allele in alleles):
+                continue
+            start = int(mapping["start"])
+            if int(mapping["end"]) - start + 1 != len(alleles[0]):
+                continue
+            for source_alt in alleles[1:]:
+                ref, alt = alleles[0], source_alt
+                if mapping["strand"] == -1:
+                    ref, alt = (allele.translate(str.maketrans("ACGT", "TGCA"))[::-1] for allele in (ref, alt))
+                if ref == alt:
+                    continue
+                frequencies = {}
+                population_afs = {}
+                for pop in data.get("populations") or []:
+                    if not pop or pop.get("allele") != source_alt or pop.get("frequency") is None:
+                        continue
+                    freq = float(pop["frequency"])
+                    if not 0 <= freq <= 1:
+                        continue
+                    name = str(pop.get("population", ""))
+                    frequencies[name.lower()] = freq
+                    if name.lower().startswith("gnomade:"):
+                        code = name.rsplit(":", maxsplit=1)[-1].upper()
+                        population_afs[_ENSEMBL_POPULATION_CODES.get(code, code)] = freq
+                globals_by_priority = sorted(
+                    (name for name in frequencies if name.endswith(":all") or name in {"global", "all"}),
+                    key=lambda name: (0 if name == "gnomade:all" else 1, name),
+                )
+                global_source = next(iter(globals_by_priority), None)
+                records.append(
+                    VariantRecord(
+                        id=data.get("name"),
+                        chr=chrom,
+                        pos=start,
+                        ref=ref,
+                        alt=alt,
+                        sources=[VariantSource.ENSEMBL],
+                        af=frequencies.get(global_source) if global_source else None,
+                        population_afs=population_afs,
+                        annotations={"ensembl_data": data},
+                        provenance={"source": "Ensembl Variation API", "frequency_source": global_source},
+                    )
+                )
+        return [record for record in records if exact_query_match(record, query)]
 
     async def _query_ensembl(self, query: VariantQuery) -> VariantRecord | None:  # noqa: PLR0911, PLR0912
-        """Query Ensembl Variation API for variant information.
+        """Resolve all mappings and region hits without choosing the first alternate.
 
-        Args:
-            query: Parsed variant query
-
-        Returns:
-            VariantRecord if found, None otherwise
+        https://rest.ensembl.org/documentation/info/variation_id
         """
+        normalized_query = await self._coordinate_query(query)
+        if normalized_query is None:
+            return None
+        query = normalized_query
         base_url = "https://rest.ensembl.org"
-
         try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=self.timeout), trust_env=True
-            ) as session:
-                headers = {"Content-Type": "application/json"}
-
-                # Build API endpoint based on query type
-                if query.query_type == VariantQueryType.RSID and query.rsid:
-                    # Use structured URL building for better maintainability
-                    base_endpoint = f"{base_url}/variation/human/{query.rsid}"
-                    params = {"pops": "1"}  # Include population frequency data
-                    url = f"{base_endpoint}?{urlencode(params)}"
-                elif query.query_type == VariantQueryType.COORDINATE and query.chr and query.pos:
-                    # Ensembl region endpoint
-                    chrom = query.chr.replace("chr", "")
-                    url = f"{base_url}/overlap/region/human/{chrom}:{query.pos}-{query.pos}?feature=variation"
-                else:
+            if query.query_type == VariantQueryType.RSID and query.rsid:
+                base_endpoint = f"{base_url}/variation/human/{query.rsid.lower()}"
+                params = {"pops": "1"}
+                data = await self._request_json(f"{base_endpoint}?{urlencode(params)}")
+                aliases = {
+                    str(data.get("name", "")).lower(),
+                    *(str(alias).lower() for alias in data.get("synonyms") or []),
+                }
+                if query.rsid.lower() not in aliases:
                     return None
-
-                async with session.get(url, headers=headers) as response:
-                    if response.status != 200:
-                        logger.debug(f"Ensembl API returned status {response.status} for {query.raw_input}")
-                        return None
-
-                    data = await response.json()
-
-                    # Parse response based on endpoint
-                    if query.query_type == VariantQueryType.RSID:
-                        # Direct variant lookup response
-                        if not data or "error" in data:
-                            return None
-
-                        # Validate and parse response with Pydantic model
-                        try:
-                            ensembl_response = EnsemblVariationResponse(**data)
-                        except Exception as e:
-                            logger.warning(f"Failed to parse Ensembl response: {e}")
-                            return None
-
-                        # Extract allele frequency from populations if available
-                        af = None
-                        population_afs: dict[str, float] = {}
-
-                        # Get first allele information from mappings
-                        if not ensembl_response.mappings:
-                            return None
-
-                        mapping = ensembl_response.mappings[0]
-                        allele_string = mapping.allele_string
-                        alleles = allele_string.split("/")
-                        if len(alleles) < 2:
-                            return None
-
-                        alt_alleles = set(alleles[1:])  # All alleles except reference
-
-                        for pop in ensembl_response.populations:
-                            if pop is None:
-                                continue
-                            pop_name = pop.population
-                            freq = pop.frequency
-                            pop_allele = pop.allele
-
-                            if freq is not None and pop_allele in alt_alleles:
-                                # Extract global gnomAD AF - look for gnomAD ALL population
-                                if pop_name.lower() == "gnomade:all" and (af is None or freq > af):
-                                    af = freq
-                                # Extract population-specific AFs from gnomAD
-                                # Handle Ensembl's population format: "gnomADe:{code}"
-                                if ":" in pop_name and pop_name.lower().startswith("gnomade:"):
-                                    pop_code = pop_name.split(":")[-1].upper()
-                                    standard_code = _ENSEMBL_POPULATION_CODES.get(pop_code, pop_code)
-                                    if standard_code not in population_afs or freq > population_afs[standard_code]:
-                                        # Keep the maximum AF across all alternate alleles for this population
-                                        population_afs[standard_code] = freq
-
-                        # If no global AF found, try to get it from other sources
-                        if af is None and ensembl_response.populations:
-                            # Try to find any frequency that looks like a global AF
-                            for pop in ensembl_response.populations:
-                                if pop is None:
-                                    continue
-                                pop_name = pop.population.lower()
-                                freq = pop.frequency
-
-                                # Look for common global AF indicators
-                                if freq is not None and any(
-                                    indicator in pop_name for indicator in ["1000genomes", "1kg", "global", "all"]
-                                ):
-                                    af = freq
-                                    break
-
-                        return VariantRecord(
-                            id=ensembl_response.name,
-                            chr=f"chr{mapping.seq_region_name}",
-                            pos=mapping.start,
-                            ref=alleles[0],
-                            alt=alleles[1],
-                            assembly=self.assembly,
-                            sources=[VariantSource.ENSEMBL],
-                            af=af,
-                            population_afs=population_afs,
-                            annotations={"ensembl_data": ensembl_response.model_dump()},
-                            provenance={"source": "Ensembl Variation API"},
-                        )
-
-                    # Region overlap response - take first variant
-                    if not data or not isinstance(data, list) or len(data) == 0:
-                        return None
-
-                    first_var2: dict[str, Any] = data[0]
-                    var_id2: str = first_var2.get("id", "unknown")
-                    chrom2: str = first_var2.get("seq_region_name", query.chr.replace("chr", "") if query.chr else "")
-                    start_val = first_var2.get("start")
-                    if isinstance(start_val, int | str) and start_val is not None:
-                        pos2 = int(start_val)
-                    else:
-                        pos2 = int(query.pos) if query.pos is not None else 0
-                    alleles_str2: str = first_var2.get("alleles", "")
-                    alleles2: list[str] = alleles_str2.split("/")
-
-                    if len(alleles2) < 2:
-                        return None
-
-                    return VariantRecord(
-                        id=var_id2,
-                        chr=f"chr{chrom2}",
-                        pos=pos2,
-                        ref=alleles2[0],
-                        alt=alleles2[1],
-                        assembly=self.assembly,
-                        sources=[VariantSource.ENSEMBL],
-                        annotations={"ensembl_data": first_var2},
-                        provenance={"source": "Ensembl Variation API"},
-                    )
-
-        except Exception as e:
-            logger.warning(f"Ensembl query failed: {e}")
+                return unique_variant(self._ensembl_records(data, query), query)
+            if query.query_type != VariantQueryType.COORDINATE or not query.chr or not query.pos:
+                return None
+            chrom = query.chr.removeprefix("chr")
+            data = await self._request_json(
+                f"{base_url}/overlap/region/human/{chrom}:{query.pos}-{query.pos}", {"feature": "variation"}
+            )
+            records = []
+            for item in data if isinstance(data, list) else []:
+                alleles = item.get("alleles", [])
+                if isinstance(alleles, str):
+                    alleles = alleles.split("/")
+                variation = {"name": item.get("id"), "mappings": [{**item, "allele_string": "/".join(alleles)}]}
+                records.extend(self._ensembl_records(variation, query))
+            result = unique_variant(records, query)
+            if result is None:
+                normalized = self._hgvs_normalizations.get(query.hgvs or "")
+                return normalized.model_copy(deep=True) if normalized and exact_query_match(normalized, query) else None
+            # Region-overlap records have no population frequencies; enrich only
+            # the already-proven exact allele, never replace it with a neighbour.
+            if result.id:
+                try:
+                    detail = await self._request_json(f"{base_url}/variation/human/{result.id}", {"pops": "1"})
+                    enriched = unique_variant(self._ensembl_records(detail, query), query)
+                    if enriched is not None:
+                        return enriched
+                except VariantResolutionAmbiguity:
+                    raise
+                except Exception as exc:
+                    logger.warning("Ensembl exact-allele population enrichment unavailable: %s", exc)
+            return result
+        except VariantResolutionAmbiguity:
+            raise
+        except Exception as exc:
+            logger.warning("Ensembl query failed: %s", exc)
             return None
 
-    async def _query_dbsnp(self, query: VariantQuery) -> VariantRecord | None:
-        """Query dbSNP for variant information.
+    async def _query_dbsnp(self, query: VariantQuery) -> VariantRecord | None:  # noqa: PLR0912
+        """Read NCBI RefSNP chromosome placements and match exact GRCh38 alleles.
 
-        Note: This is a placeholder. Full dbSNP API integration would require
-        additional implementation or use of local dbSNP VCF files.
-
-        Args:
-            query: Parsed variant query
-
-        Returns:
-            VariantRecord if found, None otherwise
+        https://github.com/ncbi/dbsnp/tree/master/specs
+        SPDI offsets are zero-based boundaries; VariantRecord positions are one-based.
+        Empty SPDI alleles require reference anchoring and are not guessed here.
         """
-        # TODO: Implement dbSNP API query or VCF lookup
-        logger.debug(f"dbSNP query not yet implemented for: {query.raw_input}")
-        return None
+        normalized_query = await self._coordinate_query(query)
+        if normalized_query is None:
+            return None
+        query = normalized_query
+        base_url = "https://api.ncbi.nlm.nih.gov/variation/v0"
+        try:
+            if query.query_type == VariantQueryType.RSID and query.rsid:
+                ids = [query.rsid.lower().removeprefix("rs")]
+            elif query.query_type == VariantQueryType.COORDINATE and query.chr and query.pos:
+                accession = next((seq_id for seq_id, chrom in GRCH38_ACCESSIONS.items() if chrom == query.chr), None)
+                if accession is None:
+                    return None
+                spdi = f"{accession}:{query.pos - 1}:{query.ref}:{query.alt}"
+                lookup = await self._request_json(f"{base_url}/spdi/{quote(spdi, safe='')}/rsids")
+                ids = lookup.get("data", {}).get("rsids", [])
+            else:
+                return None
+            if len(ids) > 100:
+                raise VariantResolutionAmbiguity("dbSNP exact-allele lookup exceeded its 100-record query budget")
+            records = []
+            for rsid in ids:
+                data = await self._request_json(f"{base_url}/refsnp/{rsid}")
+                if str(data.get("refsnp_id")) != str(rsid):
+                    continue
+                snapshot = data.get("primary_snapshot_data", {})
+                annotations = snapshot.get("allele_annotations", [])
+                for placement in snapshot.get("placements_with_allele", []):
+                    accession = placement.get("seq_id")
+                    chrom = GRCH38_ACCESSIONS.get(accession)
+                    traits = placement.get("placement_annot", {}).get("seq_id_traits_by_assembly", [])
+                    if chrom is None or not any(
+                        (
+                            trait.get("assembly_name") == self.assembly
+                            or re.fullmatch(r"GRCh38\.p\d+", trait.get("assembly_name", ""))
+                        )
+                        and trait.get("is_top_level") is True
+                        and trait.get("is_chromosome") is True
+                        and not trait.get("is_alt")
+                        and not trait.get("is_patch")
+                        for trait in traits
+                    ):
+                        continue
+                    for index, allele in enumerate(placement.get("alleles", [])):
+                        spdi = allele.get("allele", {}).get("spdi", {})
+                        ref, alt = spdi.get("deleted_sequence", ""), spdi.get("inserted_sequence", "")
+                        if (
+                            spdi.get("seq_id") != accession
+                            or ref == alt
+                            or not all(re.fullmatch(r"[ACGT]+", value) for value in (ref, alt))
+                        ):
+                            continue
+                        frequencies = annotations[index].get("frequency", []) if index < len(annotations) else []
+                        usable_frequencies = []
+                        for frequency in frequencies:
+                            total = frequency.get("total_count", 0)
+                            count = frequency.get("allele_count", -1)
+                            if isinstance(total, int) and isinstance(count, int) and total > 0 and 0 <= count <= total:
+                                usable_frequencies.append({**frequency, "af": count / total})
+                        usable_frequencies.sort(
+                            key=lambda frequency: (
+                                0 if "gnomad" in frequency.get("study_name", "").lower() else 1,
+                                frequency.get("study_name", ""),
+                            )
+                        )
+                        selected = next(iter(usable_frequencies), None)
+                        records.append(
+                            VariantRecord(
+                                id=f"rs{rsid}",
+                                chr=chrom,
+                                pos=int(spdi["position"]) + 1,
+                                ref=ref,
+                                alt=alt,
+                                sources=[VariantSource.DBSNP],
+                                af=selected["af"] if selected else None,
+                                annotations={"dbsnp_data": data, "dbsnp_frequencies": usable_frequencies},
+                                provenance={
+                                    "source": "NCBI RefSNP API",
+                                    "sequence_accession": accession,
+                                    "frequency_source": selected.get("study_name") if selected else None,
+                                },
+                            )
+                        )
+            return unique_variant(records, query)
+        except VariantResolutionAmbiguity:
+            raise
+        except Exception as exc:
+            logger.warning("dbSNP query failed: %s", exc)
+            return None
 
     def _passes_filters(self, variant: VariantRecord) -> bool:
         """Check if variant passes AF and ClinVar filters.
@@ -505,11 +672,10 @@ class VariantResolver:
             return False
 
         # ClinVar significance filter
-        if (
-            VariantSource.CLINVAR in variant.sources
-            and variant.clinvar_significance
-            and variant.clinvar_significance not in self.clinvar_filters
-        ):
+        allowed_significances = set(self.clinvar_filters)
+        if {ClinVarSignificance.PATHOGENIC, ClinVarSignificance.LIKELY_PATHOGENIC} <= allowed_significances:
+            allowed_significances.add(ClinVarSignificance.PATHOGENIC_LIKELY_PATHOGENIC)
+        if VariantSource.CLINVAR in variant.sources and variant.clinvar_significance not in allowed_significances:
             logger.debug(f"Variant filtered: ClinVar significance {variant.clinvar_significance} not in allowed list")
             return False
 
@@ -532,11 +698,13 @@ class VariantResolver:
             Cache key string
         """
         cache_data: dict[str, Any] = {
+            "resolver_schema": 2,
             "query": query.raw_input,
             "assembly": self.assembly,
             "min_af": self.min_af,
             "clinvar_filters": [f.value for f in self.clinvar_filters],
             "variant_mode": self.variant_mode.value if self.variant_mode else None,
+            "source_priority": [source.value for source in self.source_priority],
         }
         return stable_cache_key(cache_data)
 

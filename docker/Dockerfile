@@ -81,7 +81,9 @@ COPY --from=conda-builder --chown=sirnauser:sirnauser /opt/conda /opt/conda
 
 # Provide micromamba/conda shims so Nextflow can materialize per-process envs.
 COPY --from=conda-builder /usr/bin/micromamba /usr/local/bin/micromamba
-RUN ln -sf /usr/local/bin/micromamba /usr/local/bin/conda
+COPY docker/conda-shim.sh /usr/local/bin/conda
+COPY docker/micromamba-activate.sh /opt/conda/bin/activate
+RUN chmod 755 /usr/local/bin/conda /opt/conda/bin/activate
 
 # Switch to non-root user and install the application wheel into the conda
 # prefix (pip will satisfy pure-Python deps from wheels).
@@ -105,10 +107,14 @@ WORKDIR /home/sirnauser
 
 # Set environment variables
 # Ensure conda/micromamba binaries are on PATH so installed tools (nextflow,
-# bwa-mem2, samtools, ViennaRNA, and the installed sirnaforge entrypoint) are
+# bwa-mem2, bwa-mem3, samtools, ViennaRNA, and the installed sirnaforge entrypoint) are
 # available to healthchecks and the default CMD which run via /bin/sh.
 ENV PATH="/opt/conda/bin:/opt/conda/condabin:/usr/local/bin:$PATH"
 ENV JAVA_HOME="/opt/conda/lib/jvm"
+# A numeric UID without an /etc/passwd entry otherwise gets HOME=/; micromamba
+# then cannot write its ~/.conda environment registry. Reuse the writable
+# Nextflow cache directory as HOME for that image launch style.
+ENV HOME="/home/sirnauser/.nextflow"
 ENV NXF_HOME="/home/sirnauser/.nextflow"
 # The conda `nextflow` package already ships the framework JAR under
 # share/nextflow/dist, but the launcher only looks in $NXF_HOME/framework and
@@ -122,7 +128,7 @@ ENV NXF_DIST="/opt/conda/share/nextflow/dist"
 ENV UV_SYSTEM_PYTHON=1
 ENV UV_PYTHON="/opt/conda/bin/python"
 ENV VIRTUAL_ENV="/opt/conda"
-ENV MAMBA_ROOT_PREFIX="/opt/conda"
+ENV MAMBA_ROOT_PREFIX="/home/sirnauser/.nextflow/mamba"
 ENV NXF_CONDA_CLI="micromamba"
 
 # Ensure Nextflow home is created and writable by the non-root user so Nextflow
@@ -133,7 +139,7 @@ ENV NXF_CONDA_CLI="micromamba"
 # no image group. Nextflow writes tmp/, plugins/ and its cache under NXF_HOME on every
 # run, so a mode that only satisfies sirnaforge:sirnaforge fails immediately with
 # `mkdir: cannot create directory '/home/sirnauser/.nextflow/tmp'`.
-RUN mkdir -p /home/sirnauser/.nextflow && \
+RUN mkdir -p /home/sirnauser/.nextflow "$MAMBA_ROOT_PREFIX" && \
     chown -R sirnauser:sirnauser /home/sirnauser/.nextflow && \
     chmod -R a+rwX /home/sirnauser/.nextflow
 
@@ -157,6 +163,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD sirnaforge version && \
         nextflow -version && \
         bwa-mem2 version && \
+        bwa-mem3 version && \
         samtools --version && \
         RNAfold --version || exit 1
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from sirnaforge.config import DEFAULT_MIRNA_CANONICAL_SPECIES
+from sirnaforge.core.aligner_backend import normalize_aligner
 from sirnaforge.core.off_target import (
     aggregate_mirna_results,
     aggregate_offtarget_results,
@@ -85,13 +86,16 @@ def _staged_mirna_evidence(search_root: Path, destination: Path) -> list[Path]:
     return [path for path in search_root.rglob(pattern) if path.parent != destination]
 
 
-def build_bwa_index_cli(fasta_file: str, species: str, output_dir: str = ".") -> dict[str, Any]:
-    """Build a BWA-MEM2 index for one screening reference.
+def build_bwa_index_cli(
+    fasta_file: str, species: str, output_dir: str = ".", aligner: str = "bwa-mem2"
+) -> dict[str, Any]:
+    """Build a BWA-family index for one screening reference.
 
     Args:
         fasta_file: Path to input FASTA file
         species: Species identifier
         output_dir: Directory to write index files
+        aligner: Selected BWA-compatible backend (default: ``bwa-mem2``)
 
     Returns:
         Dictionary with index prefix path
@@ -100,15 +104,18 @@ def build_bwa_index_cli(fasta_file: str, species: str, output_dir: str = ".") ->
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Build index with species-specific prefix
-    index_prefix = output_path / f"{species}_index"
-    result_prefix = build_bwa_index(fasta_file=fasta_file, index_prefix=str(index_prefix))
+    aligner = normalize_aligner(aligner)
+    index_suffix = "" if aligner == "bwa-mem2" else f"_{aligner.replace('-', '_')}"
+    index_prefix = output_path / f"{species}{index_suffix}_index"
+    result_prefix = build_bwa_index(fasta_file=fasta_file, index_prefix=str(index_prefix), aligner=aligner)
 
     logger.info(f"Built BWA index for {species}: {result_prefix}")
 
     return {
         "species": species,
+        "aligner": aligner,
         "index_prefix": str(result_prefix),
-        "index_files": list(output_path.glob(f"{species}_index*")),
+        "index_files": list(output_path.glob(f"{result_prefix.name}*")),
     }
 
 
@@ -122,6 +129,7 @@ def offtarget_analysis_cli(
     bwa_T: int = 15,
     seed_start: int = 2,
     seed_end: int = 8,
+    aligner: str = "bwa-mem2",
 ) -> dict[str, Any]:
     """Align one species' reference for OFFTARGET_ANALYSIS, or record that it could not be aligned.
 
@@ -144,6 +152,7 @@ def offtarget_analysis_cli(
         bwa_T: BWA minimum score threshold
         seed_start: Seed region start (1-based)
         seed_end: Seed region end (1-based)
+        aligner: Selected BWA-compatible backend (default: ``bwa-mem2``)
 
     Returns:
         Dictionary with the per-species status and the published file paths
@@ -153,9 +162,10 @@ def offtarget_analysis_cli(
     analysis_file = output_path / f"{species}_analysis.tsv"
     summary_file = output_path / f"{species}_summary.json"
 
-    if not validate_index_files(index_prefix, "bwa-mem2"):
+    aligner = normalize_aligner(aligner)
+    if not validate_index_files(index_prefix, aligner):
         error = (
-            f"No usable BWA-MEM2 index at prefix '{index_prefix}': the index files are missing, empty, "
+            f"No usable {aligner.upper()} index at prefix '{index_prefix}': the index files are missing, empty, "
             "or the path points at something that is not an index (a FASTA left behind by a failed "
             "index build looks exactly like this). No alignment was attempted."
         )
@@ -198,6 +208,7 @@ def offtarget_analysis_cli(
         seed_start=seed_start,
         seed_end=seed_end,
         evidence_dir=output_dir,
+        aligner=aligner,
     )
 
     # run_bwa_alignment_analysis names its outputs after the candidates file; the process declares

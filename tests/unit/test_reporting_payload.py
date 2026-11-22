@@ -10,14 +10,19 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from sirnaforge.config.run_policy import EntryPoint, resolve_run_policy
 from sirnaforge.core.hit_annotation import CLASSIFICATION_COLUMNS, unclassified_cells
 from sirnaforge.reporting import ReportInputError, build_payload, render_html
+from sirnaforge.reporting import payload as reporting_payload
+from sirnaforge.reporting.evidence import guide_mirna_evidence, mirna_evidence
 from sirnaforge.reporting.payload import (
     EMBED_MAX_NM,
     MIN_UNCOVERED_NT,
@@ -27,19 +32,65 @@ from sirnaforge.reporting.payload import (
     STATUSES,
     reevaluate_gates,
 )
+from tests.unit.test_reporting_resources import assert_offline_report
 
 GUIDE = "ACGUACGUACGUACGUACGUA"
 OTHER = "UUUUCCCCAAAAGGGGUUUUC"
 
+
+@pytest.mark.unit
+def test_report_diagnostics_record_projected_chunked_reads_without_changing_html(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Diagnostics expose bounded projected reads without leaking into reader-facing HTML."""
+    run = _write_run(
+        tmp_path,
+        [_candidate_row("c1", GUIDE, "ENST1", 10), _candidate_row("c2", OTHER, "ENST2", 20)],
+        [_hit_row(GUIDE, "human", "ENST9", 1, "off_target", "GENE9")],
+    )
+    candidate_path = run / "sirnaforge/candidates_all.csv"
+    candidates = pd.read_csv(candidate_path)
+    candidates["unused_wide_payload"] = "x" * 300
+    candidates["unused_number"] = range(len(candidates))
+    candidates.to_csv(candidate_path, index=False)
+    hit_path = run / "off_target/results/aggregated/combined_offtargets.tsv"
+    hits = pd.read_csv(hit_path, sep="\t")
+    hits["unused_alignment_payload"] = "y" * 300
+    hits.to_csv(hit_path, sep="\t", index=False)
+    monkeypatch.setattr(reporting_payload, "REPORT_READ_CHUNK_ROWS", 1)
+
+    plain = build_payload(run)
+    measured = build_payload(run, diagnostics=True)
+
+    assert measured.diagnostics is not None
+    assert measured.diagnostics["schema_version"] == 1
+    assert measured.diagnostics["peak_memory_scope"] == "process_lifetime"
+    assert measured.diagnostics["peak_rss_bytes"] > 0
+    assert measured.diagnostics["read_strategy"] == {"column_projection": True, "chunksize_rows": 1}
+    assert measured.diagnostics["phases_seconds"]["candidate_read"] >= 0
+    candidate_stats = measured.diagnostics["inputs"]["candidates"]
+    hit_stats = measured.diagnostics["inputs"]["offtargets"]
+    assert candidate_stats["chunksize_rows"] == hit_stats["chunksize_rows"] == 1
+    assert candidate_stats["rows"] == 2 and hit_stats["rows"] == 1
+    assert candidate_stats["source_column_count"] > len(candidate_stats["selected_columns"])
+    assert hit_stats["source_column_count"] > len(hit_stats["selected_columns"])
+    assert "unused_wide_payload" not in candidate_stats["selected_columns"]
+    assert "unused_alignment_payload" not in hit_stats["selected_columns"]
+    assert [guide.guide for guide in measured.guides] == [guide.guide for guide in plain.guides]
+    assert [guide.status for guide in measured.guides] == [guide.status for guide in plain.guides]
+    assert render_html(measured) == render_html(plain)
+
+
 _CANDIDATE_COLUMNS = (
     "id,guide_sequence,passenger_sequence,transcript_id,position,gc_content,asymmetry_score,"
-    "empirical_score,paired_fraction,design_score,composite_score,weight_vector,passes_filters"
+    "empirical_score,paired_fraction,design_score,composite_score,weight_vector,passes_filters,"
+    "transcriptome_hits_query_le2"
 )
 
 
 def _candidate_row(cid: str, guide: str, transcript: str, position: int, *, gc: float = 45.0) -> str:
     dna = guide.replace("U", "T")
-    return f"{cid},{dna},{dna},{transcript},{position},{gc},0.8,0.5,0.3,55.0,60.0,postscreen_sirna_v4,PASS"
+    return f"{cid},{dna},{dna},{transcript},{position},{gc},0.8,0.5,0.3,55.0,60.0,postscreen_sirna_v4,PASS,0"
 
 
 def _hit_row(guide: str, species: str, rname: str, nm: int, hit_class: str, symbol: str) -> dict[str, object]:
@@ -62,12 +113,22 @@ def _hit_row(guide: str, species: str, rname: str, nm: int, hit_class: str, symb
     }
 
 
-def _write_run(tmp_path: Path, candidates: list[str], hits: list[dict[str, object]]) -> Path:
+def _write_run(
+    tmp_path: Path, candidates: list[str], hits: list[dict[str, object]], *, max_off_targets: int | None = None
+) -> Path:
     run = tmp_path / "run"
     (run / "sirnaforge").mkdir(parents=True)
     (run / "off_target" / "results" / "aggregated").mkdir(parents=True)
     (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([_CANDIDATE_COLUMNS, *candidates]) + "\n")
-    (run / "sirnaforge" / "manifest.json").write_text(json.dumps({"gene_query": "TP53", "tool_version": "test"}))
+    manifest: dict[str, object] = {"gene_query": "TP53", "tool_version": "test"}
+    if max_off_targets is not None:
+        manifest["run_policy"] = resolve_run_policy(
+            entry_point=EntryPoint.SCREENING_WORKFLOW,
+            query_species="human",
+            screen_species=["human"],
+            stated={"max_off_target_count": max_off_targets},
+        ).as_manifest()
+    (run / "sirnaforge" / "manifest.json").write_text(json.dumps(manifest))
 
     table = run / "off_target" / "results" / "aggregated" / "combined_offtargets.tsv"
     if hits:
@@ -133,12 +194,13 @@ def _write_fully_evidenced_run(
     not evaluated for the whole run rather than for one row.
     """
     recorded = recorded or {}
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [], max_off_targets=15)
     columns = _CANDIDATE_COLUMNS + "".join(f",{k}_observed" for k in _PASSING_OBSERVED)
     columns += "".join(f",{k}_verdict" for k in recorded)
     rows = []
     for n, guide in enumerate(guides, start=1):
-        row = _candidate_row(f"c{n}", guide, "ENST00000000001", 10 * n).rsplit(",", 1)[0] + f",{run_label}"
+        row = _candidate_row(f"c{n}", guide, "ENST00000000001", 10 * n).rsplit(",", 2)[0]
+        row += f",{run_label},0"
         row += "".join(f",{v}" for v in _PASSING_OBSERVED.values())
         row += "".join(f",{v}" for v in recorded.values())
         rows.append(row)
@@ -172,7 +234,7 @@ def _write_graded_run(tmp_path: Path, grades: Sequence[str]) -> Path:
     drop a guide by score alone. Every guide records what all seventeen gates observed, as the fixed
     design path does, and the run's own ``passes_filters`` label agrees with the status asked for.
     """
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [], max_off_targets=15)
     verdict_columns = sorted({column for column, _ in (_GRADE_RECORDED.get(g, ("", "")) for g in grades) if column})
     columns = (
         _CANDIDATE_COLUMNS
@@ -244,7 +306,7 @@ def test_a_gate_whose_column_the_run_does_not_export_is_unknown_not_pass(tmp_pat
     A gate the run exports no readable column for -- neither ``<filter_id>_observed`` nor the
     descriptor's own column -- is reported ``not established``, never flipped to pass.
     """
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [], max_off_targets=15)
     entry = build_payload(run).guides[0]
 
     assert entry.n_gates_unknown > 0, "the synthetic run exports none of the screening counters"
@@ -261,7 +323,7 @@ def test_an_integer_counter_is_read_rather_than_nulled(tmp_path: Path) -> None:
     whose threshold was rejecting 65% of its candidates.
     """
     columns = _CANDIDATE_COLUMNS + ",off_target_count,max_off_target_count_observed"
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10) + ",7,7"], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10) + ",7,7"], [], max_off_targets=15)
     (run / "sirnaforge" / "candidates_all.csv").write_text(
         f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},7,7\n"
     )
@@ -284,7 +346,7 @@ def test_a_gate_reads_the_value_the_run_compared_not_a_wider_counter(tmp_path: P
     two disagree 17,600 hits against 63,801.
     """
     columns = _CANDIDATE_COLUMNS + ",transcriptome_hits_1mm,max_transcriptome_hits_1mm_observed"
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [], max_off_targets=15)
     # 40 all-species hits would fail the ceiling of 10; the 2 the gate actually counted pass it.
     (run / "sirnaforge" / "candidates_all.csv").write_text(
         f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},40,2\n"
@@ -305,7 +367,12 @@ def test_an_empty_observed_column_falls_back_to_the_descriptor_column(tmp_path: 
     exported ``gc_content`` -- into unknowns.
     """
     columns = _CANDIDATE_COLUMNS + ",gc_content_max_observed"
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(
+        tmp_path,
+        [_candidate_row("c1", GUIDE, "ENST00000000001", 10)],
+        [],
+        max_off_targets=15,
+    )
     (run / "sirnaforge" / "candidates_all.csv").write_text(
         f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10, gc=45.0)},\n"
     )
@@ -427,6 +494,17 @@ def test_a_register_neighbour_is_flagged_rather_than_looking_like_a_duplicate(tm
     flagged = [i for g in payload.guides for i in g.isoforms if i["register_neighbours"]]
 
     assert flagged, "a design 1 nt away on the same transcript is a register neighbour"
+
+
+@pytest.mark.unit
+def test_register_neighbours_preserve_boundaries_duplicates_and_transcript_scope(tmp_path: Path) -> None:
+    """Unsorted rows retain both +/-2 neighbours, excluding the same register and other transcripts."""
+    positions = [104, 100, 102, 100, 97]
+    rows = [_candidate_row(f"c{i}", GUIDE, "tx1", position) for i, position in enumerate(positions)]
+    rows.append(_candidate_row("other_tx", GUIDE, "tx2", 101))
+    payload = build_payload(_write_run(tmp_path, rows, []))
+    neighbours = {row["candidate_id"]: row["register_neighbours"] for g in payload.guides for row in g.isoforms}
+    assert neighbours == {"c0": [102], "c1": [102], "c2": [100, 100, 104], "c3": [102], "c4": [], "other_tx": []}
 
 
 @pytest.mark.unit
@@ -621,6 +699,236 @@ def test_the_mirna_panel_names_the_mirna_it_matched(tmp_path: Path) -> None:
     assert entry.mirna[0]["mirna"] == "Hsa-Mir-24-P2_3p", "the name the table published"
     assert entry.mirna[0]["database"] == "mirgenedb"
     assert entry.mirna[0]["coord"] == 1, "the seed offset travels with the hit"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("acquisition", "screening", "submitted", "expected", "message"),
+    [
+        ("failed", "unknown", [GUIDE], "acquisition_failed", "miRNA reference unavailable"),
+        ("complete", "failed", [GUIDE], "screening_failed", "miRNA screening failed"),
+        ("skipped", "skipped", [], "skipped", "miRNA screening skipped"),
+        ("unknown", "not_requested", [], "not_requested", "miRNA screening not requested"),
+        ("complete", "complete", [GUIDE], "complete", "Screening completed for this guide"),
+        ("complete", "complete", [OTHER], "unknown", "miRNA screening not established"),
+        ("unknown", "unknown", [], "unknown", "miRNA screening not established"),
+    ],
+)
+def test_mirna_card_uses_explicit_completion_and_guide_coverage(
+    tmp_path: Path, acquisition: str, screening: str, submitted: list[str], expected: str, message: str
+) -> None:
+    """Execute the real rendered JavaScript; empty rows never establish a completed screen."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    manifest_path = run / "sirnaforge" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["reference_evidence"] = {
+        "schema_version": 1,
+        "mirna": {
+            "source": "mirbase",
+            "release": "22.1",
+            "requested_species": ["human"],
+            "acquisition": {"status": acquisition, "reason": "reference_status"},
+            "screening": {"status": screening, "guide_sequences": [g.replace("U", "T") for g in submitted]},
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    payload = build_payload(run)
+    assert payload.guides[0].mirna_evidence["state"] == expected
+    assert payload.run["mirna_unresolved_guides"] == (0 if expected == "complete" else 1)
+    html = render_html(payload)
+    assert 'id="evidence-unresolved"' in html, "this fixture also lacks required gate observations"
+    card = _execute_mirna_card(html)
+    assert message in card
+    assert "mirbase" in card
+    assert ("No named miRNA seed hit at 0 or 1 seed mismatch" in card) == (expected == "complete")
+
+
+def _execute_mirna_card(html: str, expression: str = "mirnaCard(G[0])") -> str:
+    """Evaluate the shipped script without a DOM and call its actual card function."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the optional report JavaScript execution check")
+    script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    result = subprocess.run(
+        [node, "-"],
+        input=script + f"\nprocess.stdout.write({expression});\n",
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    return result.stdout
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("empty_file", [False, True])
+def test_legacy_mirna_absence_never_claims_a_completed_zero(tmp_path: Path, empty_file: bool) -> None:
+    """Neither missing nor header-only legacy files prove screening occurred."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    if empty_file:
+        (run / "off_target/results/aggregated/combined_mirna_hits.tsv").write_text("qseq\tmirna_id\n")
+    payload = build_payload(run)
+    assert payload.guides[0].mirna_evidence == {"state": "unknown", "warning_id": "MIRNA_EVIDENCE_UNKNOWN"}
+    assert "miRNA screening not established" in _execute_mirna_card(render_html(payload))
+
+
+@pytest.mark.unit
+def test_partial_mirna_sources_and_positive_rows_keep_failure_diagnostic(tmp_path: Path) -> None:
+    """Positive partial evidence remains visible beside an unavailable requested source."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["reference_evidence"] = {
+        "schema_version": 1,
+        "mirna": {
+            "source": "mirbase",
+            "screening": {"status": "complete", "guide_sequences": [GUIDE]},
+            "sources": [
+                {"species": "human", "screening": {"status": "complete"}},
+                {"species": "mouse", "acquisition": {"status": "failed", "reason": "download_failed"}},
+            ],
+        },
+    }
+    path.write_text(json.dumps(manifest))
+    (run / "off_target/results/aggregated/combined_mirna_hits.tsv").write_text(
+        f"qseq\tmirna_id\tnm\tseed_mismatches\n{GUIDE}\thsa-miR-test\t0\t0\n"
+    )
+    payload = build_payload(run)
+    assert payload.guides[0].mirna_evidence["state"] == "acquisition_failed"
+    card = _execute_mirna_card(render_html(payload))
+    assert "hsa-miR-test" in card
+    assert "miRNA reference unavailable" in card
+    assert "mouse" in card
+    assert "download_failed" in card
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("schema_version", [None, 2, "1", True, 1.0])
+def test_unrecognized_mirna_contract_never_claims_completion(schema_version: object) -> None:
+    """A future or malformed contract needs interpretation, even if it contains completion words."""
+    data = mirna_evidence(
+        {
+            "reference_evidence": {
+                "schema_version": schema_version,
+                "mirna": {
+                    "acquisition": {"status": "complete"},
+                    "screening": {"status": "complete", "guide_sequences": [GUIDE]},
+                },
+            }
+        }
+    )
+    assert guide_mirna_evidence(data, GUIDE)["state"] == "unknown"
+
+
+@pytest.mark.unit
+def test_complete_mirna_matches_show_pinned_provenance_without_external_urls(tmp_path: Path) -> None:
+    """Nested combined-source metadata remains inspectable without external reach or false warnings."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["reference_evidence"] = {
+        "schema_version": 1,
+        "mirna": {
+            "source": "combined",
+            "acquisition": {"status": "complete"},
+            "screening": {"status": "complete", "guide_sequences": [GUIDE]},
+            "sources": [
+                {
+                    "species": "human",
+                    "acquisition": {"status": "complete"},
+                    "screening": {"status": "complete"},
+                    "references": {
+                        "source": "combined",
+                        "sources": [
+                            {
+                                "source": "mirbase",
+                                "release": "22.1",
+                                "acquisition_mode": "pinned_import",
+                                "filtered_sha256": "a" * 64,
+                                "acquisition_url": "https://example.org/mature.fa.gz",
+                            }
+                        ],
+                    },
+                }
+            ],
+        },
+    }
+    path.write_text(json.dumps(manifest))
+    (run / "off_target/results/aggregated/combined_mirna_hits.tsv").write_text(
+        f"qseq\tmirna_id\tnm\tseed_mismatches\n{GUIDE}\thsa-miR-test\t0\t0\n"
+    )
+    payload = build_payload(run)
+    html = render_html(payload)
+    assert "example.org" not in html, "acquisition endpoints remain in the manifest rather than the report"
+    assert_offline_report(html)
+    assert payload.run["mirna_unresolved_guides"] == 0
+    card = _execute_mirna_card(html)
+    assert "hsa-miR-test" in card
+    assert "miRNA screening not established" not in card
+    assert "pinned_import" in card
+    assert "22.1" in card
+    assert "a" * 64 in card
+
+
+@pytest.mark.unit
+def test_species_seed_count_controls_keep_nonnegative_declared_bounds() -> None:
+    """Dynamic seed controls retain the model's nonnegative threshold domain."""
+    bounds = reporting_payload._declared_bounds("species_liability_limits.human.transcript_seed_genes")
+
+    assert bounds.low == 0.0
+    assert bounds.high is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("second_gene", "available"), [("ENSG1", False), ("ENSG2", True), (None, True)])
+def test_gene_filter_uses_distinct_recorded_genes_and_round_trips(
+    tmp_path: Path, second_gene: str | None, available: bool
+) -> None:
+    """Many isoforms do not create multiple genes; unresolved identity is an explicit group."""
+    run = _write_run(
+        tmp_path,
+        [_candidate_row("c1", GUIDE, "ENST1", 10), _candidate_row("c2", OTHER, "ENST2", 20)],
+        [],
+    )
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["target_identity"] = {
+        "schema_version": 1,
+        "transcripts": [
+            {"transcript_id": "ENST1", "gene_id": "ENSG1", "gene_symbol": "GENE1"},
+            {"transcript_id": "ENST2", "gene_id": second_gene},
+        ],
+    }
+    path.write_text(json.dumps(manifest))
+    payload = build_payload(run)
+    assert payload.run["gene_filter_available"] == available
+    html = render_html(payload)
+    markup = _execute_mirna_card(html, "geneFilterMarkup()")
+    if not available:
+        assert markup == ""
+        return
+    assert 'aria-expanded="false"' in markup
+    assert 'aria-controls="targetgene"' in markup
+    assert "disabled" in markup
+    result = _execute_mirna_card(
+        html,
+        """(()=>{
+      F.status.clear(); F.geneEnabled=true; F.gene='ENSG1';
+      const selected=matching().map(g=>g.guide), hash=encodeHash();
+      resetControls(); applyHashFragment(hash);
+      return JSON.stringify({selected,restored:matching().map(g=>g.guide),enabled:F.geneEnabled,
+        markup:geneFilterMarkup(),refused:applyHashFragment('gene=unrecorded').refused});
+    })()""",
+    )
+    state = json.loads(result)
+    assert state["selected"] == [GUIDE]
+    assert state["restored"] == [GUIDE]
+    assert state["enabled"] is True
+    assert 'aria-expanded="true"' in state["markup"]
+    assert 'value="ENSG1" selected' in state["markup"]
+    assert state["refused"] == ["unrecorded"]
+    if second_gene is None:
+        assert "Unknown target gene" in state["markup"]
 
 
 @pytest.mark.unit
@@ -881,7 +1189,7 @@ def test_a_slider_domain_is_snapped_to_its_step_and_clamped_to_the_settings_own_
         + "".join(f",{v}" for v in values.values())
         for n, values in enumerate(observed, start=1)
     ]
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [])
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], [], max_off_targets=59)
     (run / "sirnaforge" / "candidates_all.csv").write_text("\n".join([columns, *rows]) + "\n")
     payload = build_payload(run)
     by_id = {f["filter_id"]: f for f in payload.filters}
@@ -939,21 +1247,19 @@ def test_an_inert_gates_domain_can_still_reach_a_threshold_that_changes_a_verdic
 
 @pytest.mark.unit
 def test_liability_is_published_per_species_as_well_as_summed_over_them(tmp_path: Path) -> None:
-    """The gate that rejects the most guides counts every species at once, and nothing decomposed it.
+    """The descriptive all-species count stays distinct from the scoped gate input.
 
     Run-wide liability alignments on one internal run: 92,658 human, 91,536 mouse, 25,243 macaque, 23,427
-    rat. ``max_off_target_count`` is scoped to all species and failed 3,317 guides, 782 of them on nothing
-    else -- and 458 of those 782 pass the same ceiling on human liabilities alone, against 448 passes in
-    the whole report. Both numbers are now published, because which one a reader takes decides whether
-    they agree with the run.
+    rat. The all-species liability total stays published per guide, while ``max_off_target_count`` reads
+    the separate query-species nm<=2 counter; a multi-species fixture guards against drifting the scopes.
     """
     hits = [_hit_row(GUIDE, "human", f"ENST0000001{i:04d}", 1, "off_target", f"HUMANGENE{i}") for i in range(3)]
     hits += [_hit_row(GUIDE, "mouse", f"ENSMUST0000{i:04d}", 1, "off_target", f"Mousegene{i}") for i in range(17)]
     hits += [_hit_row(GUIDE, "mouse", "ENSMUST9999999", 0, "ortholog", "Genex")]
     columns = _CANDIDATE_COLUMNS + ",off_target_count,max_off_target_count_observed,total_offtarget_hits_query"
-    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], hits)
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST00000000001", 10)], hits, max_off_targets=15)
     (run / "sirnaforge" / "candidates_all.csv").write_text(
-        f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},20,20,3\n"
+        f"{columns}\n{_candidate_row('c1', GUIDE, 'ENST00000000001', 10)},20,3,3\n"
     )
     payload = build_payload(run)
     entry = payload.guides[0]
@@ -963,8 +1269,9 @@ def test_liability_is_published_per_species_as_well_as_summed_over_them(tmp_path
     assert entry.liability_count == 20, "the all-species number the gate compared"
     assert entry.liability_by_species == {"human": 3, "mouse": 17}, "the ortholog hit is not a liability"
     assert sum(entry.liability_by_species.values()) == entry.liability_count
-    assert entry.gates[index][1] == 1, "20 liabilities fail a ceiling of 15"
-    assert entry.liability_by_species["human"] <= ceiling, "and on human alone the same ceiling passes it"
+    assert entry.gates[index][0] == 3, "the gate reads the query-species nm<=2 counter"
+    assert entry.gates[index][1] == 0, "17 mouse liabilities do not fail a query-species ceiling of 15"
+    assert entry.liability_by_species["human"] <= ceiling
     assert entry.metrics["total_offtarget_hits_query"] == 3, "the query-species gate input #101 exports"
     assert payload.run["liability_rows_by_species"] == {"human": 3, "mouse": 17}
     assert payload.run["screened_species"] == ["human", "mouse"]
@@ -1050,6 +1357,203 @@ def test_a_run_that_records_no_canonical_status_reports_unknown_rather_than_fals
 
 
 @pytest.mark.unit
+def test_explicit_canonical_authority_labels_identity_and_hit_states(tmp_path: Path) -> None:
+    """Only recorded authority establishes canonical truth, with release and biological IDs retained."""
+    run = _write_run(
+        tmp_path,
+        [_candidate_row("c1", GUIDE, "ENST1", 10), _candidate_row("c2", OTHER, "ENST2", 20)],
+        [],
+    )
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["target_identity"] = {
+        "schema_version": 1,
+        "transcripts": [
+            {
+                "transcript_id": tx,
+                "gene_id": "ENSG1",
+                "gene_symbol": "TP53",
+                "transcript_biotype": "protein_coding",
+                "is_canonical": canonical,
+                "canonical_status": "established",
+                "canonical_source": "Ensembl REST lookup",
+                "canonical_release": "110",
+            }
+            for tx, canonical in [("ENST1", True), ("ENST2", False)]
+        ],
+    }
+    path.write_text(json.dumps(manifest))
+    payload = build_payload(run)
+    guides = {g.guide: g for g in payload.guides}
+    assert guides[GUIDE].canonical_hit == "hit"
+    assert guides[OTHER].canonical_hit == "not_hit"
+    assert guides[GUIDE].isoforms[0]["canonical_source"] == "Ensembl REST lookup"
+    html = render_html(payload)
+    assert "ENSG1" in html
+    assert "release 110" in html
+    card = _execute_mirna_card(html, "isoformCard(G.find(g=>g.canonical_hit==='hit'))")
+    assert "Canonical" in card
+    assert "Ensembl REST lookup" in card
+    assert "release 110" in card
+    label = _execute_mirna_card(html, "txLabel('ENST1')")
+    assert all(name in label for name in ("TP53", "ENSG1", "ENST1", "Canonical"))
+
+
+@pytest.mark.unit
+def test_gencode_canonical_provenance_uses_current_ensembl_identity_links(tmp_path: Path) -> None:
+    """The authority's annotation release stays in provenance and does not pin Ensembl URLs."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1.2", 10)], [])
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["target_identity"] = {
+        "schema_version": 1,
+        "transcripts": [
+            {
+                "transcript_id": "ENST1.2",
+                "gene_id": "ENSG1.3",
+                "gene_symbol": "TP53",
+                "is_canonical": True,
+                "canonical_status": "established",
+                "canonical_source": "GENCODE explicit canonical/MANE tags (annotation 49)",
+                "canonical_release": "49",
+            }
+        ],
+    }
+    path.write_text(json.dumps(manifest))
+
+    payload = build_payload(run)
+
+    identity = payload.run["canonical_provenance"]["ENST1.2"]
+    assert identity["canonical_release"] == "49"
+    assert identity["transcript_link"]["url"] == "https://www.ensembl.org/id/ENST1.2"
+    assert identity["gene_link"]["url"] == "https://www.ensembl.org/id/ENSG1.3"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", [None, "local FASTA"])
+def test_explicit_unestablished_identity_overrides_legacy_canonical_filename(
+    tmp_path: Path, source: str | None
+) -> None:
+    """A source-less flag or unestablished source cannot borrow authority from a FASTA filename."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    (run / "transcripts").mkdir()
+    (run / "transcripts/TP53_canonical.fasta").write_text(">ENST1 canonical:true\nACGU\n")
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["target_identity"] = {
+        "schema_version": 1,
+        "transcripts": [
+            {
+                "transcript_id": "ENST1",
+                "is_canonical": True,
+                "canonical_source": source,
+                "canonical_status": "not_established" if source else "established",
+            }
+        ],
+    }
+    path.write_text(json.dumps(manifest))
+    payload = build_payload(run)
+    assert payload.guides[0].isoforms[0]["canonical"] is None
+    assert payload.guides[0].canonical_hit == "not_established"
+    assert payload.run["canonical_transcript_ids"] == []
+
+
+@pytest.mark.unit
+def test_explicit_canonical_identity_without_release_remains_unknown(tmp_path: Path) -> None:
+    """A source name without its release cannot establish versioned canonical identity."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["target_identity"] = {
+        "schema_version": 1,
+        "transcripts": [
+            {
+                "transcript_id": "ENST1",
+                "is_canonical": True,
+                "canonical_status": "established",
+                "canonical_source": "Ensembl REST lookup",
+            }
+        ],
+    }
+    path.write_text(json.dumps(manifest))
+
+    payload = build_payload(run)
+
+    assert payload.run["canonical_transcript_ids"] == []
+    assert payload.guides[0].canonical_hit == "not_established"
+    assert payload.guides[0].isoforms[0]["canonical"] is None
+    html = render_html(payload)
+    assert "release unknown" in html
+    assert "www.ensembl.org/id/ENST1" not in html
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status", "completed", "attempted", "message", "unavailable"),
+    [
+        ("resolved", True, True, "no conserved site found in completed screen", False),
+        ("resolved_empty", True, True, "no ortholog mapping found", False),
+        ("unresolved", True, True, "orthology unavailable", True),
+        ("resolved", False, True, "screening completion not established", True),
+        ("resolved", True, False, "orthology mapping intentionally skipped", True),
+    ],
+)
+def test_conservation_absence_requires_resolved_mapping_and_completed_screen(
+    tmp_path: Path, status: str, completed: bool, attempted: bool, message: str, unavailable: bool
+) -> None:
+    """Missing alignments mean absence only with independently recorded mapping and screening evidence."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    table = run / "sirnaforge/candidates_all.csv"
+    lines = table.read_text().splitlines()
+    table.write_text(lines[0] + ",off_target_screened\n" + lines[1] + ",True\n")
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["provenance"] = {
+        "databases": {
+            "orthology": {
+                "attempted": attempted,
+                "source": "supplied_mapping",
+                "per_species": [{"species": "mouse", "status": status, "gene_ids": ["ENSMUSG1"]}],
+                "conservation_scope": {
+                    "denominator_species": ["mouse"],
+                    "unscreened_in_denominator": {"value": [] if completed else ["mouse"]},
+                },
+            }
+        }
+    }
+    path.write_text(json.dumps(manifest))
+    payload = build_payload(run)
+    html = render_html(payload)
+    card = _execute_mirna_card(html, "conservationCard(G[0])")
+    assert message in card
+    diagnostic = _execute_mirna_card(html, "(F.cons.add('mouse'), conservationFilterDiagnostic())")
+    assert "No guides match" in diagnostic
+    assert ("does not establish biological absence" in diagnostic) == unavailable
+
+
+@pytest.mark.unit
+def test_orthology_unavailable_diagnostic_uses_the_producer_reason_code(tmp_path: Path) -> None:
+    """An unavailable mapping names its producer-recorded cause instead of a guessed negative."""
+    run = _write_run(tmp_path, [_candidate_row("c1", GUIDE, "ENST1", 10)], [])
+    path = run / "sirnaforge/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["provenance"] = {
+        "databases": {
+            "orthology": {
+                "attempted": True,
+                "per_species": [{"species": "mouse", "status": "unresolved", "reason": "unrecognized_identifier"}],
+            }
+        }
+    }
+    path.write_text(json.dumps(manifest))
+
+    payload = build_payload(run)
+    assert payload.run["conservation_evidence"]["per_species"]["mouse"]["reason"] == "unrecognized_identifier"
+    label = _execute_mirna_card(render_html(payload), "conservationDiagnostic(G[0],'mouse').label")
+    assert label == "target identifier not recognized"
+
+
+@pytest.mark.unit
 def test_the_report_reaches_nothing_outside_itself(tmp_path: Path) -> None:
     """Quilt's default iframe sandbox withholds ``allow-same-origin``, so any reach outward fails.
 
@@ -1064,8 +1568,4 @@ def test_the_report_reaches_nothing_outside_itself(tmp_path: Path) -> None:
     )
     html = render_html(build_payload(run))
 
-    assert not re.findall(r"https?://", html), "the report contains an external URL"
-    external = [m for m in re.findall(r"""(?:src|href)\s*=\s*["']([^"']+)""", html) if not m.startswith("#")]
-    assert external == [], f"the report links a non-inline resource: {external}"
-    for forbidden in ("fetch(", "XMLHttpRequest", "localStorage", "sessionStorage", "document.cookie"):
-        assert forbidden not in html, f"{forbidden} cannot work in Quilt's default sandbox"
+    assert_offline_report(html)

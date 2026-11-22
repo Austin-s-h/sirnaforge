@@ -1,0 +1,50 @@
+name: Release candidate gate
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-candidate:
+    name: Host, container, wheel and docs release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          activate-environment: false
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+      - name: Verify release candidate identity
+        run: |
+          VERSION=$(python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          python .github/scripts/release_contract.py candidate --version "$VERSION"
+      - name: Build and inspect distribution
+        run: |
+          uv build
+          uv run --with twine twine check dist/*
+          VERSION=$(python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          python .github/scripts/release_contract.py wheel --version "$VERSION" --wheel dist/*.whl
+      - name: Build image from this PR's sources
+        run: make docker-build
+      - name: Run the real release suite
+        run: make test-release
+      - name: Upload test receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-reports
+          path: |
+            pytest-host-report.xml
+            pytest-container-report.xml
+            coverage.xml
+          if-no-files-found: warn

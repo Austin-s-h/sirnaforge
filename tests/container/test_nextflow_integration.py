@@ -4,6 +4,8 @@ Tests that verify Nextflow workflows work correctly in Docker environments
 with proper resource constraints and Docker-in-Docker functionality.
 """
 
+import csv
+import hashlib
 import json
 import re
 import subprocess
@@ -14,7 +16,8 @@ from pathlib import Path
 import pytest
 
 import sirnaforge.pipeline.nextflow.config
-from sirnaforge.models.evidence import EVIDENCE_SCHEMA_VERSION, EvidenceStatus
+from sirnaforge.models.evidence import EVIDENCE_SCHEMA_VERSION, EvidenceStatus, ScreeningPlan, ScreeningPlanEntry
+from sirnaforge.models.policy import ScreeningChannel
 from sirnaforge.pipeline.nextflow.runner import NextflowRunner
 
 
@@ -30,6 +33,41 @@ def test_nextflow_available():
     version_match = re.search(r"version\s+(\d+)\.(\d+)\.(\d+)", result.stdout, re.IGNORECASE)
     assert version_match, f"No Nextflow version reported: {result.stdout}"
     assert int(version_match.group(1)) >= 25, f"Nextflow version too old: {version_match.group(0)}"
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+@pytest.mark.requires_nextflow
+def test_nextflow_conda_process_activates_the_micromamba_environment(tmp_path: Path) -> None:
+    """Nextflow's Conda provider must activate a local micromamba prefix."""
+    workflow = tmp_path / "conda-probe.nf"
+    workflow.write_text(
+        """process CONDA_PROBE {
+    conda '/opt/conda'
+    output:
+    path 'probe.txt'
+    script:
+    '''
+    python -c \"from pathlib import Path; Path('probe.txt').write_text('activated')\"
+    '''
+}
+workflow {
+    CONDA_PROBE()
+}
+"""
+    )
+    work_dir = tmp_path / "work"
+    result = subprocess.run(
+        ["nextflow", "run", str(workflow), "-with-conda", "-work-dir", str(work_dir), "-ansi-log", "false"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, f"Nextflow Conda process failed:\n{result.stdout}\n{result.stderr}"
+    output = next(work_dir.rglob("probe.txt"), None)
+    assert output is not None, f"Nextflow process produced no output:\n{result.stdout}\n{result.stderr}"
+    assert output.read_text() == "activated"
 
 
 @pytest.mark.integration
@@ -202,7 +240,6 @@ def test_stub_run_emits_evidence_and_cannot_look_like_a_screen():
         envelope = json.loads((outdir / "aggregated" / "evidence.json").read_text())
         assert envelope["schema_version"] == EVIDENCE_SCHEMA_VERSION
         assert set(envelope) >= {"plan", "evidence", "sources", "unplanned"}, sorted(envelope)
-
         # The per-unit evidence the stub block declares as an output must actually materialise.
         stub_files = sorted((outdir / "mirna").glob("mirna_seed_*_evidence.json"))
         assert stub_files, f"stub emitted no per-unit evidence: {sorted((outdir / 'mirna').glob('*'))}"
@@ -215,6 +252,182 @@ def test_stub_run_emits_evidence_and_cannot_look_like_a_screen():
             f"a stub run must not publish a completed unit: {entry['status']}"
         )
         assert entry["detail"], "a stub unit must say why it is not a result"
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+@pytest.mark.requires_nextflow
+@pytest.mark.parametrize(
+    ("scope", "status", "site_count"),
+    [("full_cdna", "complete", 1), ("three_prime_utr", "failed", None)],
+)
+def test_transcript_seed_channel_executes_and_reconciles_scoped_evidence(
+    tmp_path: Path, scope: str, status: str, site_count: int | None
+) -> None:
+    """Real Nextflow runs publish counted guide-seed evidence and withhold unknown UTR scans."""
+    runner = NextflowRunner()
+    workflow = runner.get_main_workflow()
+    assert workflow.is_file(), f"embedded workflow missing from the image: {workflow}"
+
+    guides = tmp_path / "guides.fasta"
+    guides.write_text(">g1\nAACCTGTAAG\n")
+    transcriptome = tmp_path / "transcriptome.fasta"
+    transcriptome.write_text(">tx1 gene:ENSG00000000001.4\nTACAGGTA\n")
+    guide_digest = hashlib.sha256(guides.read_bytes()).hexdigest()[:16]
+    plan = ScreeningPlan(
+        entries=(
+            ScreeningPlanEntry(
+                channel=ScreeningChannel.TRANSCRIPT_SEED,
+                species="human",
+                reference_id=None,
+                guide_set_digest=guide_digest,
+                search_settings={"scope": scope},
+            ),
+        )
+    )
+    plan_path = tmp_path / "screening_plan.json"
+    plan_path.write_text(plan.model_dump_json())
+    outdir = tmp_path / "out"
+    command = [
+        "nextflow",
+        "run",
+        str(workflow),
+        "-profile",
+        "local",
+        "--input",
+        str(guides),
+        "--outdir",
+        str(outdir),
+        "--transcriptome_species",
+        ",",
+        "--mirna_species",
+        ",",
+        "--transcript_seed_species",
+        "human",
+        "--transcript_seed_fastas",
+        f"human:{transcriptome}",
+        "--transcript_seed_scope",
+        scope,
+        "--evidence_plan",
+        str(plan_path),
+        "-work-dir",
+        str(tmp_path / "nextflow-work"),
+        "--ansi-log",
+        "false",
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        timeout=300,
+        check=False,
+    )
+    assert result.returncode == 0, f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
+
+    summary = json.loads((outdir / "transcript_seed/transcript_seed_human_summary.json").read_text())
+    assert summary["status"] == status
+    assert summary["site_count"] == site_count
+    assert summary["scope"] == scope
+    if status == "complete":
+        assert summary["per_guide"]["g1"]["site_counts_by_class"] == {
+            "6mer": 0,
+            "7mer-A1": 0,
+            "7mer-m8": 0,
+            "8mer": 1,
+        }
+        assert summary["per_guide"]["g1"]["gene_count"] == 1
+        assert summary["per_guide"]["g1"]["gene_count_is_lower_bound"] is False
+    else:
+        assert summary["transcripts_unavailable"] == ["tx1"]
+        assert summary["per_guide"]["g1"]["status"] == "unknown"
+        assert summary["per_guide"]["g1"]["site_count"] is None
+
+    aggregate = json.loads((outdir / "aggregated/evidence.json").read_text())
+    assert aggregate["plan"]["entries"][0]["channel"] == "transcript_seed"
+    assert aggregate["unplanned"] == []
+    assert len(aggregate["evidence"]["entries"]) == 1
+    entry = aggregate["evidence"]["entries"][0]
+    assert (entry["channel"], entry["species"], entry["guide_set_digest"]) == (
+        "transcript_seed",
+        "human",
+        guide_digest,
+    )
+    assert entry["status"] == status
+
+
+@pytest.mark.integration
+@pytest.mark.runs_in_container
+@pytest.mark.requires_nextflow
+@pytest.mark.requires_tools
+def test_bwa_mem3_plain_mode_runs_through_nextflow(tmp_path: Path) -> None:
+    """The pinned MEM3 package indexes, aligns, parses SAM, and emits completed evidence in Nextflow."""
+    runner = NextflowRunner()
+    workflow = runner.get_main_workflow()
+    assert workflow.is_file(), f"embedded workflow missing from the image: {workflow}"
+
+    guide = "ACGTTGCAAGTCGATCCTAGC"
+    guides = tmp_path / "guides.fasta"
+    guides.write_text(f">guide_1\n{guide}\n")
+    reference = tmp_path / "transcriptome.fasta"
+    reference.write_text(f">ENST_TEST.1 gene:ENSG_TEST.1\nGATTACAGATTACAGATTACA{guide}CGTACGTACGTAGCTAGCTAGC\n")
+    outdir = tmp_path / "out"
+    work_dir = tmp_path / "nextflow-work"
+    resources = tmp_path / "test-resources.config"
+    resources.write_text(
+        "process {\n"
+        "    withName: 'SIRNAFORGE_OFFTARGET:SIRNA_OFFTARGET_ANALYSIS:BUILD_BWA_INDEX' {\n"
+        "        cpus = 1\n"
+        "        memory = '2.GB'\n"
+        "    }\n"
+        "    withName: 'SIRNAFORGE_OFFTARGET:SIRNA_OFFTARGET_ANALYSIS:OFFTARGET_ANALYSIS' {\n"
+        "        cpus = 1\n"
+        "        memory = '2.GB'\n"
+        "    }\n"
+        "}\n"
+    )
+    command = [
+        "nextflow",
+        "run",
+        str(workflow),
+        "-c",
+        str(resources),
+        "-profile",
+        "local",
+        "--input",
+        str(guides),
+        "--outdir",
+        str(outdir),
+        "--transcriptome_species",
+        "human",
+        "--transcriptome_fastas",
+        f"human:{reference}",
+        "--mirna_species",
+        ",",
+        "--aligner",
+        "bwa-mem3",
+        "-work-dir",
+        str(work_dir),
+        "--ansi-log",
+        "false",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, cwd=tmp_path, timeout=300, check=False)
+    assert result.returncode == 0, f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
+
+    analysis = outdir / "transcriptome" / "human_analysis.tsv"
+    with analysis.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert any(row["qname"] == "guide_1" and row["rname"] == "ENST_TEST.1" and row["nm"] == "0" for row in rows)
+
+    evidence = json.loads((outdir / "transcriptome" / "transcriptome_human_evidence.json").read_text())
+    assert evidence["entry"]["status"] == "complete"
+    assert evidence["entry"]["processed_guides"] == 1
+
+    versions_file = outdir / "transcriptome" / "versions.yml"
+    assert versions_file.is_file(), "Nextflow did not publish the alignment task's tool versions"
+    versions = versions_file.read_text(encoding="utf-8")
+    assert "bwa-mem3" in versions
+    assert "0.15.0" in versions
 
 
 @pytest.mark.integration

@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "kind": "bwa_mem3_release116_downstream_gate_comparison",
+  "measured_at_utc": "2026-10-26",
+  "code_revision": "f1d44ec",
+  "machine": {
+    "platform": "Linux WSL2 x86_64",
+    "python": "3.12.15",
+    "nextflow": "26.10.3",
+    "execution_profile": "local"
+  },
+  "inputs": {
+    "guide_count": 3395,
+    "guide_fasta_sha256": "e80d5cae150fd38526f4eb41cc1225c7d91fc43fed54484a97d24d608cbd0a2b",
+    "guide_source": "OligoGym human-derived guides; deduplicated panel used in bwa-mem3-v0.15.0-release116-panel-repeats.json",
+    "query_species": "human",
+    "transcriptome_references": {
+      "rat_release_116_sha256": "14ad668039a84a3ffaf787944dd09194488392848574b20c484d50df56b07477",
+      "macaque_release_116_sha256": "c702162e3053fb7bf4b0851f30b8b538d9885acfc737863bf2cc6e09d78db48d"
+    },
+    "mirna_fixture_sha256": "848acf602e7e1bce88046ff7e2ec2460c9427d6c2b0ccd47b1824ed897d2db9f",
+    "mirna_fixture_notice": "Synthetic sequence fixture used only to exercise software routing and evidence reconciliation; not a biological miRNA dataset. Its SHA-256 is retained for identity, but the tiny fixture itself was not retained, so the miRNA branch cannot be replayed from this record."
+  },
+  "workflow": {
+    "entrypoint": "actual sirnaforge predesigned-guide screening workflow with Nextflow off-target workflow",
+    "transcriptome_species": ["rat", "macaque"],
+    "transcriptome_indices": "Previously built, checksum-verified backend-specific indices; reference FASTAs were linked beside prefixes for transcript/gene resolution. Index-build time excluded.",
+    "effective_nextflow_options": [
+      "--transcriptome_species rat,macaque",
+      "-profile local",
+      "--max_cpus 12",
+      "--max_memory 26.GB",
+      "--max_time 240.h",
+      "--mirna_db mirbase",
+      "--mirna_species rat,macaque",
+      "--aligner bwa-mem2 or bwa-mem3",
+      "--transcriptome_indices rat:<verified-index>,macaque:<verified-index>",
+      "--evidence_plan <plan for the 3395-guide digest>"
+    ],
+    "local_execution_environment": [
+      "SIRNAFORGE_USE_LOCAL_EXECUTION=1",
+      "SIRNAFORGE_CACHE_DIR set separately per backend",
+      "Pixi runtime tools before project .venv/bin on PATH",
+      "PYTHONPATH includes project src and .venv site-packages",
+      "NXF_DIST points to the pinned Pixi Nextflow distribution",
+      "NXF_OPTS=-Xms512m -Xmx4g"
+    ],
+    "aligners": {
+      "bwa_mem2": "2.2.1",
+      "bwa_mem3": "0.15.0 plain mode"
+    },
+    "workflow_wall_time_seconds_including_launch": {
+      "bwa_mem2": 28.21,
+      "bwa_mem3": 24.12
+    },
+    "reproducibility_note": "Reference acquisition and guide-generation commands and full index/alignment trials are in the linked release-116 repeated-panel record. Workflow outputs and indices were temporary and removed after summary."
+  },
+  "results": {
+    "backend_output_equal": true,
+    "candidate_rows_equal": 3395,
+    "candidate_row_diff_count": 0,
+    "selection_state_counts_each_backend": {
+      "provisional_incomplete_evidence": 3395
+    },
+    "transcriptome": {
+      "rat": {
+        "status_each_backend": "complete",
+        "processed_guides_each_backend": 3395,
+        "parsed_sites_each_backend": 16323,
+        "parsed_tsv_sha256_each_backend": "ce1faedf997f94e70527aec31f32eb429feed22f23dd473e899684f8d5ac2375"
+      },
+      "macaque": {
+        "status_each_backend": "complete",
+        "processed_guides_each_backend": 3395,
+        "parsed_sites_each_backend": 16573,
+        "parsed_tsv_sha256_each_backend": "63e73672ebef94c94e71942947f8edbd334602fb3f5d78dd34815640112e9162"
+      },
+      "unplanned_evidence_each_backend": []
+    },
+    "mirna_fixture": {
+      "rat_sites_each_backend": 628,
+      "macaque_sites_each_backend": 628,
+      "unplanned_evidence_each_backend": []
+    },
+    "gate_verdicts_each_backend": {
+      "max_transcriptome_hits_0mm": {"unknown": 3395},
+      "max_transcriptome_hits_1mm": {"unknown": 3395},
+      "max_transcriptome_hits_2mm": {"unknown": 3395},
+      "max_mirna_perfect_seed": {"unknown": 3395},
+      "fail_on_high_risk_mirna": {"unknown": 3395}
+    }
+  },
+  "same_species_rat_software_check": {
+    "code_revision": "2855a4b",
+    "run_mode": "exploratory",
+    "entrypoint": "sirnaforge offtarget",
+    "query_species": "rat",
+    "screen_species": ["rat"],
+    "biological_scope": "Software behavior only: the input guide panel is human-derived but rat is deliberately declared as query species so the workflow can exercise measured query-species gates. No result here is biological eligibility or a recommendation to design these guides for rat.",
+    "inputs": {
+      "guide_count": 3395,
+      "guide_fasta_sha256": "e80d5cae150fd38526f4eb41cc1225c7d91fc43fed54484a97d24d608cbd0a2b",
+      "rat_reference_url": "https://ftp.ensembl.org/pub/release-116/fasta/rattus_norvegicus/cdna/Rattus_norvegicus.GRCr8.cdna.all.fa.gz",
+      "rat_reference_gzip_sha256": "4f83911b79031aada477d5b6f1d820777c5f0402c594cc1dbb52ac5d0b0fb3c7",
+      "rat_reference_fasta_sha256": "14ad668039a84a3ffaf787944dd09194488392848574b20c484d50df56b07477",
+      "synthetic_mirna_fixture": {
+        "id": "rno-software-only-seed-fixture",
+        "sequence": "ACGTAATATGACGTACGTACGT",
+        "release": "synthetic-software-fixture",
+        "fasta_sha256": "e61668f64250b548d003c0d2831bb9d54a6230b364fd3e89dc1fa74d08f1a83e"
+      }
+    },
+    "execution": {
+      "python": "3.12.15",
+      "nextflow": "26.10.3",
+      "profile": "local",
+      "mem2": "2.2.1",
+      "mem3": "0.15.0 plain mode",
+      "cli_options": [
+        "offtarget",
+        "--input-candidates-fasta <guides.fa>",
+        "--output-dir <out>",
+        "--species rat",
+        "--query-species rat",
+        "--mirna-db mirbase",
+        "--mirna-species rat",
+        "--mirna-reference-manifest <mirna_references.json>",
+        "--transcriptome-indices rat:<index_prefix>",
+        "--aligner bwa-mem2 or bwa-mem3",
+        "--run-mode exploratory"
+      ],
+      "index_commands": {
+        "bwa_mem2": "bwa-mem2 index -p rat_index rat.fa",
+        "bwa_mem3": "bwa-mem3 index -t 1 --max-memory 4G --tmp-dir <tmp> rat.fa -p rat_index"
+      },
+      "nextflow_options": [
+        "--transcriptome_species rat",
+        "--mirna_db mirbase",
+        "--mirna_species rat",
+        "--max_cpus 12",
+        "--max_memory 26.GB",
+        "--max_time 240.h",
+        "--aligner bwa-mem2 or bwa-mem3",
+        "--transcriptome_indices rat:<backend-specific-prefix>",
+        "--evidence_plan <plan for the 3395-guide digest>"
+      ],
+      "environment": [
+        "SIRNAFORGE_USE_LOCAL_EXECUTION=1",
+        "SIRNAFORGE_CACHE_DIR set separately per backend",
+        "PYTHONPATH includes repository src",
+        "NXF_DIST points to pinned Pixi Nextflow distribution",
+        "NXF_OPTS=-Xms512m -Xmx4g"
+      ],
+      "workflow_elapsed_seconds_reported_by_application": {
+        "bwa_mem2": 22.64,
+        "bwa_mem3": 19.06
+      },
+      "index_build": {
+        "bwa_mem2": {
+          "elapsed_seconds": 53.99,
+          "peak_rss_kib": 3910628,
+          "index_member_bytes": 927482762,
+          "index_member_sha256": {
+            "rat_index.0123": "2069502e579799395fe0bbbc606d6838be9f5c988c92815c67b13ed7c999ff14",
+            "rat_index.amb": "cbe8d4b27451cc7ef0344fa78b614a216f57c3459b81ab20fd0419ee4a20a170",
+            "rat_index.ann": "6e07991b913599515a8ce82bfd8f445fcb6c43d33352ca9f903d25201b8d84e0",
+            "rat_index.bwt.2bit.64": "d416e755fb7483d98cea29b2093a70f09ed950eb212f63cab892950e938919c5",
+            "rat_index.pac": "7a42f943793caf14ecc9682224309146d855ef2efb79aa2e4ef6830bf9cad035"
+          }
+        },
+        "bwa_mem3": {
+          "elapsed_seconds": 30.70,
+          "peak_rss_kib": 1723348,
+          "memory_budget": "4G",
+          "index_member_bytes": 595316974,
+          "index_member_sha256": {
+            "rat_index.amb": "cbe8d4b27451cc7ef0344fa78b614a216f57c3459b81ab20fd0419ee4a20a170",
+            "rat_index.ann": "6e07991b913599515a8ce82bfd8f445fcb6c43d33352ca9f903d25201b8d84e0",
+            "rat_index.bwt.2bit.64": "ff8395ee85945e73d2dbce09efc05f9297f88e26da19d578f8f9fe2292a7db1d",
+            "rat_index.pac": "7a42f943793caf14ecc9682224309146d855ef2efb79aa2e4ef6830bf9cad035"
+          }
+        }
+      }
+    },
+    "evidence_each_backend": {
+      "transcriptome_rat": {"status": "complete", "processed_guides": 3395, "parsed_sites": 16323},
+      "mirna_seed_rat": {"status": "complete", "processed_guides": 3395, "reported_sites": 505},
+      "unplanned": []
+    },
+    "parsed_outputs_each_backend": {
+      "rat_transcriptome_tsv_sha256": "ce1faedf997f94e70527aec31f32eb429feed22f23dd473e899684f8d5ac2375",
+      "rat_transcriptome_rows": 16323,
+      "mirna_tsv_sha256": "c6aa3da03bc171e7d8084d5b776de0ba0fb672e5feecadf7ec0e0c321f209410",
+      "mirna_rows": 25,
+      "mirna_nm_distribution": {"1": 1, "2": 24}
+    },
+    "resolved_policy": {
+      "profile": "experimental 0.7.1",
+      "profile_content_hash": "sha256:21669255cb4a62284adcef64fcc4f2b1f9ee4d40eb91e3ce198cf6d65b20529d",
+      "thresholds": {
+        "max_transcriptome_hits_0mm": 1,
+        "max_transcriptome_hits_1mm": 10,
+        "max_transcriptome_hits_2mm": 50,
+        "max_mirna_perfect_seed": 0,
+        "fail_on_high_risk_mirna": true
+      }
+    },
+    "candidate_outputs": {
+      "rows_each_backend": 3395,
+      "all_fields_identical_by_candidate": true,
+      "differing_rows": 0,
+      "selection_state_counts_each_backend": {"eligible": 2719, "not_eligible": 676},
+      "qualified_table_rows_each_backend": 2719,
+      "candidates_all_csv_sha256_each_backend": "b60060eb16bb1ec8343c5bd6edeeaffbc648bb870d46a1754bdba41fa99b6358",
+      "candidates_qualified_csv_sha256_each_backend": "ec4672738e51bfcfcdb59edd68dfa05bdd20d8f925db6e127bd3e4daa63614c0",
+      "gate_verdict_counts_each_backend": {
+        "max_transcriptome_hits_0mm": {"pass": 2733, "fail": 662},
+        "max_transcriptome_hits_1mm": {"pass": 3381, "fail": 14},
+        "max_transcriptome_hits_2mm": {"pass": 3395},
+        "max_mirna_perfect_seed": {"pass": 3395},
+        "fail_on_high_risk_mirna": {"pass": 3395}
+      }
+    },
+    "limitations": [
+      "One Linux x86_64 WSL2 host and one workflow trial per backend; these workflow timings are not a general speedup claim.",
+      "The guide panel is human-derived and was deliberately labelled rat solely to exercise query-species gate evaluation. The eligible/qualified state is a software output under this artificial scope, not biological qualification.",
+      "The synthetic miRNA sequence exercises the pinned-reference branch only and is not biological evidence.",
+      "The policy thresholds are experimental and uncalibrated; their observed pass/fail counts do not validate those cutoffs."
+    ]
+  },
+  "interpretation": [
+    "The real workflow routed both aligners through downstream parsing, evidence reconciliation, and gate evaluation with identical outputs.",
+    "All candidates correctly remained provisional and gate verdicts unknown because the human query-species transcriptome was not screened. This run does not establish human biological eligibility or qualified-output equivalence.",
+    "Rat and macaque gate values do not substitute for the missing human query-species evidence.",
+    "The initial human-query workflow demonstrates conservative unknown gates when query-species evidence is absent.",
+    "The separate rat-as-query run exercises actual pass/fail gate and selection outputs on both backends. It is a software-only test because the human-derived panel was intentionally assigned rat query metadata; no biological eligibility is inferred.",
+    "Synthetic miRNA fixtures support software verification only and no biological inference."
+  ]
+}

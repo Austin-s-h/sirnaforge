@@ -28,6 +28,7 @@ class ClinVarSignificance(str, Enum):
 
     PATHOGENIC = "Pathogenic"
     LIKELY_PATHOGENIC = "Likely pathogenic"
+    PATHOGENIC_LIKELY_PATHOGENIC = "Pathogenic/Likely pathogenic"
     UNCERTAIN_SIGNIFICANCE = "Uncertain significance"
     LIKELY_BENIGN = "Likely benign"
     BENIGN = "Benign"

@@ -182,20 +182,6 @@ class TestDatabaseSpecificMethods:
     """Test database-specific search methods."""
 
     @pytest.mark.asyncio
-    async def test_refseq_placeholder(self):
-        """Test RefSeq search with the actual client."""
-        searcher = GeneSearcher()
-
-        # Test that RefSeq client properly handles network errors
-        try:
-            result = await searcher.search_gene("NM_000546", DatabaseType.REFSEQ)
-            # Either it should succeed (if network available) or fail with access error
-            assert result.database == DatabaseType.REFSEQ
-        except Exception:
-            # Network errors are expected in test environments
-            pass
-
-    @pytest.mark.asyncio
     async def test_gencode_requires_local_configuration(self, monkeypatch):
         """An unconfigured local provider must request files rather than contact Ensembl."""
         monkeypatch.delenv("SIRNAFORGE_GENCODE_GTF", raising=False)

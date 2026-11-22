@@ -135,6 +135,11 @@ class TestFilterVerdictAllowList:
         result = _validate(some_other_column_verdict="bogus")
         assert result.loc[0, "some_other_column_verdict"] == "bogus"
 
+    def test_dynamic_species_liability_verdict_is_checked(self):
+        """Configured species-specific gates are dynamic columns but retain the same verdict contract."""
+        with pytest.raises(pandera.errors.SchemaError):
+            _validate(species_liability_human_transcript_seed_genes_verdict="bogus")
+
 
 class TestBuildCandidateRowRoundTrips:
     """The producer side: build_candidate_row must emit values the schema accepts."""

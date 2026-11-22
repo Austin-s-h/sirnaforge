@@ -763,19 +763,19 @@ def test_a_container_run_says_so_and_claims_no_image_digest(tmp_path, monkeypatc
 
 
 @pytest.mark.unit
-def test_the_build_block_records_the_runtime_the_report_drew_with(tmp_path):
+def test_the_build_block_records_the_runtime_the_report_drew_with(tmp_path, monkeypatch):
     """The report draws secondary structures, so the ViennaRNA that drew them is part of the result.
 
-    The aligner stays an explicit non-availability: no code path captures a bwa-mem2 version, and a
-    conda pin on PATH is a constraint, not an observation.
+    An unavailable aligner is explicit; a conda pin is a constraint, not an observation.
     """
+    monkeypatch.setattr("sirnaforge.provenance.shutil.which", lambda _name: None)
     build = _provenance(_qualified_workflow(tmp_path, "runtime"))["build"]
 
     runtime = build["runtime"]
     assert runtime["python"]["version"] and runtime["python"]["implementation"]
     assert runtime["viennarna"]["binary_probed"] is False, "no code execs RNAfold; do not quote its banner"
     assert runtime["aligner"]["value"] is None
-    assert runtime["aligner"]["state"] == "not_captured"
+    assert runtime["aligner"]["state"] == "executable_unavailable"
 
     dependencies = build["dependencies"]
     assert re.fullmatch(r"[0-9a-f]{64}", dependencies["distributions_sha256"])
@@ -1071,7 +1071,7 @@ def test_a_failed_report_is_not_logged_as_a_failed_sidecar(tmp_path, monkeypatch
     in fact succeeded, because the registration beside it was what failed.
     """
     monkeypatch.setattr(
-        "sirnaforge.workflow.write_report",
+        "sirnaforge.workflow.write_report_from_run",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("render exploded")),
     )
     workflow = _qualified_workflow(tmp_path, "no_report")
@@ -1081,7 +1081,7 @@ def test_a_failed_report_is_not_logged_as_a_failed_sidecar(tmp_path, monkeypatch
 
     assert (base / "manifest.json").exists(), "a failed report must not cost the manifest"
     messages = caplog.text
-    assert "Failed to write self-contained HTML report" in messages
+    assert "Failed to write HTML report" in messages
     assert "report manifest" not in messages.lower(), "no sidecar failure happened; none may be reported"
 
 
@@ -1096,7 +1096,7 @@ def test_a_failed_render_leaves_nothing_asserting_a_report_that_does_not_exist(t
     sidecar, which is written whichever way the render went.
     """
     monkeypatch.setattr(
-        "sirnaforge.workflow.write_report",
+        "sirnaforge.workflow.write_report_from_run",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("render exploded")),
     )
     base = _run_step6(_qualified_workflow(tmp_path, "render_failed"))
@@ -1138,7 +1138,7 @@ def test_a_failed_sidecar_is_not_logged_as_a_failed_report(tmp_path, monkeypatch
 
     assert (base / "report.html").exists(), "the report succeeded and must be reported as such"
     assert not (base / "report_manifest.json").exists()
-    assert "Failed to write self-contained HTML report" not in caplog.text
+    assert "Failed to write HTML report" not in caplog.text
     assert "report manifest" in caplog.text.lower()
 
 
@@ -1227,6 +1227,7 @@ def test_an_unstamped_index_is_named_unattested_rather_than_assumed_good(tmp_pat
     assert index["built_from_digest"] is None
     assert index["aligner"] == "bwa-mem2"
     assert index["aligner_version"]["value"] is None
+    assert index["aligner_version"]["state"] == "index_build_version_not_recorded"
     assert len(index["reason"]) >= 20
 
 
@@ -1259,6 +1260,32 @@ def test_a_stamped_index_proves_it_agrees_with_its_reference_and_keeps_digest_mo
         assert member["digest_mode"] in {"full", "sampled"}
         assert member["size"] == 2048
     assert {member["digest_mode"] for member in members.values()} == {"full", "sampled"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("stamped_aligner", "expected_version", "expected_state"),
+    [
+        ({"name": "bwa-mem3", "version": "0.15.0"}, "0.15.0", "index_build_version_probe"),
+        ({"name": "bwa-mem3", "version": None}, None, "index_build_version_unavailable"),
+        ({"name": "bwa-mem3"}, None, "index_build_version_unavailable"),
+    ],
+)
+def test_index_build_version_comes_only_from_a_usable_stamp(
+    tmp_path, stamped_aligner, expected_version, expected_state
+):
+    """Runtime tool availability cannot fill in missing index build provenance."""
+    _, paths = _cached_reference(tmp_path, with_index_stamp=True)
+    stamp_path = artifact_stamp_path(Path(paths["index"]))
+    stamp = json.loads(stamp_path.read_text())
+    stamp["inputs"]["aligner"] = stamped_aligner
+    stamp_path.write_text(json.dumps(stamp))
+
+    index = _provenance_module().index_attestation(Path(paths["index"]))
+
+    assert index["aligner"] == "bwa-mem3"
+    assert index["aligner_version"]["value"] == expected_version
+    assert index["aligner_version"]["state"] == expected_state
 
 
 # ---------------------------------------------------------------------------------------------

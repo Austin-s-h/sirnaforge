@@ -2,13 +2,13 @@
 
 > ## ⚠️ EXPERIMENTAL — these runs are not authoritative
 >
-> The ZFN arm ships **experimental** in 0.6.0 with known unfixed defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). **Do not use ZFN output for any decision without independent
-> validation.**
+> The ZFN arm remains **experimental** pending independent genomic and experimental validation.
+> The engineering defects tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82)
+> have since been addressed. **Do not use ZFN output for decisions without independent validation.**
 >
-> Every run summarised below used the published CCR5 half-site pair as written. Under the default
-> `require_opposite_strands=True` that pair matches no site at all — including its own on-target
-> site — so the conclusions here describe runtime behaviour only and must be re-measured once the
-> half-site convention is fixed.
+> The historical runs summarized below used the published CCR5 half-site strings without
+> correcting the negative-strand orientation. They did not measure on-target recovery and are
+> useful only as backend runtime observations, not biological or ranking evidence.
 
 This note captures the engineering outcome from the ZFN backend tuning work so the rationale no longer lives only in notebooks.
 

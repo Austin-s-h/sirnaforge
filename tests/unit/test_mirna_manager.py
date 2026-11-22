@@ -204,7 +204,7 @@ class TestMiRNADatabaseManager:
         source = manager_with_temp_cache.SOURCES["mirbase_high_conf"]["human"]
         cache_file = manager_with_temp_cache.cache_dir / f"{source.cache_key()}.fa"
         cache_file.write_text(">hsa-test\nACGUACGU\n")
-        monkeypatch.setattr(manager_with_temp_cache, "_is_cache_valid", lambda _key: True)
+        manager_with_temp_cache._record_cache_entry(source.cache_key(), source, cache_file, persist=True)
 
         def unexpected_download(*_args, **_kwargs):
             pytest.fail("a valid cached reference must not be downloaded")

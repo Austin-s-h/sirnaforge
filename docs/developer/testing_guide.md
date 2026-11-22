@@ -36,7 +36,7 @@ make docker-shell       # Interactive debugging
 | `test-ci`                | CI/CD smoke with coverage                          | ~13s     | 40 `ci`-marked tests + coverage XML        | Low       |
 | `test-release`           | Host + container validation with combined coverage | ~6.5min  | 1,822 host + 46 container, merged coverage | Medium    |
 | `test`                   | Full pytest run (allows skips/failures)            | ~2min    | Entire 1,868-test suite on host            | Medium    |
-| `test-requires-network`  | Network-access-required subset                     | 15 tests | `requires_network` marker                  | Low       |
+| `test-requires-network`  | Explicit local-only live-service checks             | Varies   | `--run-network -m requires_network`          | Low       |
 | `test-requires-nextflow` | Nextflow-specific subset                           | 2 tests  | `requires_nextflow` marker                 | Medium    |
 | `docker-test`            | Container-only tests (`runs_in_container`)         | ~4.7min  | tests/container suite                      | High      |
 
@@ -78,10 +78,13 @@ executable on `PATH` both lie.
   Inside the image, `test_nextflow_available` separately **fails** if this required runtime cannot
   start. The Docker build also runs `nextflow -version` with networking disabled, after pip
   installation, to verify that the launcher matches the bundled framework JAR.
-- **`requires_network`** — skipped unless a _verified_ TLS handshake with `rest.ensembl.org`
-  succeeds. The probe handshakes through Python's own trust store rather than merely opening
-  a TCP socket, because interception proxies accept the connection and then fail verification
-  on every request.
+- **`requires_network`** — local-only and skipped by default, even when the internet works.
+  Use `make test-requires-network` or `uv run pytest --run-network -m requires_network` to opt in.
+  CI rejects `--run-network`; normal CI and both release stages explicitly exclude this marker.
+  A default run skips before attempting any live-service probe. With local opt-in, a _verified_
+  TLS handshake with `rest.ensembl.org` must still succeed. The probe uses Python's own trust store;
+  a successful handshake does not guarantee the remote API will be healthy. Actual client failures
+  remain failures in these deliberate local runs.
 
 ### What each `test-release` stage is actually for
 
@@ -316,23 +319,21 @@ docker run --rm -v $(pwd)/examples:/data sirnaforge:latest \
 
 ## ZFN Manual Validation
 
-> **⚠️ EXPERIMENTAL — the two runbooks below validate runtime, not correctness.** The ZFN arm ships
-> experimental in 0.6.0 with known unfixed defects tracked in
-> [#82](https://github.com/Austin-s-h/sirnaforge/issues/82). Every run recorded in those notes used
-> the published CCR5 half-site pair verbatim, which under the default `require_opposite_strands=True`
-> matches **no site at all** — not even its own on-target locus — because both published sequences
-> occur on the hg38 plus strand. So the recorded site counts, recovery figures and backend
-> conclusions are timing and plumbing evidence only. **Do not sign off a ZFN change on them, do not
-> cite them as validation, and do not use ZFN output for any decision without independent
-> validation.** Re-derive them with `--zfn-right-half-site CTTTTGCAGTTT` (the reverse complement of
-> the published `AAACTGCAAAAG`) once #82's orientation defect is resolved.
+> **EXPERIMENTAL — software checks do not establish biological validity.** The engineering defects
+> tracked in [#82](https://github.com/Austin-s-h/sirnaforge/issues/82) have been addressed with
+> regression coverage, including real-reference on-target recovery and the public Nextflow route.
+> Historical backend runs used the published CCR5 right half-site text in the wrong orientation and
+> do not establish on-target recovery. The current real-reference runbooks use
+> `--zfn-right-half-site CTTTTGCAGTTT`, the model-oriented reverse complement of the published
+> `AAACTGCAAAAG`. Require independent genomic and experimental validation before using ZFN output
+> for decisions. Require independent validation before sign-off.
 
 The heavy ZFN benchmarking and real-reference checks are documented as technical validation notes rather than notebook-management policy.
 
 - use [zfn_backend_tuning.md](zfn_backend_tuning.md) for the backend selection rationale — runtime ordering only, per the caveat above
-- use [zfn_hg38_primary_test_commands.md](zfn_hg38_primary_test_commands.md) for full hg38 primary reruns — that page carries the reverse-complement workaround needed to make its commands match
+- use [zfn_hg38_primary_test_commands.md](zfn_hg38_primary_test_commands.md) for full hg38 primary reruns and the expected GRCh38 on-target locus
 - keep chr3 and hg38 durable behavior in `tests/integration/` so reference resolution, search execution, and annotation are exercised together
-- when adding ZFN half-site fixtures, build them from the **published** genomic text rather than from `reverse_complement(published)`. The existing fixtures do the latter, which is why #82's orientation defect survived a file named `test_zfn_realworld_ccr5_data.py`.
+- when adding ZFN half-site fixtures, retain the source publication's sequence and orientation explicitly, then verify the model-oriented queries recover the pinned GRCh38 site.
 
 ## miRNA default-backend rollout validation
 
@@ -411,11 +412,19 @@ validate integration and reporting, not allele-specific biological performance. 
 service checks are retained separately:
 
 ```bash
-uv run pytest tests/integration/test_variant_live.py -v
+uv run pytest tests/integration/test_variant_live.py --run-network -v
 ```
 
 Those tests require working Ensembl/NCBI endpoints, not just a successful TLS handshake. The
 `make docker-test` image gate excludes every `requires_network` test by default, including the
 legacy full-TP53 smoke; its real indexing/alignment coverage uses the chromosome 21 fixture.
-To explicitly include live container checks, run
-`make docker-test DOCKER_TEST_MARKERS=runs_in_container`. Failures include both captured stdout and stderr.
+To explicitly include live container checks on a local machine, run:
+
+```bash
+make docker-test DOCKER_TEST_MARKERS=runs_in_container DOCKER_TEST_PYTEST_ARGS=--run-network
+```
+
+The container inherits CI flags, so this opt-in is rejected in CI as well. The host and container
+release gates always exclude live tests; ordinary `make test` also skips them unless explicitly
+opted in. The deterministic cached-variant tests remain part of container release validation.
+Remote failures include both captured stdout and stderr.

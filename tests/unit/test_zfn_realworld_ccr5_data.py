@@ -6,6 +6,7 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
 from Bio.Seq import Seq
 
 from sirnaforge.models.zfn import (
@@ -15,6 +16,7 @@ from sirnaforge.models.zfn import (
     ZFNSpacerConstraints,
 )
 from sirnaforge.zfn.design import ZFNDesigner
+from sirnaforge.zfn.search import ExhaustiveZFNOffTargetSearcher
 
 
 def _data_dir() -> Path:
@@ -27,11 +29,12 @@ def _match_type_spacer(match_type: str) -> int:
     return int(match_type.split("-")[1])
 
 
-def _genomic_site_from_visible_row(plus_half_site: str, minus_half_site: str, spacer_len: int) -> str:
-    """Build genomic site string for search-space FASTA from S10 visible row halves.
+def _synthetic_site_from_visible_row(plus_half_site: str, minus_half_site: str, spacer_len: int) -> str:
+    """Build a synthetic motif from S10 row halves; this does not reconstruct a genomic locus.
 
-    The ZFN searcher expects ``right_half_site`` in model orientation and compares
-    against reverse-complemented genomic sequence on the right half.
+    This legacy fixture exercises ranking and mismatch accounting only. The real
+    GRCh38 reference orientation is checked by
+    ``test_ccr5_published_on_target_is_found_on_local_grch38_reference_slice``.
     """
     plus = plus_half_site.upper()
     minus = minus_half_site.upper()
@@ -40,7 +43,7 @@ def _genomic_site_from_visible_row(plus_half_site: str, minus_half_site: str, sp
 
 
 def test_00_ccr5_sirnaforge_run_sanity_against_visible_rows(tmp_path: Path) -> None:
-    """Run sirnaforge ZFN design on synthetic CCR5 subset and compare to visible real-data rows."""
+    """Exercise ranking on generated motifs based on visible rows, not on a real genome."""
     s10_path = _data_dir() / "ccr5_s10_visible_rows.csv"
     with s10_path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
@@ -53,9 +56,9 @@ def test_00_ccr5_sirnaforge_run_sanity_against_visible_rows(tmp_path: Path) -> N
 
     synthetic_genome = (
         "TTT"
-        + _genomic_site_from_visible_row(ccr5_row["(+) half-site"], ccr5_row["(−) half-site"], ccr5_spacer)
+        + _synthetic_site_from_visible_row(ccr5_row["(+) half-site"], ccr5_row["(−) half-site"], ccr5_spacer)
         + "GGGG"
-        + _genomic_site_from_visible_row(
+        + _synthetic_site_from_visible_row(
             csnk1g3_row["(+) half-site"],
             csnk1g3_row["(−) half-site"],
             csnk1g3_spacer,
@@ -83,6 +86,36 @@ def test_00_ccr5_sirnaforge_run_sanity_against_visible_rows(tmp_path: Path) -> N
     assert any(site.left_mismatches == 0 and site.right_mismatches == 0 for site in sites)
 
     assert any(site.spacer_len == 5 and site.left_mismatches >= 1 and site.right_mismatches >= 1 for site in sites)
+
+
+def test_ccr5_published_on_target_is_found_on_local_grch38_reference_slice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The published CCR5 target sequence occurs in GRCh38 and requires the model-oriented right query."""
+    monkeypatch.setenv("SIRNAFORGE_CACHE_DIR", str(tmp_path / "cache"))
+    fasta_path = _data_dir() / "ccr5_grch38_on_target.fa"
+    params = ZFNDesignParameters(
+        left_half_site="GTCATCCTCATC",
+        right_half_site="CTTTTGCAGTTT",
+        search_space_fasta=str(fasta_path),
+        search_backend=ZFNSearchBackend.EXHAUSTIVE_PYTHON,
+        half_site_constraints=ZFNHalfSiteConstraints(max_mismatches=0),
+        spacer_constraints=ZFNSpacerConstraints(allowed_spacer_lengths=[5]),
+    )
+
+    sites = ExhaustiveZFNOffTargetSearcher().search(params)
+
+    assert len(sites) == 1
+    site = sites[0]
+    assert (site.chrom, site.strand.value, site.orientation.value) == ("chr3", "+", "L...R")
+    assert (site.start_1based, site.end_1based, site.spacer_len) == (31, 59, 5)
+    assert site.sequence == "GTCATCCTCATCCTGATAAACTGCAAAAG"
+    # The 89 bp slice starts at GRCh38 chr3:46,373,023 (1-based inclusive).
+    assert 46_373_023 + site.start_1based - 1 == 46_373_053
+
+    # The literature's (+)/(-) table text is not directly the CLI's right-query orientation.
+    published_text_params = params.model_copy(update={"right_half_site": "AAACTGCAAAAG"})
+    assert ExhaustiveZFNOffTargetSearcher().search(published_text_params) == []
 
 
 def test_ccr5_study_facts_include_expected_assertions() -> None:

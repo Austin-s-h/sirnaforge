@@ -1,0 +1,14 @@
+{
+  "species": "macaque",
+  "assembly": "Mmul_10",
+  "release": "116",
+  "fasta": "/tmp/sirnaforge-ensembl-release116/macaque.fa",
+  "sha256": "c702162e3053fb7bf4b0851f30b8b538d9885acfc737863bf2cc6e09d78db48d",
+  "source_url": "https://ftp.ensembl.org/pub/release-116/fasta/macaca_mulatta/cdna/Macaca_mulatta.Mmul_10.cdna.all.fa.gz",
+  "download_sha256": "709798ae23301eb35d20fbac88287891ca5587b61b00c1f44069ffaa80a0f15e",
+  "upstream_unix_sum": [
+    "48520",
+    "30495"
+  ],
+  "retrieved_at": "2026-10-24T18:50:02.146105+00:00"
+}

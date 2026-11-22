@@ -166,11 +166,13 @@ this restructuring. Always compare candidates within one run, one weight-set ver
 
 ### What `top_candidates` excludes
 
-`top_candidates` is rebuilt after screening from the candidates that clear **four** gates, so it can
-be shorter than `min(top_n, number passing)`. `candidates_pass.csv` and `candidates_pass.fasta` hold
-everything that clears the same four — they are not truncated to `top_n`, because only the shortlist
-is a shortlist. `candidates_all.csv` holds every candidate, and all three are written in the re-ranked
-order. The gates:
+`top_candidates` is rebuilt after screening from the candidates that clear **four** gates, grouped by
+normalized guide sequence, so it can be shorter than `min(top_n, number of distinct passing guides)`.
+When a guide occurs in multiple transcript contexts, its shortlist row is the eligible context with
+the lowest ranking score. This conservative minimum rule prevents a high-scoring isoform row from
+deciding the guide's panel position by itself. `candidates_pass.csv` and `candidates_all.csv` retain
+every transcript-context row and each row's own selection state; they are not truncated or
+deduplicated. The four gates:
 
 1. `passes_filters` is `PASS` — a failed off-target filter is a rejection, not a low score;
 2. `repeat_flagged` is `False` **and `max_repeat_transcript_fraction` resolves to `fail`** — a guide

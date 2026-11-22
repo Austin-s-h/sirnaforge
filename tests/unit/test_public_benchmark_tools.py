@@ -41,8 +41,9 @@ def test_download_rejects_path_traversal(tmp_path: Path) -> None:
         fetch_file({"path": "../escaped.csv", "url": "https://example.org", "sha256": ""}, tmp_path)
 
 
-def test_linked_components_use_source_profile_weights(tmp_path: Path) -> None:
-    """Historical normalization must not distort scores from a newer profile."""
+@pytest.mark.parametrize("published_score", [50, None])
+def test_linked_components_use_source_profile_weights(tmp_path: Path, published_score: float | None) -> None:
+    """Normalize newer profiles without inventing unpublished post-screen scores."""
     load_linked = runpy.run_path(str(ROOT / "scripts/analyze_oligogym_scoring.py"))["load_linked"]
     native = tmp_path / "native"
     candidates = tmp_path / "runs/panel/sirnaforge"
@@ -60,7 +61,7 @@ def test_linked_components_use_source_profile_weights(tmp_path: Path) -> None:
                 "id": "c1",
                 "gc_content": 50,
                 "max_poly_run_length": 2,
-                "composite_score": 50,
+                "composite_score": published_score,
                 "score_off_target": 12.5,
                 "score_target_accessibility": 5,
                 "score_asymmetry": 15,
@@ -71,7 +72,10 @@ def test_linked_components_use_source_profile_weights(tmp_path: Path) -> None:
     linked = load_linked(native, tmp_path / "runs", {"panel": "panel"}, np.array([0.25, 0.10, 0.30, 0.35]))
     for term in ("off_target", "target_accessibility", "asymmetry", "gc_content"):
         assert linked.iloc[0][f"component_{term}"] == pytest.approx(50)
-    assert linked.iloc[0]["current_score"] == pytest.approx(50)
+    if published_score is None:
+        assert pd.isna(linked.iloc[0]["current_score"])
+    else:
+        assert linked.iloc[0]["current_score"] == pytest.approx(published_score)
 
 
 def test_representative_reference_does_not_duplicate_longest_mapped_isoform(tmp_path: Path) -> None:

@@ -52,6 +52,7 @@ class CandidateView:
     off_target_screened: bool
     ranking_score: float
     unknown_filter_ids: frozenset[str] = frozenset()
+    stable_tiebreak_key: tuple[str, str, int, str] = ("", "", 0, "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,10 +72,12 @@ class SelectionInputs:
         filter_channels: Screening channels backing each gate's count (``POST_SCREEN_FILTER_CHANNELS``
             in ``workflow.py``). A filter id absent here reads design-time or annotation evidence, so
             an incomplete channel never excuses it.
+        filter_evidence_pairs: Exact channel/species pairs backing dynamically scoped gates. When
+            supplied, these take precedence over channel-only requiredness for unknown verdicts.
         repeat_rejects: Whether a repeat-flagged candidate is rejected outright, decided by the
             ``max_repeat_transcript_fraction`` gate's own action.
-        top_n: How many eligible candidates the shortlist keeps. ``None`` means every one of them,
-            matching ``DesignParameters.top_n``.
+        top_n: How many distinct normalized guides the shortlist keeps. ``None`` means all such
+            guides, matching ``DesignParameters.top_n``.
         design_input_shortfalls: Transcript ids a design-stage batch failure dropped, mapped to why.
             Empty by default (additive, #100/W5).
     """
@@ -87,6 +90,9 @@ class SelectionInputs:
     repeat_rejects: bool
     top_n: int | None
     design_input_shortfalls: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    filter_evidence_pairs: Mapping[str, frozenset[tuple[str, str]]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,8 +127,9 @@ class SelectionResult:
         order: Every ordinal, ranked (evidence-complete first, then scored, then by score) -- what
             CSV export and FASTA writers use.
         eligible_ordinals: Ordinals that reached ranking (``ELIGIBLE`` or ``PROVISIONAL``), in rank
-            order -- what ``top_ordinals`` is drawn from.
-        top_ordinals: The first ``SelectionInputs.top_n`` of ``eligible_ordinals``.
+            order -- all transcript-context rows remain represented here.
+        top_ordinals: Up to ``SelectionInputs.top_n`` distinct normalized guide sequences. Each is
+            represented by the lowest-scoring eligible transcript-context row for that guide.
         per_candidate: One :class:`CandidateSelection` per view, in ``order``.
         required_evidence_missing: Required channel/species pairs and design-input shortfalls with no
             completed evidence -- a property of the run, not of any candidate.
@@ -189,7 +196,12 @@ def evidence_shortfall(view: CandidateView, inputs: SelectionInputs, *, required
         in_scope_channels = {channel for channel, _ in in_scope_pairs}
         for filter_id in sorted(view.unknown_filter_ids):
             channels = inputs.filter_channels.get(filter_id)
-            if channels is None or not required_only or {c.value for c in channels} <= in_scope_channels:
+            exact_pairs = inputs.filter_evidence_pairs.get(filter_id)
+            if exact_pairs is not None:
+                in_scope = exact_pairs <= in_scope_pairs
+            else:
+                in_scope = channels is None or {c.value for c in channels} <= in_scope_channels
+            if not required_only or in_scope:
                 missing.append(f"unknown:{filter_id}")
 
     return tuple(dict.fromkeys(missing))
@@ -240,8 +252,14 @@ def select(views: Sequence[CandidateView], inputs: SelectionInputs) -> Selection
 
     ordered = sorted(
         views,
-        key=lambda view: (not any_shortfall[view.ordinal], view.scored_after_screening, view.ranking_score),
-        reverse=True,
+        key=lambda view: (
+            any_shortfall[view.ordinal] != (),
+            not view.scored_after_screening,
+            -view.ranking_score,
+            *view.stable_tiebreak_key,
+            view.candidate_id,
+            view.ordinal,
+        ),
     )
 
     per_candidate: list[CandidateSelection] = []
@@ -273,14 +291,44 @@ def select(views: Sequence[CandidateView], inputs: SelectionInputs) -> Selection
 
         per_candidate.append(CandidateSelection(view.candidate_id, view.ordinal, state, shortfall, ordering_shortfall))
 
-    top_ordinals = tuple(eligible_ordinals[: inputs.top_n])
+    # The top shortlist is an experimental guide panel, so duplicate transcript-context rows for
+    # one normalized guide cannot consume multiple slots. Use the minimum eligible context score as
+    # the guide's conservative representative; this avoids promoting a guide solely because one
+    # isoform context happened to score unusually well. Keep every row in `order` and retain each
+    # context's independent eligibility state for the full CSVs.
+    contexts_by_guide: dict[str, list[int]] = {}
+    view_by_ordinal = {view.ordinal: view for view in views}
+    for ordinal in eligible_ordinals:
+        view = view_by_ordinal[ordinal]
+        guide_key = view.stable_tiebreak_key[0]
+        # Callers without a guide key retain their historical one-row-per-candidate shortlist.
+        group_key = guide_key if guide_key else f"\0candidate:{ordinal}"
+        contexts_by_guide.setdefault(group_key, []).append(ordinal)
+
+    representatives = [
+        min(
+            ordinals,
+            key=lambda ordinal: (
+                view_by_ordinal[ordinal].ranking_score,
+                *view_by_ordinal[ordinal].stable_tiebreak_key,
+                view_by_ordinal[ordinal].candidate_id,
+                ordinal,
+            ),
+        )
+        for ordinals in contexts_by_guide.values()
+    ]
+    ordered_positions = {ordinal: position for position, ordinal in enumerate(eligible_ordinals)}
+    representatives.sort(key=ordered_positions.__getitem__)
+    top_ordinals = tuple(representatives[: inputs.top_n])
     required_evidence_missing = missing_required_evidence(inputs)
     eligible_count = sum(1 for selection in per_candidate if selection.state is SelectionState.ELIGIBLE)
     provisional_count = sum(1 for selection in per_candidate if selection.state is SelectionState.PROVISIONAL)
 
     summary: dict[str, Any] = {
         "run_mode": inputs.run_mode.value if inputs.run_mode is not None else None,
+        "shortlist_guide_aggregation": "minimum_eligible_context_score_per_normalized_guide",
         "eligible_candidates": eligible_count,
+        "shortlistable_unique_guides": len(representatives),
         "top_candidates": len(top_ordinals),
         "scored_after_screening": scored_count,
         "repeat_excluded": repeat_excluded,
