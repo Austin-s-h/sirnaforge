@@ -4,41 +4,17 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version (e.g., v0.3.4 or v0.3.4rc1)'
-        required: false
-        type: string
-      prerelease:
-        description: 'Pre-release behavior (auto infers from version: a/b/rc/.dev)'
-        required: false
-        type: choice
-        default: auto
-        options:
-          - auto
-          - true
-          - false
-      push_images:
-        description: 'Push Docker images to registries'
-        required: false
-        default: true
-        type: boolean
-      deploy_docs_release:
-        description: 'Build & deploy docs'
-        required: false
-        default: true
-        type: boolean
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   PYTHON_VERSION: "3.12"
   REGISTRY: ghcr.io
 
 permissions:
-  contents: write
-  packages: write
-  attestations: write
-  id-token: write
+  contents: read
 
 jobs:
   validate-release:
@@ -52,8 +28,6 @@ jobs:
       owner-lower: ${{ steps.repo.outputs.owner }}
       name-lower: ${{ steps.repo.outputs.name }}
       prerelease: ${{ steps.release_flags.outputs.prerelease }}
-      push_images: ${{ steps.release_flags.outputs.push_images }}
-      deploy_docs_release: ${{ steps.release_flags.outputs.deploy_docs_release }}
 
     steps:
     - name: Checkout code
@@ -61,43 +35,13 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Validate version format
+    - name: Validate tag and checked-out package
       id: version
       run: |
-        VERSION_INPUT="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}"
-        if [ -z "$VERSION_INPUT" ]; then
-          VERSION_INPUT=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
-        fi
-
-        VERSION=${VERSION_INPUT#v}  # Remove 'v' prefix if present
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-        # PyPI versions must be PEP 440 compatible.
-        # Accepts: X.Y.Z, X.Y.ZrcN, X.Y.ZaN, X.Y.ZbN, X.Y.Z.postN, X.Y.Z.devN, and optional local +tag.
-        if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+|\.post[0-9]+|\.dev[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
-          echo "Invalid version format: $VERSION"
-          echo "Expected format (PEP 440-ish): X.Y.Z, X.Y.ZrcN, X.Y.ZaN, X.Y.ZbN, X.Y.Z.postN, X.Y.Z.devN (optional +local)"
-          exit 1
-        fi
-        echo "Version format valid: $VERSION"
-
-    - name: Verify tag exists (tag-driven release)
-      run: |
-        TAG="v${{ steps.version.outputs.version }}"
-        if [ "${{ github.event_name }}" = "push" ]; then
-          if [ "${{ github.ref_name }}" != "$TAG" ]; then
-            echo "This workflow is tag-driven; expected tag $TAG but got ${{ github.ref_name }}"
-            exit 1
-          fi
-        fi
-
-        if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
-          echo "Found tag $TAG on remote"
-        else
-          echo "Tag $TAG not found on remote. Create and push it, then re-run."
-          echo "Example: git tag -a $TAG -m 'Release $TAG' && git push origin $TAG"
-          exit 1
-        fi
+        VERSION="${GITHUB_REF_NAME#v}"
+        git fetch origin master
+        python .github/scripts/release_contract.py tag --version "$VERSION"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
     - name: Normalize repository identifiers
       id: repo
@@ -148,77 +92,22 @@ jobs:
         NAME_LOWER: ${{ steps.repo.outputs.name }}
       run: |
         python .github/scripts/generate_release_notes.py
+    - name: Upload exact release notes
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-notes-${{ steps.version.outputs.version }}
+        path: release_notes.md
 
-    - name: Normalize release toggles
+    - name: Classify release version
       id: release_flags
       env:
         VERSION: ${{ steps.version.outputs.version }}
       run: |
         python <<'PY'
-        import json
         import os
-        import re
-        from pathlib import Path
-
-        defaults = {
-          # Default prerelease is inferred from VERSION when not explicitly provided.
-          "prerelease": "auto",
-          "push_images": "true",
-          "deploy_docs_release": "true",
-        }
-
-        def infer_prerelease(version: str) -> str:
-          # PEP 440-ish: aN/bN/rcN and .devN are prerelease-style.
-          if re.search(r"(a\d+|b\d+|rc\d+|\.dev\d+)", version):
-            return "true"
-          return "false"
-
-        event_name = os.environ.get("GITHUB_EVENT_NAME", "")
-        event_path = Path(os.environ.get("GITHUB_EVENT_PATH", ""))
-        payload = {}
-        if event_path.is_file():
-          payload = json.loads(event_path.read_text(encoding="utf-8"))
-
-        inputs = payload.get("inputs") if event_name == "workflow_dispatch" else {}
-        if not isinstance(inputs, dict):
-          inputs = {}
-
-        version = os.environ.get("VERSION", "")
-        inferred_prerelease = infer_prerelease(version)
-
-        resolved = {}
-        for key, default in defaults.items():
-          raw = inputs.get(key)
-          if isinstance(raw, bool):
-            resolved[key] = "true" if raw else "false"
-            continue
-
-          if raw is None or str(raw).strip() == "":
-            if key == "prerelease" and default == "auto":
-              resolved[key] = inferred_prerelease
-            else:
-              resolved[key] = default
-            continue
-
-          val = str(raw).strip().lower()
-          if key == "prerelease" and val == "auto":
-            resolved[key] = inferred_prerelease
-          else:
-            resolved[key] = "true" if val == "true" else "false"
-
-        output_path = os.environ.get("GITHUB_OUTPUT")
-        if output_path:
-            with open(output_path, "a", encoding="utf-8") as handle:
-                for key, value in resolved.items():
-                    handle.write(f"{key}={value}\n")
-
-        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-        if summary_path:
-            with open(summary_path, "a", encoding="utf-8") as handle:
-                handle.write("## Release toggle configuration\n\n")
-                for key, value in resolved.items():
-                    handle.write(f"- **{key}**: {value}\n")
-                handle.write("\n")
+        prerelease = "true" if "rc" in os.environ["VERSION"] else "false"
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+            handle.write(f"prerelease={prerelease}\n")
         PY
 
   # Call the main CI workflow to ensure quality
@@ -324,7 +213,9 @@ jobs:
         uv build
         ls -lh dist/
     - name: Verify metadata (twine check)
-      run: uv run --with twine twine check dist/*
+      run: |
+        uv run --with twine twine check dist/*
+        python .github/scripts/release_contract.py wheel --version "${{ needs.validate-release.outputs.version }}" --wheel dist/*.whl
     - name: Upload dist artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -363,7 +254,6 @@ jobs:
         images: ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}
         tags: |
           type=raw,value=${{ needs.validate-release.outputs.version }}
-          type=raw,value=latest,enable={{is_default_branch}}
         labels: |
           org.opencontainers.image.title=siRNAforge
           org.opencontainers.image.description=siRNA design and analysis toolkit
@@ -403,34 +293,30 @@ jobs:
         path: /tmp/sirnaforge-image.tar
         retention-days: 1
 
-  # Create GitHub release after docker build passes
+  # A draft cannot be mistaken for a completed public release.
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [ validate-release, test-release ]
-    if: always() && needs.test-release.result == 'success'
-    outputs:
-      release-id: ${{ steps.create.outputs.id }}
-      release-url: ${{ steps.create.outputs.html_url }}
-
+    needs: [ validate-release, test-release, build-artifacts, build-release-docs ]
+    permissions:
+      contents: write
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Create GitHub Release
-      id: create
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/download-artifact@v4
       with:
-        tag_name: v${{ needs.validate-release.outputs.version }}
-        release_name: siRNAforge v${{ needs.validate-release.outputs.version }}
-        body: ${{ needs.validate-release.outputs.changelog }}
-        prerelease: ${{ needs.validate-release.outputs.prerelease == 'true' }}
-        draft: false
+        name: release-notes-${{ needs.validate-release.outputs.version }}
+    - name: Create draft GitHub Release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ needs.validate-release.outputs.version }}
+        PRERELEASE: ${{ needs.validate-release.outputs.prerelease }}
+      run: |
+        flags=()
+        if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+        gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+          --title "siRNAforge v$VERSION" --notes-file release_notes.md "${flags[@]}"
 
-  # Optional: Publish to PyPI using Trusted Publishing (OIDC) if enabled
+  # Publish the verified distribution using PyPI Trusted Publishing.
   publish-pypi:
     name: Publish to PyPI
     runs-on: ubuntu-latest
@@ -449,20 +335,19 @@ jobs:
         path: dist/
 
     - name: Publish to PyPI (Trusted Publisher)
-      if: ${{ needs.validate-release.outputs.prerelease != 'true' }}
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
         print-hash: true
         verbose: true
-        skip-existing: true
+        skip-existing: false
 
 
-  # Optional: Build and deploy docs for the release
+  # Build docs from the same tagged tree before creating a draft.
   build-release-docs:
     name: Build Release Docs
     runs-on: ubuntu-latest
     needs: [ validate-release, run-ci ]
-    if: ${{ needs.validate-release.outputs.deploy_docs_release == 'true' && needs.run-ci.result == 'success' }}
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -477,11 +362,11 @@ jobs:
         enable-cache: true
         cache-suffix: docs-release
     - name: Install dependencies
-      run: make dev
+      run: uv sync --locked --group dev
     - name: Build documentation (release)
       run: |
         export SIRNAFORGE_RELEASE_VERSION=${{ needs.validate-release.outputs.version }}
-        uv run --group dev sphinx-build -b html docs docs/_build/html
+        uv run --group dev sphinx-build -W -b html docs docs/_build/html
         touch docs/_build/html/.nojekyll
     - name: Upload docs artifact
       uses: actions/upload-artifact@v4
@@ -493,11 +378,13 @@ jobs:
   deploy-release-docs:
     name: Deploy Release Docs
     runs-on: ubuntu-latest
-    needs: [ validate-release, build-release-docs ]
-    if: ${{ needs.validate-release.outputs.deploy_docs_release == 'true' && needs.build-release-docs.result == 'success' }}
+    needs: [ validate-release, build-release-docs, final-integration-test ]
     permissions:
       pages: write
       id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
     - name: Download docs artifact
       uses: actions/download-artifact@v4
@@ -518,8 +405,12 @@ jobs:
     name: Publish Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [ validate-release, build-docker, test-release, create-release ]
-    if: ${{ needs.validate-release.outputs.push_images == 'true' && needs.test-release.result == 'success' && needs.create-release.result == 'success' }}
+    needs: [ validate-release, build-docker, test-release, create-release, publish-pypi ]
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-id: ${{ steps.push.outputs.image-id }}
 
     steps:
     - name: Checkout code
@@ -539,40 +430,48 @@ jobs:
         path: /tmp/
 
     - name: Load and push Docker image
+      id: push
       run: |
         # Load the image
         docker load --input /tmp/sirnaforge-image.tar
 
         # Push version-specific tag
         VERSION_TAG="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:${{ needs.validate-release.outputs.version }}"
+        echo "image-id=$(docker image inspect "$VERSION_TAG" --format '{{.Id}}')" >> "$GITHUB_OUTPUT"
         docker push "$VERSION_TAG"
 
-        # Push latest tag if this is not a prerelease
-        if [ "${{ needs.validate-release.outputs.prerelease }}" != "true" ]; then
-          LATEST_TAG="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}:latest"
-          docker tag "$VERSION_TAG" "$LATEST_TAG"
-          docker push "$LATEST_TAG"
-          echo "Pushed both version and latest tags"
-        else
-          echo "Pushed version tag only (prerelease)"
-        fi
+        echo "Pushed version tag only; latest moves after publication checks"
 
-    - name: Generate artifact attestation
-      uses: actions/attest-build-provenance@v1
-      continue-on-error: true
-      with:
-        subject-name: ${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}
-        push-to-registry: true
 
   # Final integration test with published images
   final-integration-test:
     name: Final Integration Test
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: [ validate-release, create-release, publish-docker ]
-    if: needs.publish-docker.result == 'success'
+    needs: [ validate-release, create-release, publish-docker, publish-pypi, build-artifacts ]
 
     steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - uses: astral-sh/setup-uv@v6
+      with:
+        activate-environment: false
+    - uses: actions/download-artifact@v4
+      with:
+        name: python-dist-${{ needs.validate-release.outputs.version }}
+        path: dist/
+    - name: Check PyPI distribution against the tested wheel and install it
+      run: |
+        VERSION="${{ needs.validate-release.outputs.version }}"
+        python .github/scripts/release_contract.py published --version "$VERSION" --wheel dist/*.whl
+        uv venv --python 3.12 .release-venv
+        uv pip install --python .release-venv/bin/python "sirnaforge==$VERSION"
+        .release-venv/bin/python -c 'import importlib.metadata,os; assert importlib.metadata.version("sirnaforge") == os.environ["VERSION"]'
+        .release-venv/bin/sirnaforge --help
+      env:
+        VERSION: ${{ needs.validate-release.outputs.version }}
     - name: Test published Docker image
       run: |
         VERSION="${{ needs.validate-release.outputs.version }}"
@@ -580,28 +479,74 @@ jobs:
 
         echo "Testing published image from ${{ env.REGISTRY }}..."
         docker pull "$IMAGE_TAG"
+        test "$(docker image inspect "$IMAGE_TAG" --format '{{.Id}}')" = "${{ needs.publish-docker.outputs.image-id }}"
 
         echo "Testing CLI functionality..."
         docker run --rm "$IMAGE_TAG" sirnaforge --help
 
         echo "Testing version command..."
-        docker run --rm "$IMAGE_TAG" sirnaforge version
+        docker run --rm "$IMAGE_TAG" python -c 'import importlib.metadata,os; assert importlib.metadata.version("sirnaforge") == os.environ["BUILD_VERSION"]'
 
         echo "Published image works correctly!"
 
-  # Final confirmation
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [ validate-release, create-release, publish-pypi, publish-docker, final-integration-test, deploy-release-docs ]
+    permissions:
+      contents: write
+    steps:
+    - name: Publish validated draft and read it back
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ needs.validate-release.outputs.version }}
+      run: |
+        gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
+        test "$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" = false
+
+  publish-latest:
+    name: Advance stable image tag
+    runs-on: ubuntu-latest
+    needs: [ validate-release, publish-release ]
+    if: needs.validate-release.outputs.prerelease != 'true'
+    permissions:
+      packages: write
+    steps:
+    - uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Point latest at the verified versioned image
+      run: |
+        IMAGE="${{ env.REGISTRY }}/${{ needs.validate-release.outputs.repository-lower }}"
+        docker pull "$IMAGE:${{ needs.validate-release.outputs.version }}"
+        docker tag "$IMAGE:${{ needs.validate-release.outputs.version }}" "$IMAGE:latest"
+        docker push "$IMAGE:latest"
+        docker image rm "$IMAGE:latest"
+        docker pull "$IMAGE:latest"
+        test "$(docker image inspect "$IMAGE:latest" --format '{{.Id}}')" = \
+          "$(docker image inspect "$IMAGE:${{ needs.validate-release.outputs.version }}" --format '{{.Id}}')"
+
   finalize-release:
     name: Release Complete
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [ validate-release, create-release, publish-docker, final-integration-test, publish-pypi, deploy-release-docs ]
-    if: >-
-      always() && needs.create-release.result == 'success' && (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped') && (needs.final-integration-test.result == 'success' || needs.final-integration-test.result == 'skipped') && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') && (needs.deploy-release-docs.result == 'success' || needs.deploy-release-docs.result == 'skipped')
-
+    needs: [ validate-release, publish-release, publish-latest ]
+    if: always()
     steps:
-    - name: Release Status
+    - name: Require a published release and appropriate image promotion
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ needs.validate-release.outputs.version }}
+        RELEASE_STATUS: ${{ needs.publish-release.result }}
+        LATEST_STATUS: ${{ needs.publish-latest.result }}
+        PRERELEASE: ${{ needs.validate-release.outputs.prerelease }}
       run: |
-        echo "Release v${{ needs.validate-release.outputs.version }} completed successfully"
-        echo "GitHub Release: ${{ needs.create-release.outputs.release-url }}"
-        echo "Repository: ${{ needs.validate-release.outputs.repository-lower }}"
-        echo "Tag: v${{ needs.validate-release.outputs.version }}"
+        test "$RELEASE_STATUS" = success
+        if [ "$PRERELEASE" = true ]; then
+          test "$LATEST_STATUS" = skipped
+        else
+          test "$LATEST_STATUS" = success
+        fi
+        test "$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" = false
+        echo "Verified release: https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION"
