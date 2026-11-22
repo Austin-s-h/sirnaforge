@@ -104,10 +104,10 @@ It also refuses unexpected network requests and saves synthetic reports, screens
 To reproduce from a checkout:
 
 ```bash
-uv sync --group dev
+make dev
 npm ci --prefix tests/browser
 tests/browser/node_modules/.bin/playwright install chromium
-uv run python -m tests.browser.prepare_fixtures --output /tmp/sirnaforge-report-browser
+pixi run --locked -e dev python -m tests.browser.prepare_fixtures --output /tmp/sirnaforge-report-browser
 npm --prefix tests/browser test -- /tmp/sirnaforge-report-browser
 ```
 
@@ -636,7 +636,7 @@ threshold and are about to trust the verdict the page now shows you, that is the
 twice.
 
 ```bash
-uv run pytest tests/unit/test_reporting_rethreshold.py tests/unit/test_reporting_document_structure.py -q -n 0
+pixi run --locked -e dev pytest tests/unit/test_reporting_rethreshold.py tests/unit/test_reporting_document_structure.py -q -n 0
 ```
 
 Both files run in `make test-dev`.

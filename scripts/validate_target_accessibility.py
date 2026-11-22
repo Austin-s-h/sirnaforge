@@ -43,7 +43,7 @@ Transcript sequences are NCBI Nucleotide (`nuccore`) records fetched with `efetc
 Huesken paper. TP53-201 is from Ensembl.
 
 Usage:
-    uv run python scripts/validate_target_accessibility.py \\
+    pixi run --locked -e dev python scripts/validate_target_accessibility.py \\
         --benchmark-csv work/sirna_bench.csv \\
         --transcripts work/bench_tx.fa \\
         --tp53-fasta work/tp53.fa

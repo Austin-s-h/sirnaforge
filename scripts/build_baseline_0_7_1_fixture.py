@@ -16,7 +16,7 @@ the output is reproducible:
 
 Usage (from the repo root):
 
-    uv run python scripts/build_baseline_0_7_1_fixture.py \
+    pixi run --locked -e dev python scripts/build_baseline_0_7_1_fixture.py \
         --run-dir work/baseline_0.7.1/run \
         --out-dir tests/unit/data/baseline_0_7_1
 """

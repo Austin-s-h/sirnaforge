@@ -52,7 +52,7 @@ Data (provenance, checksums and limitations: tests/unit/data/README.md):
 Requires scipy for exact t and Spearman p-values; scipy is not a siRNAforge runtime dependency, so
 it is supplied per-invocation:
 
-    uv run --with scipy python scripts/validate_scoring_profiles.py \\
+    pixi run --locked -e dev python scripts/validate_scoring_profiles.py \\
         --benchmark-csv work/sirna_bench.csv
 """
 

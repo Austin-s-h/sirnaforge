@@ -7,7 +7,7 @@ Scenario-driven snippets that build on the basics from [Getting Started](getting
 ### Publication-Quality Screen
 
 ```bash
-uv run sirnaforge workflow TP53 \
+pixi run --locked -e dev sirnaforge workflow TP53 \
   --output-dir tp53_publication \
   --top-n 50 \
   --gc-min 35 --gc-max 60 \
@@ -25,7 +25,7 @@ uv run sirnaforge workflow TP53 \
 ### Custom FASTA + Transcriptome Override
 
 ```bash
-uv run sirnaforge workflow TP53 \
+pixi run --locked -e dev sirnaforge workflow TP53 \
   --input-fasta examples/sample_transcripts.fasta \
   --transcriptome-fasta ensembl_mouse_cdna \
   --species "human,mouse" \
@@ -48,7 +48,7 @@ uv run sirnaforge workflow TP53 \
 > [ZFN Module Guide](zfn_module.md).
 
 ```bash
-uv run sirnaforge zfn \
+pixi run --locked -e dev sirnaforge zfn \
   --zfn-left-half-site GTCATCCTCATC \
   --zfn-right-half-site CTTTTGCAGTTT \
   --zfn-search-space ensembl_human_hg38_primary \
@@ -69,13 +69,13 @@ uv run sirnaforge zfn \
 ```bash
 mkdir -p transcripts
 for gene in TP53 BRCA1 EGFR KRAS; do
-    uv run sirnaforge search "$gene" \
+    pixi run --locked -e dev sirnaforge search "$gene" \
       --database ensembl \
       --output transcripts/${gene}.fasta \
       --verbose
 done
 
-uv run sirnaforge design transcripts/*.fasta \
+pixi run --locked -e dev sirnaforge design transcripts/*.fasta \
   --output curated_panel.csv \
   --top-n 25 \
   --gc-min 40 --gc-max 55
@@ -95,7 +95,7 @@ out_dir="batch_$(date +%Y%m%d)"
 mkdir -p "$out_dir"
 
 for gene in "${genes[@]}"; do
-  uv run sirnaforge workflow "$gene" \
+  pixi run --locked -e dev sirnaforge workflow "$gene" \
     --output-dir "${out_dir}/${gene}" \
     --top-n 30 \
     --gc-min 35 --gc-max 60 \
@@ -126,7 +126,7 @@ done
 ## Design-Only with Chemical Modifications
 
 ```bash
-uv run sirnaforge design custom_transcripts.fasta \
+pixi run --locked -e dev sirnaforge design custom_transcripts.fasta \
   --output custom_sirnas.csv \
   --top-n 50 \
   --gc-min 35 --gc-max 60 \
@@ -145,7 +145,7 @@ sirnaforge sequences annotate custom_sirnas.fasta modifications.json -o custom_s
 ## miRNA-Biogenesis Mode
 
 ```bash
-uv run sirnaforge workflow MIR21 \
+pixi run --locked -e dev sirnaforge workflow MIR21 \
   --design-mode mirna \
   --gc-min 32 --gc-max 52 \
   --top-n 60 \
@@ -160,9 +160,9 @@ uv run sirnaforge workflow MIR21 \
 ## Nextflow Off-Target Pipeline Hand-Off
 
 ```bash
-uv run sirnaforge workflow TP53 --output-dir tp53_nextflow
+pixi run --locked -e dev sirnaforge workflow TP53 --output-dir tp53_nextflow
 
-uv run sirnaforge offtarget \
+pixi run --locked -e dev sirnaforge offtarget \
   --input-candidates-fasta tp53_nextflow/off_target/input_candidates.fasta \
   --output-dir tp53_nextflow/off_target_results \
   --species "human,mouse"

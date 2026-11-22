@@ -23,7 +23,7 @@ For small jobs or interactive exploration, the CLI (`sirnaforge workflow ...`) i
 
 1. Use the CLI to generate candidates for one or more genes:
 	 ```bash
-	 uv run sirnaforge workflow TP53 --output-dir results/tp53 --top-n 50
+	 pixi run --locked -e dev sirnaforge workflow TP53 --output-dir results/tp53 --top-n 50
 	 ```
 2. Collect the candidate FASTA (`sirna_candidates.fasta`) from each workflow output directory and concatenate them if you are processing multiple genes.
 
@@ -43,10 +43,10 @@ For most users, run the off-target step via the CLI; it executes the embedded Ne
 
 ```bash
 # Full workflow (includes embedded Nextflow off-target analysis)
-uv run sirnaforge workflow TP53 --output-dir results/tp53
+pixi run --locked -e dev sirnaforge workflow TP53 --output-dir results/tp53
 
 # Off-target only (if you already have a candidates FASTA)
-uv run sirnaforge offtarget \
+pixi run --locked -e dev sirnaforge offtarget \
   --input-candidates-fasta results/tp53/off_target/input_candidates.fasta \
   --output-dir results/tp53/off_target \
   --species "human,rat"
@@ -66,7 +66,7 @@ Important parameters:
 If you need to integrate the pipeline into an external Nextflow setup (HPC, custom profiles), you can discover the embedded `main.nf` path and run it directly:
 
 ```bash
-PIPELINE_NF=$(uv run python -c "from sirnaforge.pipeline.nextflow.runner import NextflowRunner; print(NextflowRunner().get_main_workflow())")
+PIPELINE_NF=$(pixi run --locked -e dev python -c "from sirnaforge.pipeline.nextflow.runner import NextflowRunner; print(NextflowRunner().get_main_workflow())")
 nextflow run "$PIPELINE_NF" --help
 ```
 

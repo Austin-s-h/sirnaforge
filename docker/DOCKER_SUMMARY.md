@@ -1,9 +1,9 @@
 # Docker deployment
 
 The full image contains siRNAforge, Nextflow and its matching bundled framework JAR, Java,
-BWA-MEM2, SAMtools and ViennaRNA. Native tools are installed from
-`docker/environment-nextflow.yml`; Python dependencies are installed from the application wheel.
-The environment definition contains version ranges, so pin a published image digest when exact
+BWA-MEM2, BWA-MEM3, samtools and ViennaRNA. Native tools are installed from
+the root `pixi.lock`. The application wheel is installed without dependency resolution.
+Pin a published image digest when exact
 runtime identity matters.
 
 ## Build and validate
@@ -30,7 +30,7 @@ and source fingerprint before running container tests.
   and select the image with `--nextflow-docker-image` or `SIRNAFORGE_NEXTFLOW_IMAGE`. Missing indices
   are built by Nextflow in that same image; BWA-MEM2 need not be installed on the host.
 - **Run natively or in an activated Conda environment:** install the complete toolchain and use
-  `SIRNAFORGE_USE_LOCAL_EXECUTION=1`. uv installs Python packages, not BWA-MEM2 or a Conda runtime.
+  `SIRNAFORGE_USE_LOCAL_EXECUTION=1`. The image includes the locked toolchain and the verified wheel.
 
 Keep input, output, siRNAforge cache and Nextflow work paths accessible to the selected runtime.
 Map the host UID/GID to preserve ownership. The image preserves its toolchain `PATH` in login

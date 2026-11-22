@@ -23,23 +23,23 @@ The siRNAforge toolkit includes comprehensive gene search functionality to retri
 
 `````{tab-set}
 
-````{tab-item} uv
+````{tab-item} Pixi
 ```bash
 # Search for a gene and save sequences
-uv run sirnaforge search TP53 -o tp53_transcripts.fasta
+pixi run --locked -e dev sirnaforge search TP53 -o tp53_transcripts.fasta
 
 # Search specific database
-uv run sirnaforge search BRCA1 -d ensembl -o brca1_ensembl.fasta
+pixi run --locked -e dev sirnaforge search BRCA1 -d ensembl -o brca1_ensembl.fasta
 
 # Search all databases
-uv run sirnaforge search MYC --all -o myc_all_databases.fasta
+pixi run --locked -e dev sirnaforge search MYC --all -o myc_all_databases.fasta
 
 # Get metadata only (no sequences)
-uv run sirnaforge search EGFR --no-sequence
+pixi run --locked -e dev sirnaforge search EGFR --no-sequence
 
 # Use a FASTA from disk or remote URL as input (skip gene search)
-uv run sirnaforge workflow TP53 --input-fasta /path/to/transcripts.fasta -o sirna_output
-uv run sirnaforge workflow TP53 --input-fasta https://example.org/transcripts.fasta -o sirna_output
+pixi run --locked -e dev sirnaforge workflow TP53 --input-fasta /path/to/transcripts.fasta -o sirna_output
+pixi run --locked -e dev sirnaforge workflow TP53 --input-fasta https://example.org/transcripts.fasta -o sirna_output
 ```
 ````
 

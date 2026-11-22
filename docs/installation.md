@@ -1,19 +1,25 @@
 # Installation
 
-## Recommended: pip/uv
+## Python wheel
 
 ```bash
 # Using pip
 pip install sirnaforge
-
-# Using uv (faster)
-uv pip install sirnaforge
 
 # Verify
 sirnaforge version
 ```
 
 **Requirements:** Python 3.10-3.12
+
+## Full Linux toolchain
+
+Install Pixi 0.76.1 on Linux x86_64 or x86_64 WSL2 and run `make install`
+from the checkout. Use `pixi run --locked -e runtime sirnaforge --help` to
+verify setup. For macOS and ARM hosts, use the Linux x86_64 image on an
+x86_64 Docker engine. A Docker context that targets a remote x86_64 engine
+runs the same image. For emulation, use `--platform linux/amd64` and an
+emulator that exposes AVX2 for BWA-MEM3.
 
 ## Development Setup
 
@@ -62,9 +68,9 @@ when these tasks execute in Docker or Singularity.
 | Deployment | Nextflow task profile | Where BWA-MEM2 runs | Required setup |
 | --- | --- | --- | --- |
 | Full siRNAforge Docker image | `local`, selected automatically inside the container | Inside that image for both indexing and alignment | Docker on the host; mount inputs, output and cache. No Docker socket or host BWA installation is needed. |
-| Host pip/uv installation with working Docker | `docker`, selected automatically | Task containers using the configured Nextflow image | Python package, Java and Nextflow on the host; Docker daemon access and bind-mountable input/cache/work paths. |
+| Host wheel installation with working Docker | `docker`, selected automatically | Task containers using the configured Nextflow image | Python package, Java and Nextflow on the host; Docker daemon access and bind-mountable input/cache/work paths. |
 | Native installation | `local` | Host toolchain on `PATH` | Python package, Java, Nextflow, BWA-MEM2, SAMtools and ViennaRNA. Set `SIRNAFORGE_USE_LOCAL_EXECUTION=1` to select it explicitly. |
-| Activated Conda environment | `local`, or `conda` with the prepared environment | The activated environment | Install the complete toolchain and siRNAforge first. The embedded `conda`/`test` profiles do not bootstrap an environment or install the application. uv alone is not a Conda runtime. |
+| Activated Conda environment | `local`, or `conda` with the prepared environment | The activated environment | Install the complete toolchain and siRNAforge first. The embedded `conda`/`test` profiles do not bootstrap an environment or install the application. The Python wheel supplies its declared Python dependencies. |
 | Host with Singularity | `singularity` fallback when Docker is unavailable | The configured task image | Java/Nextflow, Singularity, a compatible image and accessible bind paths. This deployment is not exercised by the Docker CI suite. |
 
 Automatic selection inside the full image stays `local`, including when the host requested another

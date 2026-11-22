@@ -32,20 +32,20 @@ declared species. It does not infer species or assembly from a filename.
 ## Query structural annotations directly
 
 ```bash
-uv run sirnaforge annotate ENST00000269305 \
+pixi run --locked -e dev sirnaforge annotate ENST00000269305 \
   --provider gencode \
   --annotation-file /data/gencode.annotation.gtf.gz \
   --assembly GRCh38 \
   --species human \
   --output annotations.json
 
-uv run sirnaforge annotate NM_000546 \
+pixi run --locked -e dev sirnaforge annotate NM_000546 \
   --provider refseq \
   --annotation-file /data/refseq_genomic.gff.gz \
   --assembly GRCh38.p14 \
   --output refseq_annotations.json
 
-uv run sirnaforge annotate NC_000017.11:7661779-7687550 \
+pixi run --locked -e dev sirnaforge annotate NC_000017.11:7661779-7687550 \
   --provider refseq \
   --annotation-file /data/refseq_genomic.gff.gz \
   --assembly GRCh38.p14 \
@@ -70,8 +70,8 @@ export SIRNAFORGE_GENCODE_GTF=/data/gencode.annotation.gtf.gz
 export SIRNAFORGE_GENCODE_FASTA=/data/gencode.transcripts.fa.gz
 export SIRNAFORGE_GENCODE_ASSEMBLY=GRCh38
 
-uv run sirnaforge search TP53 --database gencode --no-fallback
-uv run sirnaforge workflow TP53 --database gencode --skip-off-targets \
+pixi run --locked -e dev sirnaforge search TP53 --database gencode --no-fallback
+pixi run --locked -e dev sirnaforge workflow TP53 --database gencode --skip-off-targets \
   --output-dir gencode_tp53_design
 ```
 
@@ -98,7 +98,7 @@ export SIRNAFORGE_REFSEQ_ANNOTATION=/data/refseq_genomic.gff.gz
 export SIRNAFORGE_REFSEQ_ASSEMBLY=GRCh38.p14
 export SIRNAFORGE_REFSEQ_SPECIES=human
 
-uv run sirnaforge workflow TP53 --database refseq --skip-off-targets \
+pixi run --locked -e dev sirnaforge workflow TP53 --database refseq --skip-off-targets \
   --output-dir refseq_tp53_design
 ```
 

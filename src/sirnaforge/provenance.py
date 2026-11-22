@@ -79,7 +79,6 @@ _PREFIX_LOCK = Path("share") / "sirnaforge" / _PIXI_LOCK
 
 _DESCRIBE_DISTANCE = re.compile(r"-(\d+)-g[0-9a-f]+")
 _SHA1_HEX = re.compile(r"[0-9a-f]{40}")
-_LOCK_REVISION = re.compile(r"^revision\s*=\s*(\d+)\s*$", re.MULTILINE)
 _PIXI_LOCK_VERSION = re.compile(r"^version\s*:\s*(\d+)\s*$", re.MULTILINE)
 
 #: Ensembl writes the assembly into its own FASTA headers, e.g.
@@ -390,15 +389,7 @@ def _lock_identity(lock_root: Path | None) -> dict[str, dict[str, Any]]:
         lock = packaged_lock
         state = "runtime_prefix_lock"
     elif lock_root is not None:
-        pixi_root = os.environ.get("PIXI_PROJECT_ROOT")
-        active_conda = os.environ.get("CONDA_PREFIX")
-        active_pixi = prefix.parent == lock_root / ".pixi" / "envs" or (
-            pixi_root is not None
-            and Path(pixi_root).resolve() == lock_root
-            and active_conda is not None
-            and Path(active_conda).resolve() == prefix.resolve()
-        )
-        lock = lock_root / (_PIXI_LOCK if active_pixi else "uv.lock")
+        lock = lock_root / _PIXI_LOCK
         state = "repo_worktree_lock"
     else:
         unavailable = absent(
@@ -411,12 +402,9 @@ def _lock_identity(lock_root: Path | None) -> dict[str, dict[str, Any]]:
         unavailable = absent("not_packaged", f"{lock} is absent from the verified worktree")
         return {"lock_sha256": unavailable, "lock_revision": dict(unavailable)}
 
-    revision_key, revision_pattern = (
-        ("version", _PIXI_LOCK_VERSION) if lock.name == _PIXI_LOCK else ("revision", _LOCK_REVISION)
-    )
     try:
         digest = file_sha256(lock)
-        revision = revision_pattern.search(lock.read_text(encoding="utf-8", errors="replace"))
+        revision = _PIXI_LOCK_VERSION.search(lock.read_text(encoding="utf-8", errors="replace"))
     except OSError as exc:
         unreadable = absent(
             "lock_unreadable",
@@ -430,12 +418,12 @@ def _lock_identity(lock_root: Path | None) -> dict[str, dict[str, Any]]:
         "lock_revision": present(
             revision.group(1),
             state,
-            f"the `{revision_key}` key of {lock}, which names the lock format",
+            f"the `version` key of {lock}, which names the lock format",
         )
         if revision
         else absent(
             "revision_not_declared_in_lock",
-            f"{lock} declares no `{revision_key}` key, so the lock format cannot be named",
+            f"{lock} declares no `version` key, so the lock format cannot be named",
         ),
     }
 

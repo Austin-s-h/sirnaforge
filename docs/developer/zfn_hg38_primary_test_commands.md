@@ -51,7 +51,7 @@ Use this runbook to revalidate those conclusions against the current code and de
 ```bash
 export HG38_ANNOTATION_URL="https://ftp.ensembl.org/pub/current_gtf/homo_sapiens/Homo_sapiens.GRCh38.115.gtf.gz"
 
-uv run sirnaforge workflow CCR5_ZFN_HG38_PRIMARY_PYAHO \
+pixi run --locked -e dev sirnaforge workflow CCR5_ZFN_HG38_PRIMARY_PYAHO \
   --design-mode zfn \
   --zfn-left-half-site GTCATCCTCATC \
   --zfn-right-half-site CTTTTGCAGTTT \
@@ -69,7 +69,7 @@ uv run sirnaforge workflow CCR5_ZFN_HG38_PRIMARY_PYAHO \
 ## Real Run on hg38 Primary with `exhaustive_python`
 
 ```bash
-uv run sirnaforge workflow CCR5_ZFN_HG38_PRIMARY_EXHAUSTIVE \
+pixi run --locked -e dev sirnaforge workflow CCR5_ZFN_HG38_PRIMARY_EXHAUSTIVE \
   --design-mode zfn \
   --zfn-left-half-site GTCATCCTCATC \
   --zfn-right-half-site CTTTTGCAGTTT \

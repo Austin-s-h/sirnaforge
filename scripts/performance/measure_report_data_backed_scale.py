@@ -8,7 +8,7 @@ the optional JSON output records compact measurement metadata.
 
 Run from the repository root with::
 
-    uv run python scripts/performance/measure_report_data_backed_scale.py \
+    pixi run --locked -e dev python scripts/performance/measure_report_data_backed_scale.py \
       --output scripts/performance/measurements/report-data-backed-large.json
 """
 

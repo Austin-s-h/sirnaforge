@@ -78,14 +78,12 @@ def verify_application() -> None:
 
 
 def verify_development_constraints(root: Path) -> None:
-    """Check duplicated dev and docs requirements while uv remains available."""
+    """Check agreement between Pixi and portable development metadata."""
     project = tomllib.loads((root / "pyproject.toml").read_text())
     manifest = tomllib.loads((root / "pixi.toml").read_text())
     features = manifest["feature"]
     for entry in project["dependency-groups"]["dev"]:
         req = Requirement(entry)
-        if req.name == "uv":
-            continue
         spec = next(
             (
                 features[group]["pypi-dependencies"][req.name]

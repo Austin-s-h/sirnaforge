@@ -9,7 +9,7 @@ repo's own pure functions.
 
 Usage (from the repo root):
 
-    uv run python scripts/measure_baseline_0_7_1.py \
+    pixi run --locked -e dev python scripts/measure_baseline_0_7_1.py \
         --run-dir work/baseline_0.7.1/run \
         --reference work/baseline_0.7.1/reference/GRCh38_cdna_primary_1tx_per_gene_plus_TP53.fa \
         --output work/baseline_0.7.1/measurements.json

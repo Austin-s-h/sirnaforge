@@ -36,7 +36,6 @@ import asyncio
 import hashlib
 import importlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -1590,7 +1589,7 @@ def test_index_authorship_is_a_dated_inference_not_a_claim_about_this_run(tmp_pa
 @pytest.mark.unit
 def test_the_lock_is_digested_when_it_is_actually_there(tmp_path):
     """A verified editable worktree records the active dependency lock."""
-    lock = REPO_ROOT / ("pixi.lock" if os.environ.get("PIXI_PROJECT_ROOT") else "uv.lock")
+    lock = REPO_ROOT / "pixi.lock"
     assert lock.is_file(), "fixture guard: this suite runs from a worktree that has the active lock"
 
     dependencies = _provenance(_qualified_workflow(tmp_path, "lock"))["build"]["dependencies"]
@@ -1626,7 +1625,7 @@ def test_an_unverified_repository_supplies_no_lock(tmp_path, monkeypatch):
     module = _provenance_module()
     foreign = tmp_path / "not_sirnaforge"
     foreign.mkdir()
-    (foreign / "uv.lock").write_text("version = 1\nrevision = 99\n")
+    (foreign / "pixi.lock").write_text("version: 7\n")
     monkeypatch.setattr(module, "_package_repo_root", lambda: foreign)
     module.build_identity.cache_clear()
 

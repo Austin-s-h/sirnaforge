@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Locked Pixi pilot for Linux x86_64 development, documentation and runtime environments.
-  The existing release environment remains available while adoption gates are evaluated.
+- One Pixi lock for Linux x86_64 and WSL2 development, documentation, CI and the Docker runtime.
+  The release workflow verifies, tests and publishes the same wheel while retaining Python 3.10–3.12 compatibility.
 
 ## [0.8.0] - 2026-11-22
 

@@ -52,12 +52,12 @@ make docker-build-test  # Cleans all debug dirs + rebuilds + tests
 make test-dev
 
 # Full unit marker set via pytest
-uv run pytest -m "unit"
+pixi run --locked -e dev pytest -m "unit"
 
 # CI-optimized
 make test-ci
 # or
-uv run pytest -m "ci"
+pixi run --locked -e dev pytest -m "ci"
 ```
 
 ### 2. Integration Tests (`integration`, `docker`)
@@ -80,7 +80,7 @@ uv run pytest -m "ci"
 make docker-test
 
 # Marker-based integration tests on host
-uv run pytest -m "integration"
+pixi run --locked -e dev pytest -m "integration"
 ```
 
 ### 3. Local Nextflow Tests (`local_nextflow`)
@@ -98,7 +98,7 @@ uv run pytest -m "integration"
 **Run commands**:
 ```bash
 # Marker-based Nextflow subset (requires local Nextflow install)
-uv run pytest -m "local_nextflow"
+pixi run --locked -e dev pytest -m "local_nextflow"
 
 # Host target that isolates Nextflow requirements
 make test-requires-nextflow
@@ -257,5 +257,5 @@ make docker-build-test
 make docker-test
 
 # Run specific workflow mode test
-uv run pytest tests/container/test_workflow_modes.py::test_mirna_design_mode -v
+pixi run --locked -e dev pytest tests/container/test_workflow_modes.py::test_mirna_design_mode -v
 ```

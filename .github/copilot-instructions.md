@@ -11,14 +11,14 @@
 - Reuse the cache/reference resolution helpers instead of ad-hoc paths: see `src/sirnaforge/config/reference_policy.py` and `src/sirnaforge/utils/unified_cache.py`. Workflow runs record resolved reference choices in `logs/workflow_summary.json`.
 
 ## Dev Workflow (use these commands)
-- Setup once: `make dev` (runs `uv sync` + installs pre-commit).
-- Run things via uv: `uv run sirnaforge …`.
+- Setup once: `make dev` (installs the locked Pixi environments).
+- Run commands through Pixi: `pixi run --locked -e dev sirnaforge …`.
 - Lint/format/typecheck: `make lint`, `make format` (Ruff), `make check` (runs `make format` then `make test-dev`, so it can modify files).
 - Security validation: `make security` (Bandit + Safety reports).
-- Quick manual sanity check: `uv run sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv`.
+- Quick manual sanity check: `pixi run --locked -e dev sirnaforge design examples/sample_transcripts.fasta -o /tmp/test.csv`.
 
 ## Testing (how this repo behaves)
-- Pytest defaults in `pyproject.toml` include xdist (`-n 2`). For debugging hangs or ordering issues, run `uv run pytest -n 0 …`.
+- Pytest defaults in `pyproject.toml` include xdist (`-n 2`). For debugging hangs or ordering issues, run `pixi run --locked -e dev pytest -n 0 …`.
 - Tiered suites are Make targets: `make test-dev` (fast), `make test-ci`, `make test-release`, `make test`.
 - Deterministic fixtures live in `tests/unit/data/` and `examples/`. Avoid network in unit tests unless explicitly marked (`requires_network`).
 - Container-only integration lives in `tests/container/` and expects Docker + bundled bio tools.
@@ -33,5 +33,5 @@
 - Heavy tools (BWA-MEM2, SAMtools, ViennaRNA) are pinned in `docker/Dockerfile`; on bare metal they’re optional and should be capability-gated.
 
 ## Packaging Constraints
-- Packaging is Hatchling-only (`pyproject.toml`, `uv.lock`); don’t add `setup.py` or ad-hoc requirements files.
+- Packaging is Hatchling-only (`pyproject.toml`, `pixi.lock`); don’t add `setup.py` or ad-hoc requirements files.
 - Supported Python is 3.10–3.12 (see README); avoid relying on Python 3.13-only features.

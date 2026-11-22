@@ -4,7 +4,7 @@ Launch your first siRNAforge workflow in minutes, then dive deeper through the f
 
 ## 1. Install
 
-- **Python/uv users:** Follow the step-by-step guide in [Installation](installation.md) for pip/uv instructions plus development setup (`make dev`) that matches the project’s CI environment.
+- **Wheel and source users:** See [Installation](installation.md) for standard pip installation and the locked Pixi toolchain.
 - **Container users:** Pull or build the full bioinformatics image as described in {ref}`Installation → Docker <docker-full-bioinformatics-stack>`. The container bundles Nextflow, BWA-MEM2, SAMtools, ViennaRNA, and detects `local` mode automatically.
 
 > Need to automate lab servers or run air-gapped? The installation guide also documents offline caching, verification commands, and how to run smoke tests with the bundled FASTA files.
@@ -13,7 +13,7 @@ Launch your first siRNAforge workflow in minutes, then dive deeper through the f
 
 ```bash
 # End-to-end design + scoring for TP53
-uv run sirnaforge workflow TP53 --output-dir tp53_run
+pixi run --locked -e dev sirnaforge workflow TP53 --output-dir tp53_run
 ```
 
 - Use `docker run --rm ghcr.io/austin-s-h/sirnaforge:latest sirnaforge workflow …` for the same behavior inside the prebuilt image.
@@ -26,7 +26,7 @@ See the [Workflows overview](workflows.md) for the full output tree, common flag
 Pass alternative sequences or transcriptomes to match your experimental data:
 
 ```bash
-uv run sirnaforge workflow TP53 \
+pixi run --locked -e dev sirnaforge workflow TP53 \
   --input-fasta examples/sample_transcripts.fasta \
   --transcriptome-fasta ensembl_mouse_cdna \
   --output-dir tp53_custom

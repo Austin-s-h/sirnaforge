@@ -18,26 +18,30 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@v6
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          activate-environment: false
-          enable-cache: true
-      - name: Install locked dependencies
-        run: uv sync --locked --group dev
+          pixi-version: v0.76.1
+          locked: true
+          cache: true
+          environments: dev
+      - name: Install the local package for release tests
+        run: |
+          pixi run --locked -e dev install-app
+          pixi run --locked -e docs install-app
       - name: Verify release candidate identity
         run: |
           VERSION=$(python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           python .github/scripts/release_contract.py candidate --version "$VERSION"
       - name: Build and inspect distribution
         run: |
-          uv build
-          uv run --with twine twine check dist/*
+          make build
+          pixi run --locked -e dev twine check dist/*
           VERSION=$(python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           python .github/scripts/release_contract.py wheel --version "$VERSION" --wheel dist/*.whl
       - name: Build image from this PR's sources
         run: make docker-build
       - name: Run the real release suite
-        run: make test-release
+        run: make test-release DOCKER_TEST_RESOURCE_FLAGS='--cpus 4'
       - name: Upload test receipts
         if: always()
         uses: actions/upload-artifact@v4

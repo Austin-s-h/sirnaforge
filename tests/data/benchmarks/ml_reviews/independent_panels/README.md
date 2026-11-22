@@ -50,7 +50,7 @@ prove separation from every external training corpus.
 From the repository root, run:
 
 ```bash
-uv run python scripts/validate_dsir2012_independent.py
+pixi run --locked -e dev python scripts/validate_dsir2012_independent.py
 ```
 
 The script reports per-target Spearman correlations for asymmetry calculated on

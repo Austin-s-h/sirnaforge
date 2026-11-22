@@ -6,13 +6,12 @@ This guide covers development setup, contribution guidelines, and best practices
 
 ## Development Environment Setup
 
-### Locked Pixi pilot for 0.8.1
+### Locked Pixi setup
 
-For the pilot, install Pixi 0.76.1, Git and Make on Linux x86_64 or x86_64
+Install Pixi 0.76.1, Git and Make on Linux x86_64 or x86_64
 WSL2. Run the commands from the source checkout.
 
 ```bash
-export SIRNAFORGE_ENV=pixi
 make dev
 make lint
 make test-dev
@@ -46,13 +45,12 @@ check validates the installed wheel requirements and the dev/docs constraints.
 The Conda Nextflow and ViennaRNA records supply version evidence because
 their packages lack Python distribution metadata. Use the ownership check
 to verify those providers. The Python package audit covers Python
-distribution metadata. The pilot pins Nextflow updates through the lock and
+distribution metadata. Pixi pins Nextflow updates through the lock and
 disables the launcher's separate release-version check.
 
 Disposable lock solves succeeded for macOS x86_64, macOS ARM64 and Linux
 ARM64, including the pinned BWA packages. Native installs and tests on
-those platforms are still pending. The pilot covers Linux x86_64 and targets
-x86_64 WSL2. For the full tools on other hosts, use an x86_64 Docker engine or
+those platforms are still pending. Full tooling is supported on Linux x86_64 and x86_64 WSL2. For the full tools on other hosts, use an x86_64 Docker engine or
 `--platform linux/amd64` on an emulator that exposes AVX2 for BWA-MEM3.
 The emulated fallback still needs a platform acceptance receipt.
 Standard wheel users can install with `pip install sirnaforge`. Workflow
@@ -64,21 +62,19 @@ aligners are provided by the full environment.
 Use the committed lock for setup and CI. In a dedicated branch or disposable
 worktree, edit `pixi.toml` and run `pixi lock`, or run
 `pixi update PACKAGE` for a targeted update. Review the complete lock diff,
-including transitive changes. Run the host and container release selections,
-the ownership check, and `make security` in the pilot. Record the impact on
+including transitive changes. Run `make test-release`, `make security`, and
+`pixi run --locked -e dev python scripts/check_pixi_environment.py`. Record the impact on
 index and cache compatibility. Restore the previous manifest and lock with
 Git and reinstall using `pixi install --locked` to verify rollback.
 
-For a candidate Docker build, use a clean `dist/` directory and run
-`make build`. Smoke-test the wheel in a separate virtual environment, then
-run `make docker-build-pixi`. Docker checks the input wheel hash and installs
-those bytes without resolving dependencies. Run `make test-release` with
-the pilot selected to exercise the host and candidate container suites.
+The release workflows check the wheel and sdist with locked Twine, install
+the wheel in a separate virtual environment, and pass the tested bytes to
+`make docker-build`. The image verifies the wheel hash and package identity.
+Run `make test-release` locally for the host and offline container gates.
 
-The existing release path remains the default during evaluation. To switch
-back locally, unset `SIRNAFORGE_ENV` and run `make dev` to reinstall the
-existing hook configuration. See the [consolidation PRD](environment_consolidation_prd.md)
-for cutover and rollback gates.
+Reverting the consolidation commits restores the prior release definitions.
+See the [consolidation PRD](environment_consolidation_prd.md) for rollback
+and acceptance details.
 
 #### Pilot evidence
 
@@ -91,6 +87,9 @@ each passed 41 smoke tests. The wheel passed an isolated installation and
 the sdist rebuilt the identical wheel.
 
 A disposable full-lock update passed 2,217 tests in the host selection.
+The offline update checks passed under UID 12345, including the Conda
+process and staged reference workflow. Restoring the original lock
+reinstalled the previous closure and passed the ownership checks.
 The updated closure kept the pinned native tools and changed Python from
 3.12.15 to 3.12.16, pandas from 3.1.0 to 3.1.1, and other transitive
 dependencies. The root lock retains the evaluated pilot baseline.
@@ -104,44 +103,16 @@ bytes for Pixi and 2,254,129,853 bytes for the legacy image. The same wheel
 was used in both. Across three alternating fresh container launches, CLI
 help medians were 2.621 and 1.919 seconds, respectively. Other validation
 jobs shared the host during this trial. The PRD calls for maintainer
-acceptance of a median startup regression above 20%.
+acceptance of a median startup regression above 20%. The maintainer accepted
+the measured startup cost for the smaller image and single lock.
 
-### Prerequisites
-
-- Python 3.10-3.12
-- Git
-- `uv` package manager
-- `make` (optional but recommended)
-
-### Quick Start
-
-```bash
-# Clone repository
-git clone https://github.com/austin-s-h/sirnaforge
-cd sirnaforge
-
-# One-command setup (installs deps + pre-commit hooks)
-make dev
-```
-
-This runs:
-1. `uv sync` - Installs all dependencies with dev extras
-2. `uv run pre-commit install` - Sets up git hooks for code quality
-
-### Manual Setup
-
-If you prefer not to use `make`:
-
-```bash
-# Install with development dependencies
-uv sync
-
-# Install pre-commit hooks
-uv run pre-commit install
-
-# Verify installation
-uv run sirnaforge --help
-```
+On the same WSL2 host, one cold build took 98.67 seconds with Pixi and
+228.32 seconds with the legacy recipe. Warm builds took 0.64 and 1.20
+seconds. The dependency and wheel install stages received 538,153,653
+bytes for Pixi and 673,276,745 bytes for the legacy recipe. Their installed
+prefixes occupied 1,711,272 and 2,135,796 KiB. These runs used matched direct
+versions and different transitive closures. Network byte counts include
+transport overhead and exclude the operating-system and base-image steps.
 
 ## Make Commands Reference
 
@@ -280,7 +251,7 @@ These conventions keep the repo clean and make it obvious what is safe to deploy
 - Select the next version by SemVer: compatible fixes increment the patch, new backward-compatible
   behavior increments the minor, and incompatible changes require an explicit compatibility review.
   In the pre-1.0 series, do not mistake an unreleased Git tag for a published version.
-- Set the version in `pyproject.toml`, regenerate `uv.lock`, and move the release notes out of
+- Set the version in `pyproject.toml` and move the release notes out of
   `[Unreleased]` into the corresponding changelog heading. On release day replace `Pending release`
   with the actual `YYYY-MM-DD` date in a reviewed PR. A pending heading cannot be tagged.
 - Merge the release PR after Python CI, docs, wheel and the host/container release-candidate gate pass.
@@ -356,16 +327,16 @@ make test-release      # All tests with coverage
 
 ```bash
 # Run specific test file
-uv run pytest tests/unit/test_design.py -v
+pixi run --locked -e dev pytest tests/unit/test_design.py -v
 
 # Run specific test function
-uv run pytest tests/unit/test_design.py::test_basic_design -v
+pixi run --locked -e dev pytest tests/unit/test_design.py::test_basic_design -v
 
 # Run tests matching pattern
-uv run pytest -k "test_gc_content" -v
+pixi run --locked -e dev pytest -k "test_gc_content" -v
 
 # Run with live output
-uv run pytest tests/unit/ -v -s
+pixi run --locked -e dev pytest tests/unit/ -v -s
 ```
 
 #### Test Markers
@@ -374,24 +345,24 @@ Tests are organized by markers for flexible execution:
 
 ```bash
 # By tier (auto-assigned)
-uv run pytest -m "dev"        # Fast unit tests
-uv run pytest -m "ci"         # Smoke tests
-uv run pytest -m "release"    # Integration tests
+pixi run --locked -e dev pytest -m "dev"        # Fast unit tests
+pixi run --locked -e dev pytest -m "ci"         # Smoke tests
+pixi run --locked -e dev pytest -m "release"    # Integration tests
 
 # By type
-uv run pytest -m "unit"          # Unit tests
-uv run pytest -m "integration"   # Integration tests
-uv run pytest -m "smoke"         # Quick gate tests
+pixi run --locked -e dev pytest -m "unit"          # Unit tests
+pixi run --locked -e dev pytest -m "integration"   # Integration tests
+pixi run --locked -e dev pytest -m "smoke"         # Quick gate tests
 
 # By requirements
-uv run pytest -m "requires_network"   # Needs internet
-uv run pytest -m "requires_nextflow"  # Needs Nextflow
+pixi run --locked -e dev pytest -m "requires_network"   # Needs internet
+pixi run --locked -e dev pytest -m "requires_nextflow"  # Needs Nextflow
 
 # By execution environment
-uv run pytest -m "runs_in_container"  # Runs inside Docker
+pixi run --locked -e dev pytest -m "runs_in_container"  # Runs inside Docker
 
 # Combine markers
-uv run pytest -m "unit and not requires_network"
+pixi run --locked -e dev pytest -m "unit and not requires_network"
 ```
 
 ### Docker Development
@@ -423,28 +394,28 @@ We use several tools to maintain code quality:
 #### Ruff Formatter
 ```bash
 # Format codebase (same engine as `make format`)
-uv run ruff format src tests
+pixi run --locked -e dev ruff format src tests
 
 # Check formatting without modifying files
-uv run ruff format --check src tests
+pixi run --locked -e dev ruff format --check src tests
 ```
 
 #### Ruff (Linting and Import Sorting)
 ```bash
 # Lint code and apply fixes
-uv run ruff check --fix src tests
+pixi run --locked -e dev ruff check --fix src tests
 
 # Lint without changing files (used by `make lint`)
-uv run ruff check src tests
+pixi run --locked -e dev ruff check src tests
 ```
 
 #### MyPy (Type Checking)
 ```bash
 # Type check the codebase
-uv run mypy src
+pixi run --locked -e dev mypy src
 
 # Type check specific files
-uv run mypy src/sirnaforge/core/design.py
+pixi run --locked -e dev mypy src/sirnaforge/core/design.py
 ```
 
 ### Code Organization Principles
@@ -714,13 +685,13 @@ DataProviderRegistry.register("custom", CustomDataProvider)
 
 ```bash
 # Profile specific functions
-uv run python -m cProfile -s cumulative scripts/profile_design.py
+pixi run --locked -e dev python -m cProfile -s cumulative scripts/profile_design.py
 
 # Memory profiling
-uv run python -m memory_profiler scripts/profile_memory.py
+pixi run --locked -e dev python -m memory_profiler scripts/profile_memory.py
 
 # Line-by-line profiling
-uv run kernprof -l -v scripts/profile_lines.py
+pixi run --locked -e dev kernprof -l -v scripts/profile_lines.py
 ```
 
 ## Debugging
@@ -734,7 +705,7 @@ Enable detailed logging during development:
 export SIRNAFORGE_LOG_LEVEL=DEBUG
 
 # Run with verbose output
-uv run sirnaforge workflow TP53 --verbose --output-dir debug_output
+pixi run --locked -e dev sirnaforge workflow TP53 --verbose --output-dir debug_output
 ```
 
 ### 2. Interactive Debugging
@@ -747,17 +718,17 @@ import pdb; pdb.set_trace()
 import ipdb; ipdb.set_trace()
 
 # Run tests with debugger
-uv run pytest tests/unit/test_design.py::test_function --pdb
+pixi run --locked -e dev pytest tests/unit/test_design.py::test_function --pdb
 ```
 
 ### 3. Testing with Real Data
 
 ```bash
 # Use examples directory for testing
-uv run sirnaforge design examples/sample_transcripts.fasta --verbose
+pixi run --locked -e dev sirnaforge design examples/sample_transcripts.fasta --verbose
 
 # Test with different parameters
-uv run sirnaforge workflow TP53 --output-dir test_output --gc-min 35 --verbose
+pixi run --locked -e dev sirnaforge workflow TP53 --output-dir test_output --gc-min 35 --verbose
 ```
 
 ## Release Process

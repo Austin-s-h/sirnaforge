@@ -319,7 +319,7 @@ patterns exceed the safety limit of 1000000.
 For reproducible `fm_index` runs, prebuild one search-space bundle once, then reuse it across runs:
 
 ```bash
-uv run sirnaforge internal zfn-build-search-index \
+pixi run --locked -e dev sirnaforge internal zfn-build-search-index \
 	--genome-fasta /path/to/hg38.fa \
 	--search-backend fm_index
 ```

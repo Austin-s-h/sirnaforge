@@ -767,7 +767,7 @@ def calculate_thermodynamics(sequence: str) -> ThermodynamicResult:
 
 ### 1. Local Development
 
-- `uv` for dependency management
+- Pixi for locked development and release environments
 - Direct Python execution
 - Local debugging and testing
 

@@ -64,6 +64,9 @@ python = "3.12.*"
 [feature.aws.dependencies]
 awscli = "==2.38.1"
 
+[feature.dev.dependencies]
+scipy = ">=1.11"
+
 [feature.dev.pypi-dependencies]
 pytest = ">=8.0"
 pytest-cov = ">=6.0"
@@ -74,6 +77,7 @@ jsonschema = ">=4.0"
 ruff = ">=0.12.0"
 mypy = ">=1.10"
 pre-commit = ">=3.8"
+pre-commit-hooks = "==4.6.0"
 types-requests = ">=2.32.0"
 pandas-stubs = ">=2.1.0"
 codespell = ">=2.4.0"
@@ -84,6 +88,9 @@ matplotlib = ">=3.7.0"
 seaborn = ">=0.12.0"
 plotly = ">=5.15.0"
 pip-audit = ">=2.9"
+
+[feature.release.pypi-dependencies]
+twine = "==7.0.0"
 
 [feature.docs.pypi-dependencies]
 sphinx = ">=7.3.0"
@@ -97,9 +104,9 @@ sphinxcontrib-mermaid = ">=1.0.0"
 sphinxcontrib-programoutput = ">=0.18"
 
 [environments]
-default = { features = ["py312", "science", "aws", "dev"], solve-group = "py312" }
+default = { features = ["py312", "science", "aws", "dev", "release"], solve-group = "py312" }
 runtime = { features = ["py312", "science", "aws"], solve-group = "py312" }
-dev = { features = ["py312", "science", "aws", "dev"], solve-group = "py312" }
+dev = { features = ["py312", "science", "aws", "dev", "release"], solve-group = "py312" }
 docs = { features = ["py312", "science", "docs"], solve-group = "py312-docs" }
 py310 = ["py310", "dev"]
 py311 = ["py311", "science", "dev"]

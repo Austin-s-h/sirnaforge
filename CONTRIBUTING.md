@@ -14,16 +14,14 @@ Thank you for your interest in contributing to siRNAforge! 🧬
 
 ### 1. Development Setup
 
+Install Pixi 0.76.1, Git and Make on Linux x86_64 or x86_64 WSL2. For
+editor paths and other platforms, see the [development guide](docs/developer/development.md).
+
 ```bash
 # Fork the repository on GitHub, then clone
 git clone https://github.com/YOUR-USERNAME/sirnaforge.git
 cd sirnaforge
-
-# Set up development environment
-make install-dev
-# or manually:
-uv sync --dev
-uv run pre-commit install
+make dev
 ```
 
 ### 2. Development Workflow
@@ -34,7 +32,7 @@ git checkout -b feature/your-feature-name
 
 # Make your changes and add tests
 # Run the development checks
-make check  # Runs linting and tests
+make lint && make test-dev
 
 # Format your code
 make format
@@ -60,10 +58,10 @@ git push origin feature/your-feature-name
 make test
 
 # Run tests with coverage
-make test-cov
+make test-ci
 
 # Run specific test files
-uv run pytest tests/unit/test_specific_module.py -v
+pixi run --locked -e dev pytest tests/unit/test_specific_module.py -v
 ```
 
 ### Linting & Formatting

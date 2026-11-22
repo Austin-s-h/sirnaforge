@@ -279,7 +279,7 @@ def test_zfn_doc_discovery_walked_the_tree() -> None:
 @pytest.mark.unit
 def test_zfn_doc_discovery_skips_pixi_runtime_directories(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A JDK legal path can end in .md while being a directory, not a document."""
-    generated_legal_path = tmp_path / "scripts/performance/pixi/.pixi/envs/tests/lib/jvm/legal/jdk.internal.md"
+    generated_legal_path = tmp_path / ".pixi/envs/dev/lib/jvm/legal/jdk.internal.md"
     generated_legal_path.mkdir(parents=True)
     monkeypatch.setattr(sys.modules[__name__], "_repo_root", lambda: tmp_path)
 

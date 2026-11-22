@@ -126,27 +126,31 @@ jobs:
     timeout-minutes: 60
     env:
       SIRNAFORGE_NEXTFLOW_IMAGE: sirnaforge:latest
-    needs: [ validate-release, run-ci, build-docker ]
+    needs: [ validate-release, run-ci, build-docker, build-artifacts ]
     if: needs.run-ci.result == 'success' && needs.build-docker.result == 'success'
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
+    - name: Set up locked release-test environments
+      uses: prefix-dev/setup-pixi@v0.10.0
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
+        pixi-version: v0.76.1
+        locked: true
+        cache: true
+        environments: dev
 
-    - name: Install uv CLI
-      uses: astral-sh/setup-uv@v6
+    - name: Install the local package
+      run: |
+        pixi run --locked -e dev install-app
+        pixi run --locked -e docs install-app
+
+    - name: Download the tested distribution
+      uses: actions/download-artifact@v4
       with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: test-release
-
-    - name: Install all dependencies
-      run: make dev
+        name: python-dist-${{ needs.validate-release.outputs.version }}
+        path: dist/
 
     - name: Download Docker image
       uses: actions/download-artifact@v4
@@ -167,8 +171,13 @@ jobs:
         echo "Docker image loaded and tagged for testing"
         docker images | grep sirnaforge
 
+    - name: Verify the loaded image and tested wheel
+      run: |
+        test "$(docker image inspect sirnaforge:latest --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^BUILD_WHEEL_SHA256=//p')" = "$(make -s print-wheel-sha)"
+        test "$(docker image inspect sirnaforge:latest --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^BUILD_SRC_FINGERPRINT=//p')" = "$(make -s print-src-fingerprint)"
+
     - name: Run comprehensive test suite with coverage
-      run: make test-release
+      run: make test-release DOCKER_TEST_RESOURCE_FLAGS='--cpus 4'
 
     - name: Upload coverage reports
       uses: actions/upload-artifact@v4
@@ -187,15 +196,14 @@ jobs:
       run: |
         echo "## Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY || echo "Coverage report not available" >> $GITHUB_STEP_SUMMARY
+        pixi run --locked -e dev coverage report --format=markdown >> $GITHUB_STEP_SUMMARY || echo "Coverage report not available" >> $GITHUB_STEP_SUMMARY
 
   # Build Python distribution artifacts once (reusable by PyPI)
   build-artifacts:
     name: Build Python Artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [ validate-release, run-ci, test-release ]
-    if: needs.test-release.result == 'success'
+    needs: [ validate-release, run-ci ]
     outputs:
       version: ${{ needs.validate-release.outputs.version }}
     steps:
@@ -205,25 +213,34 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: ${{ env.PYTHON_VERSION }}
-    - name: Install uv CLI
-      uses: astral-sh/setup-uv@v6
+    - name: Set up locked build tools
+      uses: prefix-dev/setup-pixi@v0.10.0
       with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: build-dist
+        pixi-version: v0.76.1
+        locked: true
+        cache: true
+        environments: dev
     - name: Build (sdist + wheel)
       run: |
-        uv build
+        make build
         ls -lh dist/
     - name: Verify metadata (twine check)
       run: |
-        uv run --with twine twine check dist/*
+        pixi run --locked -e dev twine check dist/*
         python .github/scripts/release_contract.py wheel --version "${{ needs.validate-release.outputs.version }}" --wheel dist/*.whl
+    - name: Test the wheel outside Pixi
+      run: |
+        python -m venv "$RUNNER_TEMP/release-wheel"
+        "$RUNNER_TEMP/release-wheel/bin/python" -m pip install dist/*.whl
+        "$RUNNER_TEMP/release-wheel/bin/python" -m pip check
+        cd "$RUNNER_TEMP"
+        ./release-wheel/bin/sirnaforge --help
     - name: Upload dist artifacts
       uses: actions/upload-artifact@v4
       with:
         name: python-dist-${{ needs.validate-release.outputs.version }}
         path: dist/
+        include-hidden-files: true
         retention-days: 7
 
   # Build and test Docker images only after CI passes
@@ -231,7 +248,7 @@ jobs:
     name: Build & Test Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: [ validate-release, run-ci ]
+    needs: [ validate-release, run-ci, build-artifacts ]
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
       image-tags: ${{ steps.meta.outputs.tags }}
@@ -239,6 +256,12 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Download the tested distribution
+      uses: actions/download-artifact@v4
+      with:
+        name: python-dist-${{ needs.validate-release.outputs.version }}
+        path: dist/
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -257,14 +280,12 @@ jobs:
           org.opencontainers.image.url=https://github.com/${{ needs.validate-release.outputs.owner-lower }}/${{ needs.validate-release.outputs.name-lower }}
           org.opencontainers.image.source=https://github.com/${{ needs.validate-release.outputs.owner-lower }}/${{ needs.validate-release.outputs.name-lower }}
 
-    # Without these build-args the image carries the Dockerfile defaults BUILD_VERSION=0.0.0+local
-    # and BUILD_SRC_FINGERPRINT=unknown, so `docker-ensure` in the test job rebuilds from scratch:
-    # `make test-release` then validates a locally rebuilt image while a different one gets pushed,
-    # and pays 15-20 minutes for the rebuild inside its own timeout. The fingerprint comes from the
-    # Makefile so there is one copy of the recipe.
-    - name: Compute image build args
+    - name: Compute image build arguments
       id: buildargs
-      run: echo "src-fingerprint=$(make -s print-src-fingerprint)" >> "$GITHUB_OUTPUT"
+      run: |
+        echo "src-fingerprint=$(make -s print-src-fingerprint)" >> "$GITHUB_OUTPUT"
+        wheel_sha=$(make -s print-wheel-sha)
+        echo "wheel-sha=$wheel_sha" >> "$GITHUB_OUTPUT"
 
     - name: Build Docker image (don't push yet)
       id: build
@@ -276,6 +297,8 @@ jobs:
         build-args: |
           VERSION=${{ needs.validate-release.outputs.version }}
           SRC_FINGERPRINT=${{ steps.buildargs.outputs.src-fingerprint }}
+          WHEEL_SHA256=${{ steps.buildargs.outputs.wheel-sha }}
+        platforms: linux/amd64
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         outputs: type=docker,dest=/tmp/sirnaforge-image.tar
@@ -330,6 +353,8 @@ jobs:
         name: python-dist-${{ needs.validate-release.outputs.version }}
         path: dist/
 
+    - name: Keep only distribution files in the upload directory
+      run: rm -f dist/.pixi-build
     - name: Publish to PyPI (Trusted Publisher)
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
@@ -347,22 +372,19 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
+    - name: Set up locked documentation tools
+      uses: prefix-dev/setup-pixi@v0.10.0
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
-    - name: Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: docs-release
-    - name: Install dependencies
-      run: uv sync --locked --group dev
+        pixi-version: v0.76.1
+        locked: true
+        cache: true
+        environments: docs
+    - name: Install the local package
+      run: pixi run --locked -e docs install-app
     - name: Build documentation (release)
       run: |
         export SIRNAFORGE_RELEASE_VERSION=${{ needs.validate-release.outputs.version }}
-        uv run --group dev sphinx-build -W -b html docs docs/_build/html
+        make docs
         touch docs/_build/html/.nojekyll
     - name: Upload docs artifact
       uses: actions/upload-artifact@v4
@@ -451,9 +473,6 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-    - uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
     - uses: actions/download-artifact@v4
       with:
         name: python-dist-${{ needs.validate-release.outputs.version }}
@@ -462,8 +481,8 @@ jobs:
       run: |
         VERSION="${{ needs.validate-release.outputs.version }}"
         python .github/scripts/release_contract.py published --version "$VERSION" --wheel dist/*.whl
-        uv venv --python 3.12 .release-venv
-        uv pip install --python .release-venv/bin/python "sirnaforge==$VERSION"
+        python -m venv .release-venv
+        .release-venv/bin/python -m pip install "sirnaforge==$VERSION"
         .release-venv/bin/python -c 'import importlib.metadata,os; assert importlib.metadata.version("sirnaforge") == os.environ["VERSION"]'
         .release-venv/bin/sirnaforge --help
       env:

@@ -53,7 +53,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "uv>=0.4.0",
   "pytest>=8.0",
   "pytest-cov>=6.0",
   "pytest-mock>=3.15",
@@ -70,10 +69,6 @@ dev = [
   "pandas-stubs>=2.1.0",
   "codespell>=2.4.0",
   "bandit[toml]>=1.7.0",
-  # No `safety` here on purpose: the <3.0.0 pin it carried needs pkg_resources, which modern
-  # setuptools no longer ships on 3.12, so every invocation produced an unhandled exception instead
-  # of a scan. `make security` fetches pip-audit on demand (`uv run --with`) rather than pinning a
-  # scanner into the lock for a target that is advisory.
   "sphinx>=7.3.0",
   "sphinx-rtd-theme>=2.0.0",
   "myst-parser>=2.0.0",
@@ -99,9 +94,6 @@ Repository = "https://github.com/austin-s-h/sirnaforge"
 
 [project.scripts]
 sirnaforge = "sirnaforge.cli:app"
-
-[tool.uv]
-default-groups = ["dev"]
 
 [tool.hatch.version]
 path = "src/sirnaforge/__init__.py"

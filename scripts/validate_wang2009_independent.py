@@ -8,7 +8,7 @@ correlations are OLS residual correlations.
 
 Run with the project environment:
 
-    .venv/bin/python scripts/validate_wang2009_independent.py
+    pixi run --locked -e dev python scripts/validate_wang2009_independent.py
 """
 
 from __future__ import annotations

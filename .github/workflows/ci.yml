@@ -14,117 +14,13 @@ on:
         description: "Main CI workflow completed successfully"
         value: ${{ jobs.final-status.outputs.success }}
 
-env:
-  PYTHON_VERSION: "3.12"
-
 permissions:
   contents: read
   packages: read
 
 jobs:
-  lint-and-security:
-    name: Lint & Security Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: lint
-
-    - name: Install dependencies
-      run: uv sync --group dev
-
-    - name: Lint & format check (Make target)
-      run: make lint
-
-    - name: Security checks (Make target)
-      run: make security
-
-    # #107 broke the docs build (3 -> 39 warnings-as-errors) and blocked `make test-release` at its
-    # first step for most of 0.7.1, because nothing before the release target builds them: docs.yml
-    # runs only on master, and with its own `sphinx-build -W` rather than this target's
-    # `-W --keep-going`. Warm build is 8-14s.
-    - name: Docs build (Make target)
-      run: make docs
-
-    - name: Upload security reports
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: security-reports-${{ github.sha }}
-        path: |
-          bandit-report.json
-          pip-audit-report.json
-        retention-days: 30
-        if-no-files-found: warn
-
   test-matrix:
-    name: Test Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: [ "3.10", "3.11", "3.12" ]
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: test-${{ matrix.python-version }}
-
-    - name: Install dependencies
-      run: uv sync --group dev
-
-    - name: Run tests (Make target)
-      run: make test-ci
-
-    # `make test-ci` selects 40 tests from hand-written `ci`/`smoke` decorations, the newest of which
-    # predates 0.7.1: none of this release's ~950 new tests carry those markers, so every regression
-    # test for the report, evidence, selection, orthology and benchmark work was first executed by
-    # `make test-release` after merge. The dev tier is where they live (1,786 tests, hermetic - no
-    # network test is in it and conftest gates the rest behind capability probes).
-    #
-    # 3.12 only for now: this tier has never run on 3.10/3.11 in CI, and a first run there may surface
-    # version-specific failures unrelated to the change under review. Widen once it has been green.
-    - name: Run dev tier (Make target)
-      if: matrix.python-version == '3.12'
-      run: make test-dev
-
-    - name: Upload test results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: test-results-py${{ matrix.python-version }}-${{ github.sha }}
-        path: |
-          pytest-report.xml
-          coverage.xml
-        retention-days: 30
-
-  pixi-review:
-    name: Pixi pilot (${{ matrix.environment }})
+    name: Locked Pixi tests (${{ matrix.environment }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -132,7 +28,6 @@ jobs:
       matrix:
         environment: [dev, py310, py311]
     env:
-      SIRNAFORGE_ENV: pixi
       PIXI_ENV: ${{ matrix.environment }}
 
     steps:
@@ -165,6 +60,22 @@ jobs:
         pixi run --locked -e dev RNAfold --version
         make lint test-release-host
 
+    - name: Audit locked Python dependencies
+      if: matrix.environment == 'dev'
+      run: make security
+
+    - name: Upload host test and audit reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: locked-host-reports-${{ matrix.environment }}
+        path: |
+          pytest-report.xml
+          pytest-host-report.xml
+          coverage.xml
+          bandit-report.json
+          pip-audit-report.json
+
     - name: Build documentation
       if: matrix.environment == 'dev'
       run: |
@@ -174,13 +85,10 @@ jobs:
     - name: Verify lock remains unchanged
       run: git diff --exit-code -- pixi.lock
 
-  pixi-container:
-    name: Pixi wheel and container candidate
+  build-package:
+    name: Wheel and container validation
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      SIRNAFORGE_ENV: pixi
-
     steps:
     - uses: actions/checkout@v4
 
@@ -199,6 +107,7 @@ jobs:
     - name: Build and verify wheel identity
       run: |
         make build
+        pixi run --locked -e dev twine check dist/*
         python .github/scripts/release_contract.py wheel --version "$(make -s print-version)" --wheel dist/*.whl
 
     - name: Verify the sdist builds with the locked build backend
@@ -216,58 +125,26 @@ jobs:
         ./sirnaforge-wheel/bin/sirnaforge --help
 
     - name: Build the runtime with the tested wheel
-      run: make docker-build-pixi
+      run: make docker-build
 
     - name: Verify runtime without development tools
-      run: make docker-smoke-pixi
+      run: make docker-smoke
 
     - name: Run candidate container suite offline
-      run: make docker-test-pixi DOCKER_TEST_RESOURCE_FLAGS='--network none --cpus 4'
+      run: make docker-test DOCKER_TEST_RESOURCE_FLAGS='--network none --cpus 4'
 
-  build-package:
-    name: Build Package
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install uv CLI
-      uses: astral-sh/setup-uv@v6
-      with:
-        activate-environment: false
-        enable-cache: true
-        cache-suffix: build
-
-    - name: Install dependencies
-      run: uv sync --group dev
-
-    - name: Build package (Make target)
-      run: make build
-
-    - name: Verify installation
-      run: |
-        # Test basic import and CLI functionality
-        uv run sirnaforge version
-        uv run sirnaforge --help
-
-    - name: Upload build artifacts
+    - name: Upload the tested distribution
       uses: actions/upload-artifact@v4
       with:
         name: python-package-${{ github.sha }}
         path: dist/
+        include-hidden-files: true
         retention-days: 7
 
   final-status:
     name: CI Status Summary
     runs-on: ubuntu-latest
-    needs: [ lint-and-security, test-matrix, pixi-review, pixi-container, build-package ]
+    needs: [test-matrix, build-package]
     if: always()
     outputs:
       success: ${{ steps.status.outputs.success }}
@@ -275,26 +152,15 @@ jobs:
     steps:
     - name: Check status
       id: status
+      env:
+        TEST_STATUS: ${{ needs.test-matrix.result }}
+        BUILD_STATUS: ${{ needs.build-package.result }}
       run: |
-        echo "Checking job statuses..."
-
-        LINT_STATUS="${{ needs.lint-and-security.result }}"
-        TEST_STATUS="${{ needs.test-matrix.result }}"
-        BUILD_STATUS="${{ needs.build-package.result }}"
-        PIXI_STATUS="${{ needs.pixi-review.result }}"
-        PIXI_DOCKER_STATUS="${{ needs.pixi-container.result }}"
-
-        echo "Lint & Security: $LINT_STATUS"
-        echo "Tests: $TEST_STATUS"
-        echo "Build: $BUILD_STATUS"
-        echo "Pixi pilot: $PIXI_STATUS"
-        echo "Pixi container: $PIXI_DOCKER_STATUS"
-
-        if [[ "$LINT_STATUS" == "success" && "$TEST_STATUS" == "success" && "$BUILD_STATUS" == "success" && "$PIXI_STATUS" == "success" && "$PIXI_DOCKER_STATUS" == "success" ]]; then
-          echo "All CI jobs passed!"
-          echo "success=true" >> $GITHUB_OUTPUT
+        echo "Locked tests: $TEST_STATUS"
+        echo "Wheel, sdist and container: $BUILD_STATUS"
+        if [[ "$TEST_STATUS" == "success" && "$BUILD_STATUS" == "success" ]]; then
+          echo "success=true" >> "$GITHUB_OUTPUT"
         else
-          echo "Some CI jobs failed!"
-          echo "success=false" >> $GITHUB_OUTPUT
+          echo "success=false" >> "$GITHUB_OUTPUT"
           exit 1
         fi
