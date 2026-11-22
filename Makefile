@@ -130,7 +130,11 @@ dev: ## Quick dev setup (install + pre-commit)
 ifeq ($(SIRNAFORGE_ENV),pixi)
 	$(RUN) install-app
 	$(RUN_DOCS) install-app
-	$(RUN) pre-commit install --config .pre-commit-pixi.yaml
+	@if [ "$$(git rev-parse --git-dir)" = "$$(git rev-parse --git-common-dir)" ]; then \
+		$(RUN) pre-commit install --config .pre-commit-pixi.yaml; \
+	else \
+		echo "Linked worktree: run make pre-commit to use the Pixi hooks."; \
+	fi
 else
 	uv sync --locked
 	$(RUN) pre-commit install

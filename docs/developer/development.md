@@ -24,7 +24,9 @@ Point the editor at `.pixi/envs/dev/bin/python`. Use
 `pixi shell --locked -e dev` to activate a terminal. Use `make install` for
 the runtime environment and `pixi run --locked -e runtime sirnaforge --help`
 to check it. The setup tasks install the local package in editable mode with
-dependency resolution and build isolation disabled.
+dependency resolution and build isolation disabled. In a linked Git worktree,
+use `make pre-commit` to run the Pixi hooks. Hook installation from the main
+checkout applies to the repository's worktrees.
 
 The development and runtime environments share the Python 3.12 solve. The
 docs environment also uses 3.12 and has a separate solve because AWS CLI's
