@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - Pending release
+
 ### Added
 
 - Report evidence schema 1.4.0: canonical availability states, stable generic gate-warning IDs,

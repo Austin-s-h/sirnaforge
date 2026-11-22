@@ -141,8 +141,9 @@ flowchart LR
     subgraph Release[Stable Release]
         D --> PR2[Release PR: dev → master]
         PR2 --> M[master]
-        M --> CI2[CI + Release workflow]
-        CI2 --> DOCKER_STABLE[Publish Docker (version + latest)]
+        M --> TAG[Reviewed version tag]
+        TAG --> CI2[CI + release gate]
+        CI2 --> DOCKER_STABLE[Publish PyPI / Docker / docs / GitHub release]
     end
 
     subgraph Pre[Pre-release / Preview]
@@ -156,7 +157,7 @@ flowchart LR
 
 1. Branch from `dev`: `feature/<name>` or `fix/<name>`
 2. Open PR into `dev` (CI must pass)
-3. Cut a stable release by opening a PR from `dev` into `master`
+3. Open a release PR from `dev` into `master`; its release-candidate gate must pass before merging.
 
 ### Hygiene Rules (Recommended)
 
@@ -176,14 +177,31 @@ These conventions keep the repo clean and make it obvious what is safe to deploy
 ### Version & Tag Hygiene
 
 - Treat `master` as “release-ready”: changes merged to `master` should be intentional and reviewed.
-- Prefer tagging releases as `vX.Y.Z` (tags, not branches). The release workflow already creates and pushes tags.
+- Select the next version by SemVer: compatible fixes increment the patch, new backward-compatible
+  behavior increments the minor, and incompatible changes require an explicit compatibility review.
+  In the pre-1.0 series, do not mistake an unreleased Git tag for a published version.
+- Set the version in `pyproject.toml`, regenerate `uv.lock`, and move the release notes out of
+  `[Unreleased]` into the corresponding changelog heading. On release day replace `Pending release`
+  with the actual `YYYY-MM-DD` date in a reviewed PR. A pending heading cannot be tagged.
+- Merge the release PR after Python CI, docs, wheel and the host/container release-candidate gate pass.
+  Create an annotated `vX.Y.Z` tag on that reviewed `master` commit and push it. The tag workflow
+  checks package/changelog/wheel identity and reruns the full gate before publishing anything.
 - If you need pre-release identifiers, prefer PEP 440 formats like `X.Y.Zrc1` (avoid hyphenated variants like `X.Y.Z-rc1`).
+- The tag workflow publishes a draft GitHub release, the tested wheel to PyPI, and a versioned
+  GHCR image. It checks the published wheel hash and image identity, deploys release docs, then
+  publishes the GitHub release. `:latest` advances only after a stable release is verified.
+- **Recovery:** `v0.7.1` exists but its workflow failed; do not move or delete that tag. The public
+  GitHub release and PyPI 0.7.1 do not exist. Use a new version. If a future tag workflow fails
+  after publication begins, preserve its draft and artifacts, inspect each registry and the failed
+  job, and resolve recovery with a new reviewed workflow change or new version. Do not rerun an
+  already published PyPI version or force-push a release tag: immutable artifacts cannot be rolled back.
 
 ### Recommended GitHub Branch Protection
 
 For `master` (stable):
 - Require pull requests (no direct pushes)
-- Require status checks (CI must pass)
+- Require the CI summary and **Host, container, wheel and docs release gate** checks on release PRs
+  (GitHub branch protection must be configured by a maintainer; a workflow alone cannot require itself)
 - Require at least one review
 - Block force pushes
 
@@ -194,7 +212,7 @@ For `dev` (integration):
 ### Versioning Guidance (PEP 440)
 
 - Stable releases: `X.Y.Z` (published to PyPI)
-- Pre-releases: `X.Y.ZrcN` / `X.Y.ZaN` / `X.Y.ZbN` (published to TestPyPI by default)
+- Pre-releases: `X.Y.ZrcN` (published to PyPI and GHCR without moving `:latest`)
 
 ### Docker Image Tags (Recommended)
 
