@@ -46,7 +46,8 @@ check validates the installed wheel requirements and the dev/docs constraints.
 The Conda Nextflow and ViennaRNA records supply version evidence because
 their packages lack Python distribution metadata. Use the ownership check
 to verify those providers. The Python package audit covers Python
-distribution metadata.
+distribution metadata. The pilot pins Nextflow updates through the lock and
+disables the launcher's separate release-version check.
 
 Disposable lock solves succeeded for macOS x86_64, macOS ARM64 and Linux
 ARM64, including the pinned BWA packages. Native installs and tests on
@@ -78,6 +79,32 @@ The existing release path remains the default during evaluation. To switch
 back locally, unset `SIRNAFORGE_ENV` and run `make dev` to reinstall the
 existing hook configuration. See the [consolidation PRD](environment_consolidation_prd.md)
 for cutover and rollback gates.
+
+#### Pilot evidence
+
+The clean WSL2 x86_64 install with Pixi 0.76.1 used a lock with SHA-256
+`fbc8defeaeb5910ce2fb0513b5708935c873b28be4e0f0d9b7750792139f586f`.
+The host release selection passed 2,217 tests on the first run. A repeat
+run passed 2,216 tests and measured 2.276 seconds of CPU time on the
+2 MB repeat-scan guard, which has a 2.0-second limit. Python 3.10 and 3.11
+each passed 41 smoke tests. The wheel passed an isolated installation and
+the sdist rebuilt the identical wheel.
+
+A disposable full-lock update passed 2,217 tests in the host selection.
+The updated closure kept the pinned native tools and changed Python from
+3.12.15 to 3.12.16, pandas from 3.1.0 to 3.1.1, and other transitive
+dependencies. The root lock retains the evaluated pilot baseline.
+
+The advisory scan flagged urllib3 2.6.3. The pinned Conda AWS CLI
+requires urllib3 at or below that version. A targeted
+`pixi update urllib3 --no-install` left the lock unchanged.
+
+The initial matched-direct-version image comparison measured 1,744,268,058
+bytes for Pixi and 2,254,129,853 bytes for the legacy image. The same wheel
+was used in both. Across three alternating fresh container launches, CLI
+help medians were 2.621 and 1.919 seconds, respectively. Other validation
+jobs shared the host during this trial. The PRD calls for maintainer
+acceptance of a median startup regression above 20%.
 
 ### Prerequisites
 

@@ -39,6 +39,7 @@ tomli = ">=2.0.1"
 
 [activation.env]
 NXF_DIST = "$CONDA_PREFIX/share/nextflow/dist"
+NXF_DISABLE_CHECK_LATEST = "true"
 
 [feature.py310.dependencies]
 python = "3.10.*"
