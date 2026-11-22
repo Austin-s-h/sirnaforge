@@ -583,7 +583,7 @@ def test_the_no_fabrication_walk_can_see_the_dicts_most_likely_to_fabricate(tmp_
 
 
 @pytest.mark.unit
-def test_a_dev_build_declares_itself(tmp_path):
+def test_a_dev_build_declares_itself(tmp_path, monkeypatch):
     """``tool_version: "0.7.1"`` is a release string, not a build identity.
 
     The run under review was a dev build and said nothing about it. A dev build must SAY it is one,
@@ -597,6 +597,17 @@ def test_a_dev_build_declares_itself(tmp_path):
         timeout=10,
     ).stdout.strip()
 
+    module = _provenance_module()
+    git = module._git
+    dev_describe = f"v{__version__}-1-g{head[:7]}"
+
+    def describe_dev_build(*args: str, cwd: Path) -> str:
+        if args[0] == "describe":
+            return dev_describe
+        return git(*args, cwd=cwd)
+
+    monkeypatch.setattr(module, "_git", describe_dev_build)
+
     build = _provenance(_qualified_workflow(tmp_path, "dev_build"))["build"]
 
     assert build["release"] is False
@@ -608,7 +619,7 @@ def test_a_dev_build_declares_itself(tmp_path):
     assert re.fullmatch(r"[0-9a-f]{40}", vcs["commit"]["value"])
     # describe never falls back to __version__: disagreement between them is the signal.
     describe = vcs["describe"]["value"]
-    assert describe and describe != __version__
+    assert describe == dev_describe
     assert describe in build["detail"], "detail must quote the describe string it judged"
     assert __version__ in build["detail"], "detail must name the __version__ that matched no tag"
 
@@ -1160,8 +1171,9 @@ def test_the_offtarget_only_entry_point_is_provenanced_and_honest_about_what_it_
 
     # The build block needs no DesignResult, so it is fully populated here too.
     build = provenance["build"]
-    assert build["release"] is False
-    assert build["kind"]
+    expected_build = _provenance_module().build_identity()
+    assert build["release"] is expected_build["release"]
+    assert build["kind"] == expected_build["kind"]
     assert build["tool_version"] == __version__
     assert build["runtime"]["python"]["version"]
     # No Nextflow screen ran, so there is no pipeline revision to record -- omitted, not nulled.
