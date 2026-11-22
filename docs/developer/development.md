@@ -28,17 +28,15 @@ use `make pre-commit` to run the Pixi hooks. Hook installation from the main
 checkout applies to the repository's worktrees.
 
 The development and runtime environments share the Python 3.12 solve. The
-docs environment also uses 3.12 and has a separate solve because AWS CLI's
-Docutils constraint conflicts with MyST. The `py310` and `py311`
-environments preserve the wheel compatibility lanes. They leave AWS CLI
-outside their closure. Python 3.10 uses fm-index 3.0.2 and PyArrow 25.0.1
+docs environment uses a separate Python 3.12 solve for the Sphinx toolchain.
+The `py310` and `py311` environments cover wheel compatibility. Python 3.10
+is a compatibility lane since it has reached upstream end of life. Python 3.10 uses fm-index 3.0.2 and PyArrow 25.0.1
 from the existing wheel-consumer lock. The full-tool pilot retains fm-index
 4.0.0, PyArrow 26.0.0 and Nextflow 26.10.3 from the validated prototype.
 
 Conda owns Python, Java, Nextflow and its JAR, both BWA variants, samtools,
 ViennaRNA and the native Python stack. PyPI supplies fm-index and PyArrow.
-PyArrow uses PyPI to avoid a Conda solver conflict with AWS CLI. The Pixi
-manifest is separate from PEP 517 project metadata so Pixi does not
+The Pixi manifest is separate from PEP 517 project metadata so Pixi does not
 automatically import the wheel's PyPI Nextflow and ViennaRNA requirements
 into a prefix that already has their Conda providers. The CI ownership
 check validates the installed wheel requirements and the dev/docs constraints.
@@ -73,8 +71,8 @@ the wheel in a separate virtual environment, and pass the tested bytes to
 Run `make test-release` locally for the host and offline container gates.
 
 Reverting the consolidation commits restores the prior release definitions.
-See the [consolidation PRD](environment_consolidation_prd.md) for rollback
-and acceptance details.
+The pull request description records the rollback and acceptance criteria.
+[Environment consolidation PRD](https://github.com/Austin-s-h/sirnaforge/pull/128)
 
 #### Pilot evidence
 
@@ -94,9 +92,10 @@ The updated closure kept the pinned native tools and changed Python from
 3.12.15 to 3.12.16, pandas from 3.1.0 to 3.1.1, and other transitive
 dependencies. The root lock retains the evaluated pilot baseline.
 
-The advisory scan flagged urllib3 2.6.3. The pinned Conda AWS CLI
-requires urllib3 at or below that version. A targeted
-`pixi update urllib3 --no-install` left the lock unchanged.
+The pilot audit flagged urllib3 2.6.3. The bundled AWS CLI capped urllib3
+at that version. The release environment drops the bundled AWS CLI and
+requires urllib3 2.8 or later. Custom workflows that call the AWS CLI
+can supply it externally. The lock also updates Python and the CA bundles.
 
 The initial matched-direct-version image comparison measured 1,744,268,058
 bytes for Pixi and 2,254,129,853 bytes for the legacy image. The same wheel

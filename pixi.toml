@@ -23,7 +23,6 @@ micromamba = "*"
 biopython = ">=1.84"
 pandas = ">=2.3.0"
 numpy = ">=1.26.0,<2.5"
-requests = ">=2.32.0"
 pyahocorasick = ">=2.1.0"
 click = ">=8.0.0"
 pydantic = ">=2.11.0"
@@ -37,6 +36,11 @@ jinja2 = ">=3.1.0"
 
 tomli = ">=2.0.1"
 
+# The PyPI urllib3 build provides security fixes on Python 3.10 as well.
+[pypi-dependencies]
+requests = ">=2.32.0"
+urllib3 = ">=2.8.0,<3"
+
 [activation.env]
 NXF_DIST = "$CONDA_PREFIX/share/nextflow/dist"
 NXF_DISABLE_CHECK_LATEST = "true"
@@ -49,8 +53,7 @@ python = "3.10.*"
 fm-index = "==3.0.2"
 pyarrow = "==25.0.1"
 
-# Retain the validated full-tool prototype pair. PyArrow stays on PyPI
-# to avoid the Conda AWS CLI solver conflict.
+# Retain the validated full-tool prototype pair.
 [feature.science.pypi-dependencies]
 fm-index = "==4.0.0"
 pyarrow = "==26.0.0"
@@ -59,10 +62,7 @@ pyarrow = "==26.0.0"
 python = "3.11.*"
 
 [feature.py312.dependencies]
-python = "3.12.*"
-
-[feature.aws.dependencies]
-awscli = "==2.38.1"
+python = ">=3.12.16,<3.13"
 
 [feature.dev.dependencies]
 scipy = ">=1.11"
@@ -104,9 +104,9 @@ sphinxcontrib-mermaid = ">=1.0.0"
 sphinxcontrib-programoutput = ">=0.18"
 
 [environments]
-default = { features = ["py312", "science", "aws", "dev", "release"], solve-group = "py312" }
-runtime = { features = ["py312", "science", "aws"], solve-group = "py312" }
-dev = { features = ["py312", "science", "aws", "dev", "release"], solve-group = "py312" }
+default = { features = ["py312", "science", "dev", "release"], solve-group = "py312" }
+runtime = { features = ["py312", "science"], solve-group = "py312" }
+dev = { features = ["py312", "science", "dev", "release"], solve-group = "py312" }
 docs = { features = ["py312", "science", "docs"], solve-group = "py312-docs" }
 py310 = ["py310", "dev"]
 py311 = ["py311", "science", "dev"]

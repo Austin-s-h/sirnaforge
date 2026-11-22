@@ -31,7 +31,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
 
@@ -131,7 +131,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up locked release-test environments
       uses: prefix-dev/setup-pixi@v0.10.0
@@ -208,9 +208,9 @@ jobs:
       version: ${{ needs.validate-release.outputs.version }}
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
     - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v7
       with:
         python-version: ${{ env.PYTHON_VERSION }}
     - name: Set up locked build tools
@@ -255,7 +255,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Download the tested distribution
       uses: actions/download-artifact@v4
@@ -346,7 +346,7 @@ jobs:
       contents: read
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
     - name: Download dist artifacts
       uses: actions/download-artifact@v4
       with:
@@ -371,7 +371,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
     - name: Set up locked documentation tools
       uses: prefix-dev/setup-pixi@v0.10.0
       with:
@@ -432,7 +432,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
@@ -469,8 +469,8 @@ jobs:
     needs: [ validate-release, create-release, publish-docker, publish-pypi, build-artifacts ]
 
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
       with:
         python-version: '3.12'
     - uses: actions/download-artifact@v4

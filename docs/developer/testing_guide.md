@@ -15,7 +15,7 @@ make check              # format + test-dev (mutating quick gate)
 ```
 
 > Counts and timings in this guide are historical warm-cache measurements.
-> The consolidation PRD records the Pixi validation separately.
+> The [development guide](development.md) records the Pixi validation.
 
 > **Note:** `make check` runs `make format` first, so it will modify files to enforce style before executing tests.
 

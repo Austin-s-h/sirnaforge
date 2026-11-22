@@ -384,6 +384,7 @@ security: ## Run security checks (advisory: reports findings, does not fail the 
 	@echo "Running security scans..."
 	@$(RUN) bandit -r src/ -f json -o bandit-report.json || true
 	@$(RUN) bandit -r src/ -q || true
+	@rm -f pip-audit-report.json
 	@$(RUN) pip-audit --progress-spinner=off --format=json --output=pip-audit-report.json || true
 	@if [ -s pip-audit-report.json ]; then \
 		echo "Dependency scan: pip-audit wrote pip-audit-report.json"; \

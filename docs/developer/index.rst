@@ -10,7 +10,6 @@ This section contains documentation for developers working on or extending siRNA
    development
    testing_guide
    performance_review
-   environment_consolidation_prd
    chemical_modification_review
    zfn_backend_tuning
    zfn_nextflow_bridge_validation

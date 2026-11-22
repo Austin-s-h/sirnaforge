@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - One Pixi lock for Linux x86_64 and WSL2 development, documentation, CI and the Docker runtime.
   The release workflow verifies, tests and publishes the same wheel while retaining Python 3.10–3.12 compatibility.
 
+### Security
+
+- Require urllib3 2.8 or later and update the locked Python 3.12 and CA trust packages.
+  Custom workflows that use AWS CLI can provide it separately.
+
 ## [0.8.0] - 2026-11-22
 
 ### Added
