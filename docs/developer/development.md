@@ -6,6 +6,77 @@ This guide covers development setup, contribution guidelines, and best practices
 
 ## Development Environment Setup
 
+### Locked Pixi pilot for 0.8.1
+
+For the pilot, install Pixi 0.76.1, Git and Make on Linux x86_64 or x86_64
+WSL2. Run the commands from the source checkout.
+
+```bash
+export SIRNAFORGE_ENV=pixi
+make dev
+make lint
+make test-dev
+make docs
+```
+
+Point the editor at `.pixi/envs/dev/bin/python`. Use
+`pixi run --locked -e dev` for individual commands, or
+`pixi shell --locked -e dev` to activate a terminal. Use `make install` for
+the runtime environment and `pixi run --locked -e runtime sirnaforge --help`
+to check it. The setup tasks install the local package in editable mode with
+dependency resolution and build isolation disabled.
+
+The development and runtime environments share the Python 3.12 solve. The
+docs environment also uses 3.12 and has a separate solve because AWS CLI's
+Docutils constraint conflicts with MyST. The `py310` and `py311`
+environments preserve the wheel compatibility lanes. They leave AWS CLI
+outside their closure. Python 3.10 uses fm-index 3.0.2 and PyArrow 25.0.1
+from the existing wheel-consumer lock. The full-tool pilot retains fm-index
+4.0.0, PyArrow 26.0.0 and Nextflow 26.10.3 from the validated prototype.
+
+Conda owns Python, Java, Nextflow and its JAR, both BWA variants, samtools,
+ViennaRNA and the native Python stack. PyPI supplies fm-index and PyArrow.
+PyArrow uses PyPI to avoid a Conda solver conflict with AWS CLI. The Pixi
+manifest is separate from PEP 517 project metadata so Pixi does not
+automatically import the wheel's PyPI Nextflow and ViennaRNA requirements
+into a prefix that already has their Conda providers. The CI ownership
+check validates the installed wheel requirements and the dev/docs constraints.
+The Conda Nextflow and ViennaRNA records supply version evidence because
+their packages lack Python distribution metadata. Use the ownership check
+to verify those providers. The Python package audit covers Python
+distribution metadata.
+
+Disposable lock solves succeeded for macOS x86_64, macOS ARM64 and Linux
+ARM64, including the pinned BWA packages. Native installs and tests on
+those platforms are still pending. The pilot covers Linux x86_64 and targets
+x86_64 WSL2. For the full tools on other hosts, use an x86_64 Docker engine or
+`--platform linux/amd64` on an emulator that exposes AVX2 for BWA-MEM3.
+The emulated fallback still needs a platform acceptance receipt.
+Standard wheel users can install with `pip install sirnaforge`. Workflow
+execution also needs Java and external tools on PATH. RNAfold and the
+aligners are provided by the full environment.
+
+#### Update and audit
+
+Use the committed lock for setup and CI. In a dedicated branch or disposable
+worktree, edit `pixi.toml` and run `pixi lock`, or run
+`pixi update PACKAGE` for a targeted update. Review the complete lock diff,
+including transitive changes. Run the host and container release selections,
+the ownership check, and `make security` in the pilot. Record the impact on
+index and cache compatibility. Restore the previous manifest and lock with
+Git and reinstall using `pixi install --locked` to verify rollback.
+
+For a candidate Docker build, use a clean `dist/` directory and run
+`make build`. Smoke-test the wheel in a separate virtual environment, then
+run `make docker-build-pixi`. Docker checks the input wheel hash and installs
+those bytes without resolving dependencies. Run `make test-release` with
+the pilot selected to exercise the host and candidate container suites.
+
+The existing release path remains the default during evaluation. To switch
+back locally, unset `SIRNAFORGE_ENV` and run `make dev` to reinstall the
+existing hook configuration. See the [consolidation PRD](environment_consolidation_prd.md)
+for cutover and rollback gates.
+
 ### Prerequisites
 
 - Python 3.10-3.12

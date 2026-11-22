@@ -11,6 +11,9 @@ on:
       - 'docker/**'
       - 'pyproject.toml'
       - 'uv.lock'
+      - 'pixi.toml'
+      - 'pixi.lock'
+      - 'scripts/check_pixi_environment.py'
       - 'Makefile'
       - '.github/workflows/docker-dev.yml'
   workflow_dispatch:
@@ -61,18 +64,10 @@ jobs:
             type=raw,value=dev
             type=raw,value=sha-${{ steps.repo.outputs.short_sha }}
 
-      # uv is needed only so the Makefile can read the project version; the build itself does not use it.
-      - name: 🐍 Install uv CLI
-        uses: astral-sh/setup-uv@v6
-        with:
-          activate-environment: false
-          enable-cache: true
-          cache-suffix: docker-dev
-
       - name: 🧮 Compute image build args
         id: buildargs
         run: |
-          echo "version=$(uv run python -c 'from sirnaforge import __version__; print(__version__)')" >> "$GITHUB_OUTPUT"
+          echo "version=$(make -s print-version)" >> "$GITHUB_OUTPUT"
           echo "src-fingerprint=$(make -s print-src-fingerprint)" >> "$GITHUB_OUTPUT"
 
       # Built and tested before it is pushed. The container tier is the only place the installed CLI,

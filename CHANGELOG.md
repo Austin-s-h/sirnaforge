@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-22
+
+### Added
+
+- Locked Pixi pilot for Linux x86_64 development, documentation and runtime environments.
+  The existing release environment remains available while adoption gates are evaluated.
+
 ## [0.8.0] - 2026-11-22
 
 ### Added

@@ -1,0 +1,59 @@
+# Linux x86_64 release candidate. The wheel comes from the caller's tested dist/.
+FROM ghcr.io/prefix-dev/pixi:0.76.1@sha256:540414f50b96439a6ba1475b79b2e2dd2208e86ebef33e2fbf2a176a8f037d31 AS locked-runtime
+ARG PIXI_ENV=runtime
+WORKDIR /opt/sirnaforge
+COPY pixi.toml pixi.lock ./
+RUN pixi install --locked -e "$PIXI_ENV"
+
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
+ARG PIXI_ENV=runtime
+ARG VERSION
+ARG SRC_FINGERPRINT
+ARG WHEEL_SHA256
+ENV BUILD_VERSION="${VERSION}" \
+    BUILD_SRC_FINGERPRINT="${SRC_FINGERPRINT}" \
+    BUILD_WHEEL_SHA256="${WHEEL_SHA256}" \
+    CONDA_PREFIX="/opt/sirnaforge/.pixi/envs/${PIXI_ENV}" \
+    HOME="/home/sirnauser/.nextflow" \
+    NXF_HOME="/home/sirnauser/.nextflow" \
+    MAMBA_ROOT_PREFIX="/home/sirnauser/.nextflow/mamba" \
+    NXF_CONDA_CLI="micromamba"
+ENV PATH="${CONDA_PREFIX}/bin:${PATH}" \
+    JAVA_HOME="${CONDA_PREFIX}/lib/jvm" \
+    NXF_DIST="${CONDA_PREFIX}/share/nextflow/dist" \
+    LD_LIBRARY_PATH="${CONDA_PREFIX}/lib"
+
+RUN apt-get update && apt-get install -y --no-install-recommends procps ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd -m -s /bin/bash -u 1000 sirnauser && \
+    mkdir -p "$MAMBA_ROOT_PREFIX" && chmod -R a+rwX "$NXF_HOME" && \
+    ln -s "$CONDA_PREFIX" /opt/conda && \
+    ln -s "$CONDA_PREFIX/bin/micromamba" /usr/local/bin/micromamba
+
+COPY --from=locked-runtime /opt/sirnaforge/.pixi/envs/${PIXI_ENV}/ /opt/sirnaforge/.pixi/envs/${PIXI_ENV}/
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/conda-shim.sh /usr/local/bin/conda
+COPY docker/conda-path.sh /etc/profile.d/conda-path.sh
+COPY docker/micromamba-activate.sh /opt/sirnaforge/.pixi/envs/${PIXI_ENV}/bin/activate
+COPY scripts/check_pixi_environment.py /tmp/check_pixi_environment.py
+COPY dist/*.whl /tmp/wheels/
+RUN --network=none set -eu; \
+    set -- /tmp/wheels/*.whl; test "$#" -eq 1; \
+    echo "$WHEEL_SHA256  $1" | sha256sum --check; \
+    python -m pip install --no-deps --no-build-isolation --no-cache-dir "$1"; \
+    python /tmp/check_pixi_environment.py --wheel-only; \
+    python -c 'import sys; from importlib.metadata import version; assert version("sirnaforge") == sys.argv[1]' "$VERSION"; \
+    rm -rf /tmp/wheels /tmp/check_pixi_environment.py; \
+    chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/conda "$CONDA_PREFIX/bin/activate"
+
+USER sirnauser
+WORKDIR /home/sirnauser
+RUN --network=none nextflow -version
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD sirnaforge version && nextflow -version && bwa-mem2 version && bwa-mem3 version && samtools --version && RNAfold --version
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD []
+LABEL org.opencontainers.image.title="siRNAforge" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.source="https://github.com/austin-s-h/sirnaforge"

@@ -1,0 +1,107 @@
+[workspace]
+name = "sirnaforge"
+channels = ["conda-forge", "bioconda"]
+platforms = ["linux-64"]
+
+[dependencies]
+pip = "*"
+hatchling = "*"
+editables = "*"
+openjdk = "==24.0.2"
+nextflow = "==26.10.3"
+bwa-mem2 = "==2.2.1"
+bwa-mem3 = "==0.15.0"
+samtools = "==1.24"
+viennarna = "==2.7.2"
+pysam = ">=0.23.0"
+curl = "*"
+wget = "*"
+jq = "*"
+pigz = "*"
+htslib = "*"
+micromamba = "*"
+biopython = ">=1.84"
+pandas = ">=2.3.0"
+numpy = ">=1.26.0,<2.5"
+requests = ">=2.32.0"
+pyahocorasick = ">=2.1.0"
+click = ">=8.0.0"
+pydantic = ">=2.11.0"
+rich = ">=14.0.0"
+typer = ">=0.17.0"
+aiohttp = ">=3.12.0"
+httpx = ">=0.28.0"
+pandera = ">=0.26.0"
+psutil = ">=6.0.0"
+jinja2 = ">=3.1.0"
+
+tomli = ">=2.0.1"
+
+[activation.env]
+NXF_DIST = "$CONDA_PREFIX/share/nextflow/dist"
+
+[feature.py310.dependencies]
+python = "3.10.*"
+
+# The current wheel-consumer lock supplies a Python 3.10-compatible pair.
+[feature.py310.pypi-dependencies]
+fm-index = "==3.0.2"
+pyarrow = "==25.0.1"
+
+# Retain the validated full-tool prototype pair. PyArrow stays on PyPI
+# to avoid the Conda AWS CLI solver conflict.
+[feature.science.pypi-dependencies]
+fm-index = "==4.0.0"
+pyarrow = "==26.0.0"
+
+[feature.py311.dependencies]
+python = "3.11.*"
+
+[feature.py312.dependencies]
+python = "3.12.*"
+
+[feature.aws.dependencies]
+awscli = "==2.38.1"
+
+[feature.dev.pypi-dependencies]
+pytest = ">=8.0"
+pytest-cov = ">=6.0"
+pytest-mock = ">=3.15"
+pytest-asyncio = ">=1.1.0"
+pytest-xdist = ">=3.8"
+jsonschema = ">=4.0"
+ruff = ">=0.12.0"
+mypy = ">=1.10"
+pre-commit = ">=3.8"
+types-requests = ">=2.32.0"
+pandas-stubs = ">=2.1.0"
+codespell = ">=2.4.0"
+bandit = { version = ">=1.7.0", extras = ["toml"] }
+jupyter = ">=1.0.0"
+jupyter-server = ">=2.14.1"
+matplotlib = ">=3.7.0"
+seaborn = ">=0.12.0"
+plotly = ">=5.15.0"
+pip-audit = ">=2.9"
+
+[feature.docs.pypi-dependencies]
+sphinx = ">=7.3.0"
+sphinx-rtd-theme = ">=2.0.0"
+myst-parser = ">=2.0.0"
+sphinx-autodoc-typehints = ">=2.0.0"
+linkify-it-py = ">=2.0.3"
+sphinx-autobuild = ">=2024.9.19"
+sphinx-design = ">=0.6.0"
+sphinxcontrib-mermaid = ">=1.0.0"
+sphinxcontrib-programoutput = ">=0.18"
+
+[environments]
+default = { features = ["py312", "science", "aws", "dev"], solve-group = "py312" }
+runtime = { features = ["py312", "science", "aws"], solve-group = "py312" }
+dev = { features = ["py312", "science", "aws", "dev"], solve-group = "py312" }
+docs = { features = ["py312", "science", "docs"], solve-group = "py312-docs" }
+py310 = ["py310", "dev"]
+py311 = ["py311", "science", "dev"]
+
+[tasks]
+install-app = "python -m pip install --no-deps --no-build-isolation --editable ."
